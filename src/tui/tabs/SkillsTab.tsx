@@ -5,7 +5,7 @@ import { Table } from "../components/Table.js";
 import { DetailPanel } from "../components/DetailPanel.js";
 import { Confirm } from "../components/Confirm.js";
 import { PATHS } from "../../core/paths.js";
-import { listAllSkills, unlinkSkill, linkSkill, type SkillInfo } from "../../core/skill.js";
+import { listAllSkills, unlinkSkill, linkSkill, isSymlinkSupported, type SkillInfo } from "../../core/skill.js";
 
 const SOURCE_COLORS: Record<string, string> = {
   user: "cyan",
@@ -19,6 +19,7 @@ export function SkillsTab() {
   const [mode, setMode] = useState<"list" | "confirm-unlink" | "link-input">("list");
   const [linkPath, setLinkPath] = useState("");
   const [status, setStatus] = useState("");
+  const symlinkOk = isSymlinkSupported();
 
   const load = () => listAllSkills({ projectDir: process.cwd() }).then(setSkills);
   useEffect(() => { load(); }, []);
@@ -27,10 +28,10 @@ export function SkillsTab() {
     if (mode !== "list") return;
     if (input === "j" || key.downArrow) setIndex((i) => Math.min(i + 1, skills.length - 1));
     if (input === "k" || key.upArrow) setIndex((i) => Math.max(i - 1, 0));
-    if (input === "u" && skills[index]?.isSymlink && skills[index]?.source === "user") {
+    if (symlinkOk && input === "u" && skills[index]?.isSymlink && skills[index]?.source === "user") {
       setMode("confirm-unlink");
     }
-    if (input === "l") {
+    if (symlinkOk && input === "l") {
       setLinkPath("");
       setMode("link-input");
     }
@@ -67,10 +68,10 @@ export function SkillsTab() {
             ...(selected.target ? [{ label: "Target", value: selected.target }] : []),
             ...(selected.plugin ? [{ label: "Plugin", value: selected.plugin }] : []),
           ]}
-          shortcuts="u:unlink  l:link"
+          shortcuts={symlinkOk ? "u:unlink  l:link" : ""}
         />
       ) : (
-        <DetailPanel lines={["No skills found. Press 'l' to link one."]} />
+        <DetailPanel lines={[symlinkOk ? "No skills found. Press 'l' to link one." : "No skills found."]} />
       )}
 
       {mode === "confirm-unlink" && selected && (

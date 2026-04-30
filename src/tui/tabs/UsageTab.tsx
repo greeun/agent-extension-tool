@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import { BarChart } from "../components/BarChart.js";
-import { PATHS, CCX_CONFIG_PATH } from "../../core/paths.js";
+import { PATHS, AXT_CONFIG_PATH } from "../../core/paths.js";
 import { aggregateDaily, computeBlocks } from "../../core/usage.js";
 import { loadUnifiedUsage } from "../../core/usage-unified.js";
 import type { UnifiedUsageEntry } from "../../core/types.js";
@@ -56,7 +56,7 @@ export function UsageTab({ platform }: Props) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const config = await loadConfig(CCX_CONFIG_PATH);
+    const config = await loadConfig(AXT_CONFIG_PATH);
     setExchangeRate(config.exchangeRate);
     const tz = config.timezone;
     const now = new Date();

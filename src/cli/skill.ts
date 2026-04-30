@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import chalk from "chalk";
 import { PATHS } from "../core/paths.js";
-import { listSkills, linkSkill, unlinkSkill } from "../core/skill.js";
+import { listSkills, linkSkill, unlinkSkill, isSymlinkSupported } from "../core/skill.js";
 
 export function registerSkillCommands(program: Command): void {
   const skill = program.command("skill").description("Manage standalone skills");
@@ -22,20 +22,22 @@ export function registerSkillCommands(program: Command): void {
       console.log(`\n ${skills.length} skill(s)`);
     });
 
-  skill
-    .command("link <path>")
-    .option("-n, --name <name>", "Skill name (defaults to directory name)")
-    .description("Link a skill directory")
-    .action(async (path: string, opts: { name?: string }) => {
-      await linkSkill(PATHS.skills, path, opts.name);
-      console.log(chalk.green(`✓ Skill linked.`));
-    });
+  if (isSymlinkSupported()) {
+    skill
+      .command("link <path>")
+      .option("-n, --name <name>", "Skill name (defaults to directory name)")
+      .description("Link a skill directory")
+      .action(async (path: string, opts: { name?: string }) => {
+        await linkSkill(PATHS.skills, path, opts.name);
+        console.log(chalk.green(`✓ Skill linked.`));
+      });
 
-  skill
-    .command("unlink <name>")
-    .description("Unlink a skill")
-    .action(async (name: string) => {
-      await unlinkSkill(PATHS.skills, name);
-      console.log(chalk.green(`✓ Skill "${name}" unlinked.`));
-    });
+    skill
+      .command("unlink <name>")
+      .description("Unlink a skill")
+      .action(async (name: string) => {
+        await unlinkSkill(PATHS.skills, name);
+        console.log(chalk.green(`✓ Skill "${name}" unlinked.`));
+      });
+  }
 }

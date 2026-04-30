@@ -14,7 +14,9 @@
 
 ## 설치
 
-[Bun](https://bun.sh) 런타임이 필요합니다.
+[Bun](https://bun.sh) 런타임과 [Git](https://git-scm.com)이 필요합니다.
+
+### macOS / Linux
 
 ```bash
 # 클론 및 설치
@@ -25,6 +27,25 @@ bun install
 # 전역 링크
 bun link
 ```
+
+### Windows
+
+[Windows Terminal](https://aka.ms/terminal) (권장) 과 Bun for Windows가 필요합니다.
+
+```powershell
+# Bun 설치
+powershell -c "irm bun.sh/install.ps1 | iex"
+
+# 클론 및 설치
+git clone https://github.com/greeun/agent-extension-tool.git
+cd agent-extension-tool
+bun install
+
+# 전역 링크
+bun link
+```
+
+> **참고:** Windows에서는 `axt skill link` / `unlink` 명령을 사용할 수 없습니다 (symlink에 관리자 권한 필요). 그 외 모든 기능은 정상 동작합니다.
 
 ## 빠른 시작
 
@@ -71,8 +92,8 @@ axt plugin search <query>           # 마켓플레이스 검색
 
 ```bash
 axt skill list                      # 전체 스킬 목록
-axt skill link <path>               # 스킬 디렉토리 링크
-axt skill unlink <name>             # 스킬 링크 해제
+axt skill link <path>               # 스킬 디렉토리 링크 (macOS/Linux 전용)
+axt skill unlink <name>             # 스킬 링크 해제 (macOS/Linux 전용)
 ```
 
 ### 마켓플레이스
@@ -132,7 +153,7 @@ axt plan set claude max-5x          # 플랫폼별 플랜 설정
 
 | 서브탭 | 단축키 |
 |--------|--------|
-| Skills | `u` 링크 해제, `l` 링크 |
+| Skills | `u` 링크 해제, `l` 링크 (macOS/Linux 전용) |
 | Plugins | `e` 활성화/비활성화, `r` 제거, `u` 업데이트, `i` 설치, `/` 검색 |
 | Marketplace | `s` 동기화, `r` 제거, `a` 추가 |
 
@@ -162,7 +183,9 @@ axt plan set claude max-5x          # 플랫폼별 플랜 설정
 
 ## 설정
 
-설정 파일: `~/.config/axt/config.json`
+설정 파일:
+- macOS / Linux: `~/.config/axt/config.json`
+- Windows: `%APPDATA%\axt\config.json`
 
 ```json
 {

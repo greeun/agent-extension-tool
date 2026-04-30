@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import { BarChart } from "../components/BarChart.js";
-import { PATHS, CCX_CONFIG_PATH } from "../../core/paths.js";
+import { PATHS, AXT_CONFIG_PATH } from "../../core/paths.js";
 import { loadUnifiedUsage } from "../../core/usage-unified.js";
 import { calculateCost } from "../../pricing/models.js";
 import { loadConfig } from "../../config/index.js";
@@ -43,7 +43,7 @@ export function OverviewTab() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const config = await loadConfig(CCX_CONFIG_PATH);
+    const config = await loadConfig(AXT_CONFIG_PATH);
     setExchangeRate(config.exchangeRate);
     const now = new Date();
     const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;

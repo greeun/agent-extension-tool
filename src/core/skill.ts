@@ -4,6 +4,8 @@ import { PATHS } from "./paths.js";
 import { listInstalledPlugins } from "./plugin.js";
 import { readEnabledPlugins } from "./settings.js";
 
+const IS_WINDOWS = process.platform === "win32";
+
 export type SkillSource = "user" | "project" | "plugin";
 
 export interface SkillInfo {
@@ -69,13 +71,19 @@ export async function listAllSkills(options: {
   return result;
 }
 
+export function isSymlinkSupported(): boolean {
+  return !IS_WINDOWS;
+}
+
 export async function linkSkill(skillsDir: string, targetPath: string, name?: string): Promise<void> {
+  if (IS_WINDOWS) throw new Error("Skill linking via symlink is not supported on Windows.");
   const skillName = name ?? basename(targetPath);
   const linkPath = join(skillsDir, skillName);
   await symlink(targetPath, linkPath);
 }
 
 export async function unlinkSkill(skillsDir: string, name: string): Promise<void> {
+  if (IS_WINDOWS) throw new Error("Skill unlinking is not supported on Windows.");
   const fullPath = join(skillsDir, name);
   const stat = await lstat(fullPath);
   if (!stat.isSymbolicLink()) throw new Error(`"${name}" is not a symlink. Use rm to remove directories.`);

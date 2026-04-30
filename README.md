@@ -14,7 +14,9 @@ A unified CLI & TUI dashboard for managing extensions, plugins, skills, MCP serv
 
 ## Installation
 
-Requires [Bun](https://bun.sh) runtime.
+Requires [Bun](https://bun.sh) runtime and [Git](https://git-scm.com).
+
+### macOS / Linux
 
 ```bash
 # Clone and install
@@ -25,6 +27,25 @@ bun install
 # Link globally
 bun link
 ```
+
+### Windows
+
+Requires [Windows Terminal](https://aka.ms/terminal) (recommended) and Bun for Windows.
+
+```powershell
+# Install Bun
+powershell -c "irm bun.sh/install.ps1 | iex"
+
+# Clone and install
+git clone https://github.com/greeun/agent-extension-tool.git
+cd agent-extension-tool
+bun install
+
+# Link globally
+bun link
+```
+
+> **Note:** On Windows, `axt skill link` / `unlink` commands are not available (symlinks require elevated privileges). All other features work normally.
 
 ## Quick Start
 
@@ -71,8 +92,8 @@ axt plugin search <query>           # Search across marketplaces
 
 ```bash
 axt skill list                      # List all skills
-axt skill link <path>               # Link a skill directory
-axt skill unlink <name>             # Unlink a skill
+axt skill link <path>               # Link a skill directory (macOS/Linux only)
+axt skill unlink <name>             # Unlink a skill (macOS/Linux only)
 ```
 
 ### Marketplace
@@ -132,7 +153,7 @@ Launch with `axt tui` or just `axt`.
 
 | Sub-tab | Shortcuts |
 |---------|-----------|
-| Skills | `u` unlink, `l` link |
+| Skills | `u` unlink, `l` link (macOS/Linux only) |
 | Plugins | `e` enable/disable, `r` remove, `u` update, `i` install, `/` search |
 | Marketplace | `s` sync, `r` remove, `a` add |
 
@@ -162,7 +183,9 @@ Launch with `axt tui` or just `axt`.
 
 ## Configuration
 
-Config file: `~/.config/axt/config.json`
+Config file:
+- macOS / Linux: `~/.config/axt/config.json`
+- Windows: `%APPDATA%\axt\config.json`
 
 ```json
 {

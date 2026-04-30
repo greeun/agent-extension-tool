@@ -34,8 +34,12 @@ export const PATHS = {
   cursorTrackingDb: join(homedir(), ".cursor", "ai-tracking", "ai-code-tracking.db"),
 } as const;
 
+const IS_WINDOWS = process.platform === "win32";
+
 export const AXT_CONFIG_DIR = join(
-  process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"),
+  IS_WINDOWS
+    ? (process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"))
+    : (process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config")),
   "axt"
 );
 export const AXT_CONFIG_PATH = join(AXT_CONFIG_DIR, "config.json");
