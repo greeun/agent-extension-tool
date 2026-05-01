@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { estimateTokens, collectContextSources, analyzeContext, type ContextSource } from "../../src/core/context-analysis.js";
+import { estimateTokens, collectContextSources, analyzeContext, addHints, type ContextSource } from "../../src/core/context-analysis.js";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -119,6 +119,33 @@ describe("analyzeContext", () => {
     expect(result.costImpact.cacheReadCostPerTurn).toBeGreaterThan(0);
     expect(result.costImpact.perSessionCost).toBeGreaterThan(result.costImpact.cacheWriteCost);
     expect(result.costImpact.monthlyCost).toBeGreaterThan(0);
+  });
+});
+
+describe("addHints", () => {
+  test("adds hint to large CLAUDE.md sources", () => {
+    const sources: ContextSource[] = [
+      { name: "CLAUDE.md (project)", category: "claude-md", path: "/p/CLAUDE.md", chars: 7000, estimatedTokens: 2000, percentage: 30, actionable: true },
+    ];
+    addHints(sources);
+    expect(sources[0].hint).toBeDefined();
+    expect(sources[0].hint).toContain("tok");
+  });
+
+  test("adds hint for system-prompt fixed sources", () => {
+    const sources: ContextSource[] = [
+      { name: "Base system prompt", category: "system-prompt", path: "", chars: 0, estimatedTokens: 4200, percentage: 25, actionable: false },
+    ];
+    addHints(sources);
+    expect(sources[0].hint).toContain("fixed");
+  });
+
+  test("marks mcp-tools as deferred", () => {
+    const sources: ContextSource[] = [
+      { name: "MCP: context7", category: "mcp-tools", path: "", chars: 30, estimatedTokens: 9, percentage: 1, actionable: false },
+    ];
+    addHints(sources);
+    expect(sources[0].hint).toContain("deferred");
   });
 });
 
