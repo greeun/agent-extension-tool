@@ -1,16 +1,16 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, useInput } from "ink";
 import { Table } from "../components/Table.js";
-import { DetailPanel } from "../components/DetailPanel.js";
+import { DetailView } from "../components/DetailView.js";
+import { SOURCE_COLORS } from "../constants.js";
 import { listCommands, type CommandInfo } from "../../core/commands.js";
 
-const SOURCE_COLORS: Record<string, string> = {
-  user: "cyan",
-  project: "green",
-  plugin: "magenta",
-};
+interface Props {
+  isFocused?: boolean;
+  onFocusUp?: () => void;
+}
 
-export function CommandsTab() {
+export function CommandsTab({ isFocused = true, onFocusUp }: Props) {
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [index, setIndex] = useState(0);
 
@@ -19,8 +19,14 @@ export function CommandsTab() {
   }, []);
 
   useInput((input, key) => {
-    if (input === "j" || key.downArrow) setIndex((i) => Math.min(i + 1, commands.length - 1));
-    if (input === "k" || key.upArrow) setIndex((i) => Math.max(i - 1, 0));
+    if (!isFocused) return;
+    if (input === "j" || key.downArrow) {
+      if (commands.length > 0) setIndex((i) => Math.min(i + 1, commands.length - 1));
+    }
+    if (input === "k" || key.upArrow) {
+      if (index <= 0 && onFocusUp) { onFocusUp(); return; }
+      setIndex((i) => Math.max(i - 1, 0));
+    }
   });
 
   const rows = commands.map((c) => ({
@@ -42,19 +48,17 @@ export function CommandsTab() {
         rows={rows}
         selectedIndex={index}
       />
-      {selected ? (
-        <DetailPanel
-          title={`/${selected.name}`}
-          fields={[
-            { label: "Source", value: selected.source, color: SOURCE_COLORS[selected.source] },
-            { label: "Path", value: selected.sourcePath },
-            ...(selected.plugin ? [{ label: "Plugin", value: selected.plugin }] : []),
-            { label: "Description", value: selected.description || "(none)" },
-          ]}
-        />
-      ) : (
-        <DetailPanel lines={["No commands found."]} />
-      )}
+      <DetailView
+        item={selected}
+        title={selected ? `/${selected.name}` : undefined}
+        fields={selected ? [
+          { label: "Source", value: selected.source, color: SOURCE_COLORS[selected.source] },
+          { label: "Path", value: selected.sourcePath },
+          ...(selected.plugin ? [{ label: "Plugin", value: selected.plugin }] : []),
+          { label: "Description", value: selected.description || "(none)" },
+        ] : []}
+        emptyMessage="No commands found."
+      />
     </Box>
   );
 }
