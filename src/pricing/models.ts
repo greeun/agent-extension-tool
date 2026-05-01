@@ -32,6 +32,21 @@ const PRICING_TABLE: Record<string, ModelPricing> = {
   "gemini-3-flash-preview": { input: 0.50, output: 3.0, cacheWrite: 0, cacheRead: 0.05 },
 };
 
+const CONTEXT_WINDOW_TABLE: Record<string, number> = {
+  "claude-opus-4-7": 1_000_000,
+  "claude-opus-4-6": 1_000_000,
+  "claude-sonnet-4-6": 1_000_000,
+  "claude-haiku-4-5": 200_000,
+};
+
+export function getContextWindowSize(modelId: string): number | null {
+  if (CONTEXT_WINDOW_TABLE[modelId]) return CONTEXT_WINDOW_TABLE[modelId];
+  for (const [key, size] of Object.entries(CONTEXT_WINDOW_TABLE)) {
+    if (modelId.startsWith(key)) return size;
+  }
+  return null;
+}
+
 export function getModelPricing(modelId: string): ModelPricing | null {
   if (PRICING_TABLE[modelId]) return PRICING_TABLE[modelId];
   for (const [key, pricing] of Object.entries(PRICING_TABLE)) {

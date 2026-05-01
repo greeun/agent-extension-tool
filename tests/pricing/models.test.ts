@@ -3,6 +3,7 @@ import {
   getModelPricing,
   calculateCost,
   convertCurrency,
+  getContextWindowSize,
   type TokenUsage,
 } from "../../src/pricing/models.js";
 
@@ -90,5 +91,31 @@ describe("pricing", () => {
       "gemini-2.5-flash"
     );
     expect(cost).toBeCloseTo(0.30 + 2.50 + 0.03, 2);
+  });
+});
+
+describe("contextWindowSize", () => {
+  test("getContextWindowSize returns 1M for opus-4-7", () => {
+    expect(getContextWindowSize("claude-opus-4-7")).toBe(1_000_000);
+  });
+
+  test("getContextWindowSize returns 1M for opus-4-6", () => {
+    expect(getContextWindowSize("claude-opus-4-6")).toBe(1_000_000);
+  });
+
+  test("getContextWindowSize returns 1M for sonnet-4-6", () => {
+    expect(getContextWindowSize("claude-sonnet-4-6")).toBe(1_000_000);
+  });
+
+  test("getContextWindowSize returns 200K for haiku-4-5", () => {
+    expect(getContextWindowSize("claude-haiku-4-5")).toBe(200_000);
+  });
+
+  test("getContextWindowSize matches partial model IDs", () => {
+    expect(getContextWindowSize("claude-opus-4-6[1m]")).toBe(1_000_000);
+  });
+
+  test("getContextWindowSize returns null for unknown model", () => {
+    expect(getContextWindowSize("unknown-model-xyz")).toBeNull();
   });
 });
