@@ -149,3 +149,59 @@ describe("addHints", () => {
   });
 });
 
+describe("integration: full analysis flow", () => {
+  const testDir = join(tmpdir(), `axt-ctx-integ-${Date.now()}`);
+  const homeDir = join(testDir, "home");
+  const projectDir = join(testDir, "project");
+
+  beforeAll(() => {
+    const claudeDir = join(homeDir, ".claude");
+    const projectSettingsKey = projectDir.replace(/\//g, "-").replace(/^-/, "");
+    const memDir = join(claudeDir, "projects", projectSettingsKey, "memory");
+    mkdirSync(memDir, { recursive: true });
+    mkdirSync(join(claudeDir, "skills"), { recursive: true });
+    mkdirSync(join(claudeDir, "commands"), { recursive: true });
+    mkdirSync(join(claudeDir, "agents"), { recursive: true });
+    mkdirSync(join(projectDir, ".claude"), { recursive: true });
+
+    writeFileSync(join(homeDir, "CLAUDE.md"), "Global rules: be helpful.");
+    writeFileSync(join(projectDir, "CLAUDE.md"), "Project: axt\nLots of instructions here.\n".repeat(50));
+    writeFileSync(join(claudeDir, "settings.json"), JSON.stringify({ hooks: {} }));
+    writeFileSync(join(memDir, "MEMORY.md"), "- [user_role](user_role.md) — developer\n".repeat(10));
+    writeFileSync(join(memDir, "user_role.md"), "---\nname: user_role\ntype: user\n---\nSenior developer");
+  });
+
+  afterAll(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  test("produces valid ContextAnalysis with all expected categories", async () => {
+    const result = await analyzeContext({
+      homeDir,
+      projectDir,
+      installedPluginsPath: join(homeDir, ".claude", "plugins", "installed_plugins.json"),
+      model: "claude-opus-4-6",
+      avgTurnsPerSession: 30,
+      avgSessionsPerDay: 5,
+    });
+
+    expect(result.totalTokens).toBeGreaterThan(4200 + 280);
+    expect(result.contextWindowSize).toBe(1_000_000);
+    expect(result.usedPercent).toBeGreaterThan(0);
+
+    const categories = new Set(result.sources.map((s) => s.category));
+    expect(categories.has("system-prompt")).toBe(true);
+    expect(categories.has("claude-md")).toBe(true);
+    expect(categories.has("user-context")).toBe(true);
+    expect(categories.has("git-status")).toBe(true);
+    expect(categories.has("memory")).toBe(true);
+    expect(categories.has("settings")).toBe(true);
+
+    const percentSum = result.sources.reduce((sum, s) => sum + s.percentage, 0);
+    expect(percentSum).toBeCloseTo(100, 0);
+
+    expect(result.costImpact.monthlyCost).toBeGreaterThan(0);
+    expect(result.costImpact.perSessionCost).toBeGreaterThan(0);
+  });
+});
+
