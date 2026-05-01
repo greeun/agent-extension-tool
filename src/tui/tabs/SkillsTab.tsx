@@ -2,18 +2,19 @@ import React, { useState, useEffect } from "react";
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { Table } from "../components/Table.js";
-import { DetailPanel } from "../components/DetailPanel.js";
+import { DetailView } from "../components/DetailView.js";
+import { SourceSummary } from "../components/SourceSummary.js";
 import { Confirm } from "../components/Confirm.js";
+import { SOURCE_COLORS } from "../constants.js";
 import { PATHS } from "../../core/paths.js";
 import { listAllSkills, unlinkSkill, linkSkill, isSymlinkSupported, type SkillInfo } from "../../core/skill.js";
 
-const SOURCE_COLORS: Record<string, string> = {
-  user: "cyan",
-  project: "green",
-  plugin: "magenta",
-};
+interface Props {
+  isFocused?: boolean;
+  onFocusUp?: () => void;
+}
 
-export function SkillsTab() {
+export function SkillsTab({ isFocused = true, onFocusUp }: Props) {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [index, setIndex] = useState(0);
   const [mode, setMode] = useState<"list" | "confirm-unlink" | "link-input">("list");
@@ -26,8 +27,14 @@ export function SkillsTab() {
 
   useInput((input, key) => {
     if (mode !== "list") return;
-    if (input === "j" || key.downArrow) setIndex((i) => Math.min(i + 1, skills.length - 1));
-    if (input === "k" || key.upArrow) setIndex((i) => Math.max(i - 1, 0));
+    if (!isFocused) return;
+    if (input === "j" || key.downArrow) {
+      if (skills.length > 0) setIndex((i) => Math.min(i + 1, skills.length - 1));
+    }
+    if (input === "k" || key.upArrow) {
+      if (index <= 0 && onFocusUp) { onFocusUp(); return; }
+      setIndex((i) => Math.max(i - 1, 0));
+    }
     if (symlinkOk && input === "u" && skills[index]?.isSymlink && skills[index]?.source === "user") {
       setMode("confirm-unlink");
     }
@@ -58,21 +65,19 @@ export function SkillsTab() {
         rows={rows}
         selectedIndex={index}
       />
-      {selected ? (
-        <DetailPanel
-          title={selected.name}
-          fields={[
-            { label: "Source", value: selected.source, color: SOURCE_COLORS[selected.source] },
-            { label: "Type", value: selected.isSymlink ? "symlink" : "directory" },
-            { label: "Path", value: selected.path },
-            ...(selected.target ? [{ label: "Target", value: selected.target }] : []),
-            ...(selected.plugin ? [{ label: "Plugin", value: selected.plugin }] : []),
-          ]}
-          shortcuts={symlinkOk ? "u:unlink  l:link" : ""}
-        />
-      ) : (
-        <DetailPanel lines={[symlinkOk ? "No skills found. Press 'l' to link one." : "No skills found."]} />
-      )}
+      <DetailView
+        item={selected}
+        title={selected?.name}
+        fields={selected ? [
+          { label: "Source", value: selected.source, color: SOURCE_COLORS[selected.source] },
+          { label: "Type", value: selected.isSymlink ? "symlink" : "directory" },
+          { label: "Path", value: selected.path },
+          ...(selected.target ? [{ label: "Target", value: selected.target }] : []),
+          ...(selected.plugin ? [{ label: "Plugin", value: selected.plugin }] : []),
+        ] : []}
+        emptyMessage={symlinkOk ? "No skills found. Press 'l' to link one." : "No skills found."}
+        shortcuts={symlinkOk ? "u:unlink  l:link" : ""}
+      />
 
       {mode === "confirm-unlink" && selected && (
         <Confirm
@@ -112,15 +117,11 @@ export function SkillsTab() {
         </Box>
       )}
 
-      <Box marginTop={1}>
-        <Text dimColor>
-          {skills.length} skill(s) from {new Set(skills.map((s) => s.source)).size} source(s)
-          {" | "}
-          <Text color="cyan">user</Text> <Text color="green">project</Text>{" "}
-          <Text color="magenta">plugin</Text>
-        </Text>
-        {status && <Text> {status}</Text>}
-      </Box>
+      <SourceSummary
+        items={skills}
+        label="skill"
+        extra={status ? <Text> {status}</Text> : undefined}
+      />
     </Box>
   );
 }
