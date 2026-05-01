@@ -1,30 +1,81 @@
-import React, { useState, useEffect } from "react";
-import { Box, Text, useInput } from "ink";
+import { useState, useEffect } from "react";
+import { Box, useInput } from "ink";
 import { Table } from "../components/Table.js";
+import { DetailView, useDetailView, type DetailField } from "../components/DetailView.js";
+import { SourceSummary } from "../components/SourceSummary.js";
+import { SOURCE_COLORS } from "../constants.js";
 import { PATHS } from "../../core/paths.js";
-import { listHooks, getHookDetail, type HookInfo } from "../../core/hooks.js";
+import { listHooks, getHookDetail, previewHook, type HookInfo } from "../../core/hooks.js";
 
-const SOURCE_COLORS: Record<string, string> = {
-  user: "cyan",
-  project: "green",
-  local: "yellow",
-  plugin: "magenta",
-};
+function buildDetailFields(h: HookInfo): DetailField[] {
+  const fields: DetailField[] = [
+    { label: "Type", value: h.type },
+    { label: "Matcher", value: h.matcher },
+    { label: "Source", value: h.source, color: SOURCE_COLORS[h.source] },
+    { label: "Path", value: h.sourcePath },
+  ];
+  if (h.command) fields.push({ label: "Command", value: h.command });
+  if (h.url) fields.push({ label: "URL", value: h.url });
+  if (h.server) fields.push({ label: "Server", value: h.server });
+  if (h.tool) fields.push({ label: "Tool", value: h.tool });
+  if (h.prompt) fields.push({ label: "Prompt", value: h.prompt });
+  if (h.model) fields.push({ label: "Model", value: h.model });
+  if (h.timeout != null) fields.push({ label: "Timeout", value: `${h.timeout}s` });
+  if (h.statusMessage) fields.push({ label: "Status", value: h.statusMessage });
+  if (h.condition) fields.push({ label: "If", value: h.condition });
+  if (h.async) fields.push({ label: "Async", value: "yes" });
+  if (h.asyncRewake) fields.push({ label: "Rewake", value: "yes" });
+  if (h.once) fields.push({ label: "Once", value: "yes (removed after first run)" });
+  return fields;
+}
 
-export function HooksTab() {
+function parseHookPreviewOutput(r: { output?: string; error?: string; exitCode?: number | null; summary: string }): string[] {
+  const lines: string[] = [];
+  if (r.output) lines.push("── stdout ──", ...r.output.split("\n"));
+  if (r.error) { if (lines.length) lines.push(""); lines.push("── stderr ──", ...r.error.split("\n")); }
+  if (r.exitCode != null) lines.push("", `Exit: ${r.exitCode}`);
+  return lines;
+}
+
+interface Props {
+  isFocused?: boolean;
+  onFocusUp?: () => void;
+}
+
+export function HooksTab({ isFocused = true, onFocusUp }: Props) {
   const [hooks, setHooks] = useState<HookInfo[]>([]);
   const [index, setIndex] = useState(0);
+  const [previewTitle, setPreviewTitle] = useState("");
 
   useEffect(() => {
     listHooks({
       userSettingsPath: PATHS.settings,
       projectDir: process.cwd(),
+      installedPluginsPath: PATHS.installedPlugins,
     }).then(setHooks);
   }, []);
 
+  const selected = hooks[index];
+  const detail = useDetailView({
+    item: selected,
+    previewLoader: async (h: HookInfo) => {
+      const r = await previewHook(h);
+      setPreviewTitle(r.summary);
+      return parseHookPreviewOutput(r);
+    },
+  });
+
   useInput((input, key) => {
-    if (input === "j" || key.downArrow) setIndex((i) => Math.min(i + 1, hooks.length - 1));
-    if (input === "k" || key.upArrow) setIndex((i) => Math.max(i - 1, 0));
+    if (!isFocused) return;
+    if (detail.handleInput(input, key)) return;
+    if (input === "p" && selected) { detail.openPreview(); return; }
+    if (input === "j" || key.downArrow) {
+      if (hooks.length > 0) setIndex((i) => Math.min(i + 1, hooks.length - 1));
+    }
+    if (input === "k" || key.upArrow) {
+      if (index <= 0 && onFocusUp) { onFocusUp(); return; }
+      setIndex((i) => Math.max(i - 1, 0));
+    }
   });
 
   const rows = hooks.map((h) => ({
@@ -34,8 +85,6 @@ export function HooksTab() {
     detail: getHookDetail(h).slice(0, 35),
     matcher: h.matcher === "*" ? "*" : h.matcher.slice(0, 10),
   }));
-
-  const selected = hooks[index];
 
   return (
     <Box flexDirection="column">
@@ -50,47 +99,19 @@ export function HooksTab() {
         rows={rows}
         selectedIndex={index}
       />
-
-      {selected && (
-        <Box flexDirection="column" borderStyle="single" paddingX={1} marginTop={1}>
-          <Box>
-            <Text bold>{selected.event}</Text>
-            <Text> </Text>
-            <Text color={SOURCE_COLORS[selected.source] ?? "white"}>
-              [{selected.source}]
-            </Text>
-          </Box>
-
-          <Text>Type:    {selected.type}</Text>
-          <Text>Matcher: {selected.matcher}</Text>
-          <Text>Source:  {selected.sourcePath}</Text>
-
-          {selected.command && <Text>Command: {selected.command}</Text>}
-          {selected.url && <Text>URL:     {selected.url}</Text>}
-          {selected.server && <Text>Server:  {selected.server}  Tool: {selected.tool}</Text>}
-          {selected.prompt && <Text>Prompt:  {selected.prompt.slice(0, 80)}</Text>}
-          {selected.model && <Text>Model:   {selected.model}</Text>}
-          {selected.timeout != null && <Text>Timeout: {selected.timeout}s</Text>}
-          {selected.statusMessage && <Text>Status:  {selected.statusMessage}</Text>}
-          {selected.condition && <Text>If:      {selected.condition}</Text>}
-          {selected.async && <Text>Async:   yes</Text>}
-          {selected.asyncRewake && <Text>Rewake:  yes</Text>}
-          {selected.once && <Text>Once:    yes (removed after first run)</Text>}
-        </Box>
-      )}
-
-      {hooks.length === 0 && (
-        <Text dimColor>No hooks configured. Add hooks in settings.json → hooks</Text>
-      )}
-
-      <Box marginTop={1}>
-        <Text dimColor>
-          {hooks.length} hook(s) from {new Set(hooks.map((h) => h.source)).size} source(s)
-          {" | "}
-          <Text color="cyan">user</Text> <Text color="green">project</Text>{" "}
-          <Text color="yellow">local</Text> <Text color="magenta">plugin</Text>
-        </Text>
-      </Box>
+      <DetailView
+        item={selected}
+        title={selected ? `${selected.event} [${selected.source}]` : undefined}
+        fields={selected ? buildDetailFields(selected) : []}
+        emptyMessage="No hooks configured. Add hooks in settings.json → hooks"
+        mode={detail.mode}
+        previewLines={detail.previewLines}
+        previewScroll={detail.previewScroll}
+        previewTitle={previewTitle}
+        showLineNumbers={false}
+        shortcuts="p:preview"
+      />
+      <SourceSummary items={hooks} label="hook" />
     </Box>
   );
 }
