@@ -1,10 +1,11 @@
 import React from "react";
 import { Box, Text, useStdout } from "ink";
 
-export type TabName = "extensions" | "project" | "dashboard" | "claude" | "codex" | "gemini" | "cursor";
+export type TabName = "extensions" | "context" | "project" | "dashboard" | "claude" | "codex" | "gemini" | "cursor";
 
 const TABS: { key: TabName; label: string; short: string }[] = [
   { key: "extensions", label: "Extensions", short: "Ext" },
+  { key: "context", label: "Context", short: "Ctx" },
   { key: "project", label: "Project", short: "Prj" },
   { key: "dashboard", label: "Dashboard", short: "Dash" },
   { key: "claude", label: "Claude", short: "Cla" },
@@ -15,12 +16,13 @@ const TABS: { key: TabName; label: string; short: string }[] = [
 
 interface Props {
   active: TabName;
+  focused?: boolean;
 }
 
-const HINT_FULL = "←→:tab  r:refresh  ?:help  q:quit";
-const HINT_SHORT = "←→ ? q";
+const HINT_FULL = "↑↓:focus  ←→:tab  r:refresh  ?:help  q:quit";
+const HINT_SHORT = "↑↓←→ ? q";
 
-export function TabBar({ active }: Props) {
+export function TabBar({ active, focused = true }: Props) {
   const { stdout } = useStdout();
   const termWidth = stdout?.columns ?? 80;
   const compact = termWidth < 100;
@@ -32,7 +34,7 @@ export function TabBar({ active }: Props) {
         const isActive = tab.key === active;
         return (
           <Box key={tab.key} marginRight={0}>
-            <Text dimColor={!isActive} bold={isActive} inverse={isActive}>
+            <Text dimColor={!isActive} bold={isActive} inverse={isActive && focused}>
               {` ${i + 1}:${label} `}
             </Text>
           </Box>

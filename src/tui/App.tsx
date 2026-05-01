@@ -7,6 +7,7 @@ import { UsageTab } from "./tabs/UsageTab.js";
 import { CursorTab } from "./tabs/CursorTab.js";
 import { ExtensionsTab } from "./tabs/ExtensionsTab.js";
 import { ProjectTab } from "./tabs/ProjectTab.js";
+import { ContextTab } from "./tabs/ContextTab.js";
 
 function useTerminalSize() {
   const { stdout } = useStdout();
@@ -29,6 +30,7 @@ function useTerminalSize() {
 
 function App() {
   const [tab, setTab] = useState<TabName>("extensions");
+  const [focusLayer, setFocusLayer] = useState<"mainTab" | "subTab" | "content">("content");
   const [showHelp, setShowHelp] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const { exit } = useApp();
@@ -40,11 +42,18 @@ function App() {
     if (input === "?") { setShowHelp(true); return; }
     if (input === "r") { setRefreshKey((k) => k + 1); return; }
 
+    if (focusLayer === "mainTab" && key.downArrow) {
+      setFocusLayer(tab === "extensions" ? "subTab" : "content");
+      return;
+    }
+
     if (key.leftArrow) {
+      if (tab === "extensions" && focusLayer !== "mainTab") return;
       const idx = TABS.findIndex((t) => t.key === tab);
       setTab(TABS[(idx - 1 + TABS.length) % TABS.length].key);
     }
     if (key.rightArrow) {
+      if (tab === "extensions" && focusLayer !== "mainTab") return;
       const idx = TABS.findIndex((t) => t.key === tab);
       setTab(TABS[(idx + 1) % TABS.length].key);
     }
@@ -52,6 +61,7 @@ function App() {
     const num = parseInt(input);
     if (num >= 1 && num <= TABS.length) {
       setTab(TABS[num - 1].key);
+      setFocusLayer("content");
     }
   });
 
@@ -60,7 +70,7 @@ function App() {
   if (showHelp) {
     return (
       <Box flexDirection="column" height={termHeight}>
-        <TabBar active={tab} />
+        <TabBar active={tab} focused={focusLayer === "mainTab"} />
         <Text dimColor>{"─".repeat(termWidth)}</Text>
         <Box height={contentHeight} justifyContent="center" alignItems="center" overflow="hidden">
           <HelpPopup onClose={() => setShowHelp(false)} />
@@ -71,16 +81,17 @@ function App() {
 
   return (
     <Box flexDirection="column" height={termHeight}>
-      <TabBar active={tab} />
+      <TabBar active={tab} focused={focusLayer === "mainTab"} />
       <Text dimColor>{"─".repeat(termWidth)}</Text>
       <Box flexDirection="column" height={contentHeight} paddingX={1} paddingY={1} overflow="hidden">
-        {tab === "extensions" && <ExtensionsTab />}
-        {tab === "project" && <ProjectTab key={refreshKey} />}
+        {tab === "extensions" && <ExtensionsTab focusLayer={focusLayer} setFocusLayer={setFocusLayer} />}
+        {tab === "context" && <ContextTab key={`context-${refreshKey}`} />}
+        {tab === "project" && <ProjectTab key={refreshKey} isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("mainTab")} />}
         {tab === "dashboard" && <OverviewTab key={refreshKey} />}
         {tab === "claude" && <UsageTab platform="claude" key={`claude-${refreshKey}`} />}
         {tab === "codex" && <UsageTab platform="codex" key={`codex-${refreshKey}`} />}
         {tab === "gemini" && <UsageTab platform="gemini" key={`gemini-${refreshKey}`} />}
-        {tab === "cursor" && <CursorTab key={`cursor-${refreshKey}`} />}
+        {tab === "cursor" && <CursorTab key={`cursor-${refreshKey}`} isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("mainTab")} />}
       </Box>
     </Box>
   );
