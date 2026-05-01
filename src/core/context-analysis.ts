@@ -1,4 +1,5 @@
 import { readFile, readdir, lstat } from "fs/promises";
+import { statSync } from "fs";
 import { join, basename } from "path";
 import { listAllSkills } from "./skill.js";
 import { listCommands } from "./commands.js";
@@ -7,6 +8,7 @@ import { listHooks } from "./hooks.js";
 import { listMcpServers } from "./mcp.js";
 import { listInstalledPlugins } from "./plugin.js";
 import { readEnabledPlugins } from "./settings.js";
+import { getModelPricing, getContextWindowSize } from "../pricing/models.js";
 
 function isKorean(code: number): boolean {
   return (code >= 0xAC00 && code <= 0xD7A3) ||
@@ -57,6 +59,31 @@ export interface CollectOptions {
   homeDir: string;
   projectDir: string;
   installedPluginsPath: string;
+}
+
+export interface CostImpact {
+  model: string;
+  cacheWriteCost: number;
+  cacheReadCostPerTurn: number;
+  avgTurnsPerSession: number;
+  avgSessionsPerDay: number;
+  perSessionCost: number;
+  monthlyCost: number;
+}
+
+export interface ContextAnalysis {
+  totalTokens: number;
+  contextWindowSize: number;
+  usedPercent: number;
+  model: string;
+  sources: ContextSource[];
+  costImpact: CostImpact;
+}
+
+export interface AnalyzeOptions extends CollectOptions {
+  model: string;
+  avgTurnsPerSession: number;
+  avgSessionsPerDay: number;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -283,4 +310,92 @@ export async function collectContextSources(options: CollectOptions): Promise<Co
   }
 
   return sources;
+}
+
+// ── Optimization Hints ─────────────────────────────────────────────────────
+
+export function addHints(sources: ContextSource[]): void {
+  const sortedByTokens = [...sources].sort((a, b) => b.estimatedTokens - a.estimatedTokens);
+  const topNames = sortedByTokens.slice(0, 3).map((s) => s.name);
+
+  for (const s of sources) {
+    switch (s.category) {
+      case "system-prompt":
+        s.hint = `${s.estimatedTokens} tok (fixed, cannot reduce)`;
+        break;
+      case "user-context":
+      case "git-status":
+        s.hint = `${s.estimatedTokens} tok (fixed)`;
+        break;
+      case "claude-md":
+        if (s.estimatedTokens > 500) {
+          s.hint = `${s.estimatedTokens} tok — review for unnecessary sections`;
+        }
+        break;
+      case "memory": {
+        if (s.path) {
+          try {
+            const mtime = statSync(s.path).mtimeMs;
+            const daysOld = Math.floor((Date.now() - mtime) / (24 * 60 * 60 * 1000));
+            if (daysOld > 90) {
+              s.hint = `${s.estimatedTokens} tok — not modified in ${daysOld} days (>90 days)`;
+            }
+          } catch {}
+        }
+        if (!s.hint && s.estimatedTokens > 100) {
+          s.hint = `${s.estimatedTokens} tok`;
+        }
+        break;
+      }
+      case "skills":
+        if (topNames.includes(s.name)) {
+          s.hint = `${s.estimatedTokens} tok — top context consumer`;
+        }
+        break;
+      case "hooks":
+        s.hint = `~${s.estimatedTokens} tok estimated output`;
+        break;
+      case "mcp-tools":
+        s.hint = `deferred — minimal context impact`;
+        break;
+      default:
+        if (s.estimatedTokens > 100) {
+          s.hint = `${s.estimatedTokens} tok`;
+        }
+    }
+  }
+}
+
+// ── analyzeContext ─────────────────────────────────────────────────────────
+
+export async function analyzeContext(options: AnalyzeOptions): Promise<ContextAnalysis> {
+  const sources = await collectContextSources(options);
+  const totalTokens = sources.reduce((sum, s) => sum + s.estimatedTokens, 0);
+  const contextWindowSize = getContextWindowSize(options.model) ?? 1_000_000;
+  const usedPercent = (totalTokens / contextWindowSize) * 100;
+
+  const pricing = getModelPricing(options.model);
+  const cacheWriteCost = pricing ? (totalTokens / 1_000_000) * pricing.cacheWrite : 0;
+  const cacheReadCostPerTurn = pricing ? (totalTokens / 1_000_000) * pricing.cacheRead : 0;
+  const perSessionCost = cacheWriteCost + (options.avgTurnsPerSession - 1) * cacheReadCostPerTurn;
+  const monthlyCost = perSessionCost * options.avgSessionsPerDay * 30;
+
+  addHints(sources);
+
+  return {
+    totalTokens,
+    contextWindowSize,
+    usedPercent,
+    model: options.model,
+    sources,
+    costImpact: {
+      model: options.model,
+      cacheWriteCost,
+      cacheReadCostPerTurn,
+      avgTurnsPerSession: options.avgTurnsPerSession,
+      avgSessionsPerDay: options.avgSessionsPerDay,
+      perSessionCost,
+      monthlyCost,
+    },
+  };
 }

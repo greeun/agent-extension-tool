@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { estimateTokens, collectContextSources, type ContextSource } from "../../src/core/context-analysis.js";
+import { estimateTokens, collectContextSources, analyzeContext, type ContextSource } from "../../src/core/context-analysis.js";
 import { mkdirSync, writeFileSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -77,3 +77,48 @@ describe("collectContextSources", () => {
     expect(userCtx!.estimatedTokens).toBe(280);
   });
 });
+
+describe("analyzeContext", () => {
+  const testDir = join(tmpdir(), `axt-ctx-analyze-${Date.now()}`);
+  const homeDir = join(testDir, "home");
+  const projectDir = join(testDir, "project");
+
+  beforeAll(() => {
+    mkdirSync(join(homeDir, ".claude"), { recursive: true });
+    mkdirSync(join(projectDir, ".claude"), { recursive: true });
+    writeFileSync(join(projectDir, "CLAUDE.md"), "A".repeat(3500));
+  });
+
+  afterAll(() => {
+    rmSync(testDir, { recursive: true, force: true });
+  });
+
+  test("returns ContextAnalysis with totalTokens and usedPercent", async () => {
+    const result = await analyzeContext({
+      homeDir, projectDir,
+      installedPluginsPath: join(homeDir, ".claude", "plugins", "installed_plugins.json"),
+      model: "claude-opus-4-6",
+      avgTurnsPerSession: 30, avgSessionsPerDay: 5,
+    });
+    expect(result.totalTokens).toBeGreaterThan(0);
+    expect(result.contextWindowSize).toBe(1_000_000);
+    expect(result.usedPercent).toBeGreaterThan(0);
+    expect(result.usedPercent).toBeLessThan(100);
+    expect(result.model).toBe("claude-opus-4-6");
+    expect(result.sources.length).toBeGreaterThan(0);
+  });
+
+  test("costImpact is calculated correctly", async () => {
+    const result = await analyzeContext({
+      homeDir, projectDir,
+      installedPluginsPath: join(homeDir, ".claude", "plugins", "installed_plugins.json"),
+      model: "claude-opus-4-6",
+      avgTurnsPerSession: 30, avgSessionsPerDay: 5,
+    });
+    expect(result.costImpact.cacheWriteCost).toBeGreaterThan(0);
+    expect(result.costImpact.cacheReadCostPerTurn).toBeGreaterThan(0);
+    expect(result.costImpact.perSessionCost).toBeGreaterThan(result.costImpact.cacheWriteCost);
+    expect(result.costImpact.monthlyCost).toBeGreaterThan(0);
+  });
+});
+
