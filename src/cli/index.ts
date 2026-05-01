@@ -5,6 +5,7 @@ import { registerSkillCommands } from "./skill.js";
 import { registerMcpCommands } from "./mcp.js";
 import { registerUsageCommands } from "./usage.js";
 import { registerPlanCommands } from "./plan.js";
+import { registerContextCommands } from "./context.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -19,6 +20,7 @@ export function createProgram(): Command {
   registerMcpCommands(program);
   registerUsageCommands(program);
   registerPlanCommands(program);
+  registerContextCommands(program);
 
   program
     .command("tui")
