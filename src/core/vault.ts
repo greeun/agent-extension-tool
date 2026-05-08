@@ -62,7 +62,12 @@ export async function listVaultItems(vaultDir: string): Promise<VaultItem[]> {
     for (const entry of entries) {
       if (entry.startsWith(".")) continue;
       const fullPath = join(dir, entry);
-      const s = await stat(fullPath);
+      let s;
+      try {
+        s = await stat(fullPath);
+      } catch {
+        continue;
+      }
       if (type === "skill" && s.isDirectory()) {
         items.push({ name: entry, type, path: fullPath, isLinked: false });
       } else if (type !== "skill" && s.isFile() && entry.endsWith(".md")) {
@@ -270,7 +275,12 @@ export async function migrateToVault(globalDir: string, vaultDir: string): Promi
       if (entry.startsWith(".")) continue;
       const srcPath = join(srcDir, entry);
       const destPath = join(vaultDir, dir, entry);
-      const s = await stat(srcPath);
+      let s;
+      try {
+        s = await stat(srcPath);
+      } catch {
+        continue;
+      }
 
       if (isDir && !s.isDirectory()) continue;
       if (!isDir && !s.isFile()) continue;
