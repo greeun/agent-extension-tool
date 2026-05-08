@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, mkdir, symlink, readlink, lstat } from "fs/promises";
+import { mkdtemp, rm, mkdir, symlink, readlink, lstat, stat } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { readProfile, writeProfile, syncProject, listVaultItems, listVaultItemsWithProjectState, linkToProject, unlinkFromProject } from "../../src/core/vault.js";
+import { readProfile, writeProfile, syncProject, listVaultItems, listVaultItemsWithProjectState, linkToProject, unlinkFromProject, migrateToVault } from "../../src/core/vault.js";
 import type { AxtProfile, VaultItem } from "../../src/core/vault.js";
 
 describe("vault profile I/O", () => {
@@ -341,5 +341,61 @@ describe("syncProject", () => {
     const result = await syncProject(projectDir, vaultDir);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0]).toContain("nonexistent");
+  });
+});
+
+describe("migrateToVault", () => {
+  let globalDir: string;
+  let vaultDir: string;
+
+  beforeEach(async () => {
+    globalDir = await mkdtemp(join(tmpdir(), "axt-global-"));
+    vaultDir = await mkdtemp(join(tmpdir(), "axt-vault-mig-"));
+    await mkdir(join(globalDir, "skills"), { recursive: true });
+    await mkdir(join(globalDir, "commands"), { recursive: true });
+    await mkdir(join(globalDir, "agents"), { recursive: true });
+    await mkdir(join(vaultDir, "skills"), { recursive: true });
+    await mkdir(join(vaultDir, "commands"), { recursive: true });
+    await mkdir(join(vaultDir, "agents"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(globalDir, { recursive: true });
+    await rm(vaultDir, { recursive: true });
+  });
+
+  test("moves skill directories from global to vault", async () => {
+    await mkdir(join(globalDir, "skills", "tdd"));
+    await Bun.write(join(globalDir, "skills", "tdd", "skill.md"), "# TDD");
+
+    const result = await migrateToVault(globalDir, vaultDir);
+    expect(result.moved).toContain("skill:tdd");
+
+    const vaultSkill = Bun.file(join(vaultDir, "skills", "tdd", "skill.md"));
+    expect(await vaultSkill.exists()).toBe(true);
+
+    let globalExists = true;
+    try { await stat(join(globalDir, "skills", "tdd")); } catch { globalExists = false; }
+    expect(globalExists).toBe(false);
+  });
+
+  test("moves command files from global to vault", async () => {
+    await Bun.write(join(globalDir, "commands", "deploy.md"), "# Deploy");
+
+    const result = await migrateToVault(globalDir, vaultDir);
+    expect(result.moved).toContain("command:deploy.md");
+  });
+
+  test("skips items that already exist in vault", async () => {
+    await mkdir(join(globalDir, "skills", "tdd"));
+    await Bun.write(join(globalDir, "skills", "tdd", "skill.md"), "# Global TDD");
+    await mkdir(join(vaultDir, "skills", "tdd"));
+    await Bun.write(join(vaultDir, "skills", "tdd", "skill.md"), "# Vault TDD");
+
+    const result = await migrateToVault(globalDir, vaultDir);
+    expect(result.skipped).toContain("skill:tdd");
+
+    const content = await Bun.file(join(vaultDir, "skills", "tdd", "skill.md")).text();
+    expect(content).toBe("# Vault TDD");
   });
 });

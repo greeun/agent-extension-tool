@@ -1,5 +1,5 @@
 import { join } from "path";
-import { readdir, readlink, stat, lstat, symlink, unlink, mkdir } from "fs/promises";
+import { readdir, readlink, stat, lstat, symlink, unlink, mkdir, rename, cp, rm } from "fs/promises";
 import { readJson, writeJsonAtomic } from "./json-io.js";
 
 export type ExtensionType = "skill" | "command" | "agent" | "plugin";
@@ -242,4 +242,64 @@ export async function listVaultItemsWithProjectState(
   }
 
   return items;
+}
+
+export async function migrateToVault(globalDir: string, vaultDir: string): Promise<MigrateResult> {
+  const result: MigrateResult = { moved: [], skipped: [], errors: [] };
+
+  await mkdir(join(vaultDir, "skills"), { recursive: true });
+  await mkdir(join(vaultDir, "commands"), { recursive: true });
+  await mkdir(join(vaultDir, "agents"), { recursive: true });
+
+  const typeDefs: { type: ExtensionType; dir: string; isDir: boolean }[] = [
+    { type: "skill", dir: "skills", isDir: true },
+    { type: "command", dir: "commands", isDir: false },
+    { type: "agent", dir: "agents", isDir: false },
+  ];
+
+  for (const { type, dir, isDir } of typeDefs) {
+    const srcDir = join(globalDir, dir);
+    let entries: string[];
+    try {
+      entries = await readdir(srcDir);
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      const srcPath = join(srcDir, entry);
+      const destPath = join(vaultDir, dir, entry);
+      const s = await stat(srcPath);
+
+      if (isDir && !s.isDirectory()) continue;
+      if (!isDir && !s.isFile()) continue;
+      if (!isDir && !entry.endsWith(".md")) continue;
+
+      try {
+        await stat(destPath);
+        result.skipped.push(`${type}:${entry}`);
+        continue;
+      } catch {}
+
+      try {
+        await rename(srcPath, destPath);
+        result.moved.push(`${type}:${entry}`);
+      } catch {
+        try {
+          if (isDir) {
+            await cp(srcPath, destPath, { recursive: true });
+          } else {
+            await cp(srcPath, destPath);
+          }
+          await rm(srcPath, { recursive: true });
+          result.moved.push(`${type}:${entry}`);
+        } catch (e: any) {
+          result.errors.push(`${type}:${entry}: ${e.message}`);
+        }
+      }
+    }
+  }
+
+  return result;
 }
