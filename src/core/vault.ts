@@ -1,6 +1,6 @@
 import { join } from "path";
-import { readdir, stat } from "fs/promises";
-import { writeJsonAtomic } from "./json-io.js";
+import { readdir, stat, lstat } from "fs/promises";
+import { readJson, writeJsonAtomic } from "./json-io.js";
 
 export type ExtensionType = "skill" | "command" | "agent" | "plugin";
 
@@ -74,6 +74,52 @@ export async function listVaultItems(vaultDir: string): Promise<VaultItem[]> {
   await scanDir("skills", "skill");
   await scanDir("commands", "command");
   await scanDir("agents", "agent");
+
+  return items;
+}
+
+export interface PluginRef {
+  id: string;
+  name: string;
+}
+
+export async function listVaultItemsWithProjectState(
+  vaultDir: string,
+  projectDir: string,
+  installedPlugins?: PluginRef[],
+): Promise<VaultItem[]> {
+  const items = await listVaultItems(vaultDir);
+
+  const claudeDir = join(projectDir, ".claude");
+
+  for (const item of items) {
+    const targetDir = item.type === "skill" ? "skills" : item.type === "command" ? "commands" : "agents";
+    const linkPath = join(claudeDir, targetDir, item.name);
+    try {
+      const s = await lstat(linkPath);
+      item.isLinked = s.isSymbolicLink();
+    } catch {
+      item.isLinked = false;
+    }
+  }
+
+  if (installedPlugins && installedPlugins.length > 0) {
+    const settingsPath = join(claudeDir, "settings.json");
+    let enabledPlugins: Record<string, boolean> = {};
+    try {
+      const settings = await readJson<{ enabledPlugins?: Record<string, boolean> }>(settingsPath, { fallback: {} });
+      enabledPlugins = settings.enabledPlugins ?? {};
+    } catch {}
+
+    for (const p of installedPlugins) {
+      items.push({
+        name: p.name,
+        type: "plugin",
+        path: "",
+        isLinked: enabledPlugins[p.id] === true,
+      });
+    }
+  }
 
   return items;
 }

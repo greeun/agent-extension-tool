@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, mkdir } from "fs/promises";
+import { mkdtemp, rm, mkdir, symlink } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { readProfile, writeProfile, listVaultItems } from "../../src/core/vault.js";
+import { readProfile, writeProfile, listVaultItems, listVaultItemsWithProjectState } from "../../src/core/vault.js";
 import type { AxtProfile } from "../../src/core/vault.js";
 
 describe("vault profile I/O", () => {
@@ -99,5 +99,77 @@ describe("listVaultItems", () => {
   test("returns empty when vault dir does not exist", async () => {
     const items = await listVaultItems("/nonexistent/path");
     expect(items).toEqual([]);
+  });
+});
+
+describe("listVaultItemsWithProjectState", () => {
+  let vaultDir: string;
+  let projectDir: string;
+
+  beforeEach(async () => {
+    vaultDir = await mkdtemp(join(tmpdir(), "axt-vault-state-"));
+    projectDir = await mkdtemp(join(tmpdir(), "axt-project-"));
+    await mkdir(join(vaultDir, "skills"), { recursive: true });
+    await mkdir(join(vaultDir, "commands"), { recursive: true });
+    await mkdir(join(vaultDir, "agents"), { recursive: true });
+    await mkdir(join(projectDir, ".claude", "skills"), { recursive: true });
+    await mkdir(join(projectDir, ".claude", "commands"), { recursive: true });
+    await mkdir(join(projectDir, ".claude", "agents"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(vaultDir, { recursive: true });
+    await rm(projectDir, { recursive: true });
+  });
+
+  test("detects linked skills via symlink", async () => {
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(skillPath);
+    await Bun.write(join(skillPath, "skill.md"), "# TDD");
+    await symlink(skillPath, join(projectDir, ".claude", "skills", "tdd"));
+
+    const items = await listVaultItemsWithProjectState(vaultDir, projectDir);
+    const tdd = items.find((i) => i.name === "tdd");
+    expect(tdd).toBeDefined();
+    expect(tdd!.isLinked).toBe(true);
+  });
+
+  test("unlinked items have isLinked false", async () => {
+    await mkdir(join(vaultDir, "skills", "debug"));
+    await Bun.write(join(vaultDir, "skills", "debug", "skill.md"), "# Debug");
+
+    const items = await listVaultItemsWithProjectState(vaultDir, projectDir);
+    const debug = items.find((i) => i.name === "debug");
+    expect(debug).toBeDefined();
+    expect(debug!.isLinked).toBe(false);
+  });
+
+  test("detects linked commands via symlink", async () => {
+    const cmdPath = join(vaultDir, "commands", "deploy.md");
+    await Bun.write(cmdPath, "# Deploy");
+    await symlink(cmdPath, join(projectDir, ".claude", "commands", "deploy.md"));
+
+    const items = await listVaultItemsWithProjectState(vaultDir, projectDir);
+    const deploy = items.find((i) => i.name === "deploy.md");
+    expect(deploy).toBeDefined();
+    expect(deploy!.isLinked).toBe(true);
+  });
+
+  test("includes installed plugins with enabled state", async () => {
+    const settingsPath = join(projectDir, ".claude", "settings.json");
+    await Bun.write(settingsPath, JSON.stringify({ enabledPlugins: { "ctx7@mkt": true, "sp@mkt": false } }));
+
+    const items = await listVaultItemsWithProjectState(vaultDir, projectDir, [
+      { id: "ctx7@mkt", name: "context7" },
+      { id: "sp@mkt", name: "superpowers" },
+    ]);
+    const ctx7 = items.find((i) => i.name === "context7");
+    expect(ctx7).toBeDefined();
+    expect(ctx7!.type).toBe("plugin");
+    expect(ctx7!.isLinked).toBe(true);
+
+    const sp = items.find((i) => i.name === "superpowers");
+    expect(sp).toBeDefined();
+    expect(sp!.isLinked).toBe(false);
   });
 });
