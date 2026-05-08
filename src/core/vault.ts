@@ -1,4 +1,5 @@
 import { join } from "path";
+import { readdir, stat } from "fs/promises";
 import { writeJsonAtomic } from "./json-io.js";
 
 export type ExtensionType = "skill" | "command" | "agent" | "plugin";
@@ -45,4 +46,34 @@ export async function readProfile(projectDir: string): Promise<AxtProfile | null
 
 export async function writeProfile(projectDir: string, profile: AxtProfile): Promise<void> {
   await writeJsonAtomic(join(projectDir, PROFILE_NAME), profile);
+}
+
+export async function listVaultItems(vaultDir: string): Promise<VaultItem[]> {
+  const items: VaultItem[] = [];
+
+  const scanDir = async (subDir: string, type: ExtensionType) => {
+    const dir = join(vaultDir, subDir);
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      const fullPath = join(dir, entry);
+      const s = await stat(fullPath);
+      if (type === "skill" && s.isDirectory()) {
+        items.push({ name: entry, type, path: fullPath, isLinked: false });
+      } else if (type !== "skill" && s.isFile() && entry.endsWith(".md")) {
+        items.push({ name: entry, type, path: fullPath, isLinked: false });
+      }
+    }
+  };
+
+  await scanDir("skills", "skill");
+  await scanDir("commands", "command");
+  await scanDir("agents", "agent");
+
+  return items;
 }
