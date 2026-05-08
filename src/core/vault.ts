@@ -1,5 +1,5 @@
 import { join } from "path";
-import { readdir, stat, lstat } from "fs/promises";
+import { readdir, stat, lstat, symlink, unlink, mkdir } from "fs/promises";
 import { readJson, writeJsonAtomic } from "./json-io.js";
 
 export type ExtensionType = "skill" | "command" | "agent" | "plugin";
@@ -81,6 +81,62 @@ export async function listVaultItems(vaultDir: string): Promise<VaultItem[]> {
 export interface PluginRef {
   id: string;
   name: string;
+}
+
+const IS_WINDOWS = process.platform === "win32";
+
+function typeToDir(type: ExtensionType): string {
+  if (type === "skill") return "skills";
+  if (type === "command") return "commands";
+  if (type === "agent") return "agents";
+  throw new Error(`Cannot link type "${type}" — plugins use enabledPlugins`);
+}
+
+export async function linkToProject(projectDir: string, item: VaultItem): Promise<void> {
+  if (IS_WINDOWS) throw new Error("Vault linking is not supported on Windows.");
+  if (item.type === "plugin") throw new Error("Plugins use enabledPlugins, not symlinks.");
+
+  const dir = join(projectDir, ".claude", typeToDir(item.type));
+  await mkdir(dir, { recursive: true });
+
+  const linkPath = join(dir, item.name);
+  try {
+    const s = await lstat(linkPath);
+    if (!s.isSymbolicLink()) {
+      throw new Error(`"${item.name}" already exists as a real file in ${dir}`);
+    }
+    await unlink(linkPath);
+  } catch (e: any) {
+    if (e.code !== "ENOENT") throw e;
+  }
+
+  await symlink(item.path, linkPath);
+
+  const profile = (await readProfile(projectDir)) ?? emptyProfile();
+  const key = typeToDir(item.type) as keyof AxtProfile["extensions"];
+  if (!profile.extensions[key].includes(item.name)) {
+    profile.extensions[key].push(item.name);
+  }
+  await writeProfile(projectDir, profile);
+}
+
+export async function unlinkFromProject(projectDir: string, item: VaultItem): Promise<void> {
+  if (IS_WINDOWS) throw new Error("Vault linking is not supported on Windows.");
+  if (item.type === "plugin") throw new Error("Plugins use enabledPlugins, not symlinks.");
+
+  const dir = join(projectDir, ".claude", typeToDir(item.type));
+  const linkPath = join(dir, item.name);
+  try {
+    const s = await lstat(linkPath);
+    if (s.isSymbolicLink()) await unlink(linkPath);
+  } catch (e: any) {
+    if (e.code !== "ENOENT") throw e;
+  }
+
+  const profile = (await readProfile(projectDir)) ?? emptyProfile();
+  const key = typeToDir(item.type) as keyof AxtProfile["extensions"];
+  profile.extensions[key] = profile.extensions[key].filter((n) => n !== item.name);
+  await writeProfile(projectDir, profile);
 }
 
 export async function listVaultItemsWithProjectState(

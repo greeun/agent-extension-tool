@@ -1,10 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, mkdir, symlink } from "fs/promises";
+import { mkdtemp, rm, mkdir, symlink, readlink, lstat } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { readProfile, writeProfile, listVaultItems, listVaultItemsWithProjectState } from "../../src/core/vault.js";
-import type { AxtProfile } from "../../src/core/vault.js";
+import { readProfile, writeProfile, listVaultItems, listVaultItemsWithProjectState, linkToProject, unlinkFromProject } from "../../src/core/vault.js";
+import type { AxtProfile, VaultItem } from "../../src/core/vault.js";
 
 describe("vault profile I/O", () => {
   let tmpDir: string;
@@ -171,5 +171,109 @@ describe("listVaultItemsWithProjectState", () => {
     const sp = items.find((i) => i.name === "superpowers");
     expect(sp).toBeDefined();
     expect(sp!.isLinked).toBe(false);
+  });
+});
+
+describe("linkToProject", () => {
+  let vaultDir: string;
+  let projectDir: string;
+
+  beforeEach(async () => {
+    vaultDir = await mkdtemp(join(tmpdir(), "axt-vault-link-"));
+    projectDir = await mkdtemp(join(tmpdir(), "axt-project-link-"));
+    await mkdir(join(vaultDir, "skills"), { recursive: true });
+    await mkdir(join(vaultDir, "commands"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(vaultDir, { recursive: true });
+    await rm(projectDir, { recursive: true });
+  });
+
+  test("creates symlink for skill and updates profile", async () => {
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(skillPath);
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false };
+
+    await linkToProject(projectDir, item);
+
+    const linkPath = join(projectDir, ".claude", "skills", "tdd");
+    const s = await lstat(linkPath);
+    expect(s.isSymbolicLink()).toBe(true);
+    const target = await readlink(linkPath);
+    expect(target).toBe(skillPath);
+
+    const profile = await readProfile(projectDir);
+    expect(profile!.extensions.skills).toContain("tdd");
+  });
+
+  test("creates symlink for command and updates profile", async () => {
+    const cmdPath = join(vaultDir, "commands", "deploy.md");
+    await Bun.write(cmdPath, "# Deploy");
+    const item: VaultItem = { name: "deploy.md", type: "command", path: cmdPath, isLinked: false };
+
+    await linkToProject(projectDir, item);
+
+    const linkPath = join(projectDir, ".claude", "commands", "deploy.md");
+    const s = await lstat(linkPath);
+    expect(s.isSymbolicLink()).toBe(true);
+
+    const profile = await readProfile(projectDir);
+    expect(profile!.extensions.commands).toContain("deploy.md");
+  });
+
+  test("creates .claude subdirectories if missing", async () => {
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(skillPath);
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false };
+
+    await linkToProject(projectDir, item);
+
+    const linkPath = join(projectDir, ".claude", "skills", "tdd");
+    const s = await lstat(linkPath);
+    expect(s.isSymbolicLink()).toBe(true);
+  });
+
+  test("throws when non-symlink file already exists at link path", async () => {
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(skillPath);
+    await mkdir(join(projectDir, ".claude", "skills"), { recursive: true });
+    await Bun.write(join(projectDir, ".claude", "skills", "tdd"), "conflict");
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false };
+
+    expect(linkToProject(projectDir, item)).rejects.toThrow("already exists");
+  });
+});
+
+describe("unlinkFromProject", () => {
+  let vaultDir: string;
+  let projectDir: string;
+
+  beforeEach(async () => {
+    vaultDir = await mkdtemp(join(tmpdir(), "axt-vault-unlink-"));
+    projectDir = await mkdtemp(join(tmpdir(), "axt-project-unlink-"));
+    await mkdir(join(vaultDir, "skills"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(vaultDir, { recursive: true });
+    await rm(projectDir, { recursive: true });
+  });
+
+  test("removes symlink and updates profile", async () => {
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(skillPath);
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: true };
+
+    await linkToProject(projectDir, item);
+    await unlinkFromProject(projectDir, item);
+
+    const linkPath = join(projectDir, ".claude", "skills", "tdd");
+    let exists = true;
+    try { await lstat(linkPath); } catch { exists = false; }
+    expect(exists).toBe(false);
+
+    const profile = await readProfile(projectDir);
+    expect(profile!.extensions.skills).not.toContain("tdd");
   });
 });
