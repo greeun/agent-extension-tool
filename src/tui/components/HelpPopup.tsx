@@ -43,7 +43,7 @@ export function HelpPopup({ onClose }: Props) {
       <Text>  Skills:       u:unlink  l:link</Text>
       <Text>  Plugins:      e:enable/disable  r:remove  u:update  i:install  /:search</Text>
       <Text>  Marketplace:  s:sync  r:remove  a:add</Text>
-      <Text>  Vault:        Space:toggle  Enter:apply  Esc:discard  Tab:filter  m:migrate  s:sync</Text>
+      <Text>  Vault:        Space:project  g:global  Enter:apply  Esc:discard  Tab:filter  m:migrate  s:sync</Text>
       <Text> </Text>
       <Text bold>General</Text>
       <Text>  r             Refresh data</Text>
