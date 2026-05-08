@@ -145,6 +145,41 @@ export async function unlinkFromProject(projectDir: string, item: VaultItem): Pr
   await writeProfile(projectDir, profile);
 }
 
+export async function linkToGlobal(globalDir: string, item: VaultItem): Promise<void> {
+  if (IS_WINDOWS) throw new Error("Vault linking is not supported on Windows.");
+  if (item.type === "plugin") throw new Error("Plugins use enabledPlugins, not symlinks.");
+
+  const dir = join(globalDir, typeToDir(item.type));
+  await mkdir(dir, { recursive: true });
+
+  const linkPath = join(dir, item.name);
+  try {
+    const s = await lstat(linkPath);
+    if (!s.isSymbolicLink()) {
+      throw new Error(`"${item.name}" already exists as a real file in ${dir}`);
+    }
+    await unlink(linkPath);
+  } catch (e: any) {
+    if (e.code !== "ENOENT") throw e;
+  }
+
+  await symlink(item.path, linkPath);
+}
+
+export async function unlinkFromGlobal(globalDir: string, item: VaultItem): Promise<void> {
+  if (IS_WINDOWS) throw new Error("Vault linking is not supported on Windows.");
+  if (item.type === "plugin") throw new Error("Plugins use enabledPlugins, not symlinks.");
+
+  const dir = join(globalDir, typeToDir(item.type));
+  const linkPath = join(dir, item.name);
+  try {
+    const s = await lstat(linkPath);
+    if (s.isSymbolicLink()) await unlink(linkPath);
+  } catch (e: any) {
+    if (e.code !== "ENOENT") throw e;
+  }
+}
+
 export async function syncProject(projectDir: string, vaultDir: string): Promise<SyncResult> {
   if (IS_WINDOWS) throw new Error("Vault linking is not supported on Windows.");
 

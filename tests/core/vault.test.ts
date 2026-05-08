@@ -3,7 +3,7 @@ import { mkdtemp, rm, mkdir, symlink, readlink, lstat, stat } from "fs/promises"
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { readProfile, writeProfile, syncProject, listVaultItems, listVaultItemsWithProjectState, linkToProject, unlinkFromProject, migrateToVault } from "../../src/core/vault.js";
+import { readProfile, writeProfile, syncProject, listVaultItems, listVaultItemsWithProjectState, linkToProject, unlinkFromProject, linkToGlobal, unlinkFromGlobal, migrateToVault } from "../../src/core/vault.js";
 import type { AxtProfile, VaultItem } from "../../src/core/vault.js";
 
 describe("vault profile I/O", () => {
@@ -341,6 +341,90 @@ describe("syncProject", () => {
     const result = await syncProject(projectDir, vaultDir);
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors[0]).toContain("nonexistent");
+  });
+});
+
+describe("linkToGlobal", () => {
+  let vaultDir: string;
+  let globalDir: string;
+
+  beforeEach(async () => {
+    vaultDir = await mkdtemp(join(tmpdir(), "axt-vault-glink-"));
+    globalDir = await mkdtemp(join(tmpdir(), "axt-global-glink-"));
+    await mkdir(join(vaultDir, "skills"), { recursive: true });
+    await mkdir(join(vaultDir, "commands"), { recursive: true });
+    await mkdir(join(globalDir, "skills"), { recursive: true });
+    await mkdir(join(globalDir, "commands"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(vaultDir, { recursive: true });
+    await rm(globalDir, { recursive: true });
+  });
+
+  test("creates symlink in global dir for skill", async () => {
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(skillPath);
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false, isGlobalLinked: false };
+
+    await linkToGlobal(globalDir, item);
+
+    const linkPath = join(globalDir, "skills", "tdd");
+    const s = await lstat(linkPath);
+    expect(s.isSymbolicLink()).toBe(true);
+    const target = await readlink(linkPath);
+    expect(target).toBe(skillPath);
+  });
+
+  test("creates symlink in global dir for command", async () => {
+    const cmdPath = join(vaultDir, "commands", "deploy.md");
+    await Bun.write(cmdPath, "# Deploy");
+    const item: VaultItem = { name: "deploy.md", type: "command", path: cmdPath, isLinked: false, isGlobalLinked: false };
+
+    await linkToGlobal(globalDir, item);
+
+    const linkPath = join(globalDir, "commands", "deploy.md");
+    const s = await lstat(linkPath);
+    expect(s.isSymbolicLink()).toBe(true);
+  });
+
+  test("throws when non-symlink file exists at global path", async () => {
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(skillPath);
+    await Bun.write(join(globalDir, "skills", "tdd"), "conflict");
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false, isGlobalLinked: false };
+
+    expect(linkToGlobal(globalDir, item)).rejects.toThrow("already exists");
+  });
+});
+
+describe("unlinkFromGlobal", () => {
+  let vaultDir: string;
+  let globalDir: string;
+
+  beforeEach(async () => {
+    vaultDir = await mkdtemp(join(tmpdir(), "axt-vault-gunlink-"));
+    globalDir = await mkdtemp(join(tmpdir(), "axt-global-gunlink-"));
+    await mkdir(join(vaultDir, "skills"), { recursive: true });
+    await mkdir(join(globalDir, "skills"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(vaultDir, { recursive: true });
+    await rm(globalDir, { recursive: true });
+  });
+
+  test("removes symlink from global dir", async () => {
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(skillPath);
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false, isGlobalLinked: true };
+
+    await linkToGlobal(globalDir, item);
+    await unlinkFromGlobal(globalDir, item);
+
+    let exists = true;
+    try { await lstat(join(globalDir, "skills", "tdd")); } catch { exists = false; }
+    expect(exists).toBe(false);
   });
 });
 
