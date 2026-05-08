@@ -25,13 +25,13 @@ export function HelpPopup({ onClose }: Props) {
       </Text>
       <Text> </Text>
       <Text bold>Navigation</Text>
-      <Text>  ← →          Switch main tab</Text>
-      <Text>  1-7           Jump to tab</Text>
-      <Text>  Tab           Switch extensions sub-tab</Text>
-      <Text>  j/k ↑/↓      Scroll list</Text>
+      <Text>  ← →          Switch tab (main or extensions sub-tab)</Text>
+      <Text>  ↑/↓           Navigate focus level / scroll list</Text>
+      <Text>  1-7           Jump to main tab</Text>
+      <Text>  j/k           Scroll list</Text>
       <Text> </Text>
       <Text bold>Main Tabs</Text>
-      <Text>  1 Extensions  Skills, Hooks, Commands, Agents, Plugins, Marketplace</Text>
+      <Text>  1 Extensions  Skills, Hooks, Commands, Agents, Plugins, Marketplace, Vault</Text>
       <Text>  2 Project     Project context (CLAUDE.md, settings, memory)</Text>
       <Text>  3 Dashboard   All platforms summary + cost projection</Text>
       <Text>  4 Claude      Claude Code usage (tokens, cost, blocks)</Text>
@@ -43,6 +43,7 @@ export function HelpPopup({ onClose }: Props) {
       <Text>  Skills:       u:unlink  l:link</Text>
       <Text>  Plugins:      e:enable/disable  r:remove  u:update  i:install  /:search</Text>
       <Text>  Marketplace:  s:sync  r:remove  a:add</Text>
+      <Text>  Vault:        Space:toggle  Enter:apply  Esc:discard  Tab:filter  m:migrate  s:sync</Text>
       <Text> </Text>
       <Text bold>General</Text>
       <Text>  r             Refresh data</Text>

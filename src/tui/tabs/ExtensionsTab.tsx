@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { SkillsTab } from "./SkillsTab.js";
 import { HooksTab } from "./HooksTab.js";
@@ -6,8 +6,9 @@ import { CommandsTab } from "./CommandsTab.js";
 import { AgentsTab } from "./AgentsTab.js";
 import { PluginsTab } from "./PluginsTab.js";
 import { MarketTab } from "./MarketTab.js";
+import { VaultTab } from "./VaultTab.js";
 
-type SubView = "skills" | "hooks" | "commands" | "agents" | "plugins" | "market";
+type SubView = "skills" | "hooks" | "commands" | "agents" | "plugins" | "market" | "vault";
 
 const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: "skills", label: "Skills" },
@@ -16,16 +17,41 @@ const SUB_VIEWS: { key: SubView; label: string }[] = [
   { key: "agents", label: "Agents" },
   { key: "plugins", label: "Plugins" },
   { key: "market", label: "Marketplace" },
+  { key: "vault", label: "Vault" },
 ];
 
-export function ExtensionsTab() {
+interface Props {
+  focusLayer: "mainTab" | "subTab" | "content";
+  setFocusLayer: (layer: "mainTab" | "subTab" | "content") => void;
+  onSubViewChange?: (inSubView: boolean) => void;
+}
+
+export function ExtensionsTab({ focusLayer, setFocusLayer, onSubViewChange }: Props) {
   const [view, setView] = useState<SubView>("skills");
 
-  useInput((input, key) => {
+  useInput((_input, key) => {
+    if (focusLayer !== "subTab") return;
+
+    if (key.tab && key.shift) {
+      const idx = SUB_VIEWS.findIndex((sv) => sv.key === view);
+      setView(SUB_VIEWS[(idx - 1 + SUB_VIEWS.length) % SUB_VIEWS.length].key);
+      return;
+    }
     if (key.tab) {
       const idx = SUB_VIEWS.findIndex((sv) => sv.key === view);
       setView(SUB_VIEWS[(idx + 1) % SUB_VIEWS.length].key);
+      return;
     }
+    if (key.leftArrow) {
+      const idx = SUB_VIEWS.findIndex((sv) => sv.key === view);
+      setView(SUB_VIEWS[(idx - 1 + SUB_VIEWS.length) % SUB_VIEWS.length].key);
+    }
+    if (key.rightArrow) {
+      const idx = SUB_VIEWS.findIndex((sv) => sv.key === view);
+      setView(SUB_VIEWS[(idx + 1) % SUB_VIEWS.length].key);
+    }
+    if (key.upArrow) setFocusLayer("mainTab");
+    if (key.downArrow) setFocusLayer("content");
   });
 
   return (
@@ -36,23 +62,24 @@ export function ExtensionsTab() {
           <Box key={sv.key} marginRight={1}>
             <Text
               bold={sv.key === view}
-              underline={sv.key === view}
-              dimColor={sv.key !== view}
+              inverse={sv.key === view && focusLayer === "subTab"}
+              dimColor={sv.key !== view && focusLayer !== "subTab"}
             >
-              {sv.label}
+              {sv.key === view && focusLayer === "subTab" ? ` ${sv.label} ` : sv.label}
             </Text>
           </Box>
         ))}
         <Box flexGrow={1} />
-        <Text dimColor>Tab:switch</Text>
+        <Text dimColor>{focusLayer === "subTab" ? "←→/Tab:switch" : ""}</Text>
       </Box>
 
-      {view === "skills" && <SkillsTab />}
-      {view === "hooks" && <HooksTab />}
-      {view === "commands" && <CommandsTab />}
-      {view === "agents" && <AgentsTab />}
-      {view === "plugins" && <PluginsTab />}
-      {view === "market" && <MarketTab />}
+      {view === "skills" && <SkillsTab isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("subTab")} />}
+      {view === "hooks" && <HooksTab isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("subTab")} />}
+      {view === "commands" && <CommandsTab isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("subTab")} />}
+      {view === "agents" && <AgentsTab isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("subTab")} />}
+      {view === "plugins" && <PluginsTab isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("subTab")} onSubViewChange={onSubViewChange} />}
+      {view === "market" && <MarketTab isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("subTab")} />}
+      {view === "vault" && <VaultTab isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("subTab")} />}
     </Box>
   );
 }
