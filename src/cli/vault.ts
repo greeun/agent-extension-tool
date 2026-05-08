@@ -81,4 +81,29 @@ export function registerVaultCommands(program: Command): void {
       await cp(sourceDir, destPath, { recursive: true });
       console.log(chalk.green(`✓ Installed ${opts.type} "${name}" from "${marketplace}" to vault`));
     });
+
+  vault
+    .command("link-global <type> <name>")
+    .description("Symlink vault extension to global ~/.claude/ directory")
+    .action(async (type: string, name: string) => {
+      const { linkToGlobal, listVaultItems } = await import("../core/vault.js");
+      const items = await listVaultItems(PATHS.vault);
+      const item = items.find((i) => i.name === name && i.type === type);
+      if (!item) {
+        console.log(chalk.red(`✗ ${type} "${name}" not found in vault`));
+        return;
+      }
+      await linkToGlobal(PATHS.claudeDir, item);
+      console.log(chalk.green(`✓ Linked ${type} "${name}" to global (~/.claude/${type}s/${name})`));
+    });
+
+  vault
+    .command("unlink-global <type> <name>")
+    .description("Remove symlink from global ~/.claude/ directory")
+    .action(async (type: string, name: string) => {
+      const { unlinkFromGlobal } = await import("../core/vault.js");
+      const item = { name, type: type as any, path: "", isLinked: false, isGlobalLinked: true };
+      await unlinkFromGlobal(PATHS.claudeDir, item);
+      console.log(chalk.green(`✓ Unlinked ${type} "${name}" from global`));
+    });
 }
