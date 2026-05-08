@@ -7,6 +7,7 @@ import { registerUsageCommands } from "./usage.js";
 import { registerPlanCommands } from "./plan.js";
 import { registerContextCommands } from "./context.js";
 import { registerVaultCommands } from "./vault.js";
+import { registerProjectCommands } from "./project.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -23,6 +24,7 @@ export function createProgram(): Command {
   registerPlanCommands(program);
   registerContextCommands(program);
   registerVaultCommands(program);
+  registerProjectCommands(program);
 
   program
     .command("tui")
