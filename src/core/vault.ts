@@ -1,5 +1,5 @@
 import { join } from "path";
-import { readdir, stat, lstat, symlink, unlink, mkdir } from "fs/promises";
+import { readdir, readlink, stat, lstat, symlink, unlink, mkdir } from "fs/promises";
 import { readJson, writeJsonAtomic } from "./json-io.js";
 
 export type ExtensionType = "skill" | "command" | "agent" | "plugin";
@@ -137,6 +137,70 @@ export async function unlinkFromProject(projectDir: string, item: VaultItem): Pr
   const key = typeToDir(item.type) as keyof AxtProfile["extensions"];
   profile.extensions[key] = profile.extensions[key].filter((n) => n !== item.name);
   await writeProfile(projectDir, profile);
+}
+
+export async function syncProject(projectDir: string, vaultDir: string): Promise<SyncResult> {
+  if (IS_WINDOWS) throw new Error("Vault linking is not supported on Windows.");
+
+  const profile = (await readProfile(projectDir)) ?? emptyProfile();
+  const result: SyncResult = { linked: [], unlinked: [], errors: [] };
+
+  const typeDefs: { type: ExtensionType; dir: string; profileKey: keyof AxtProfile["extensions"] }[] = [
+    { type: "skill", dir: "skills", profileKey: "skills" },
+    { type: "command", dir: "commands", profileKey: "commands" },
+    { type: "agent", dir: "agents", profileKey: "agents" },
+  ];
+
+  for (const { type, dir, profileKey } of typeDefs) {
+    const vaultSubDir = join(vaultDir, dir);
+    const projectSubDir = join(projectDir, ".claude", dir);
+    await mkdir(projectSubDir, { recursive: true });
+
+    const declared = new Set(profile.extensions[profileKey]);
+
+    for (const name of declared) {
+      const vaultPath = join(vaultSubDir, name);
+      const linkPath = join(projectSubDir, name);
+      try {
+        await stat(vaultPath);
+      } catch {
+        result.errors.push(`${type}:${name} not found in vault`);
+        continue;
+      }
+      try {
+        const s = await lstat(linkPath);
+        if (s.isSymbolicLink()) continue;
+      } catch {}
+      try {
+        await symlink(vaultPath, linkPath);
+        result.linked.push(`${type}:${name}`);
+      } catch (e: any) {
+        result.errors.push(`${type}:${name}: ${e.message}`);
+      }
+    }
+
+    let entries: string[];
+    try {
+      entries = await readdir(projectSubDir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const linkPath = join(projectSubDir, entry);
+      try {
+        const s = await lstat(linkPath);
+        if (!s.isSymbolicLink()) continue;
+        const target = await readlink(linkPath);
+        if (!target.startsWith(vaultSubDir)) continue;
+        if (!declared.has(entry)) {
+          await unlink(linkPath);
+          result.unlinked.push(`${type}:${entry}`);
+        }
+      } catch {}
+    }
+  }
+
+  return result;
 }
 
 export async function listVaultItemsWithProjectState(

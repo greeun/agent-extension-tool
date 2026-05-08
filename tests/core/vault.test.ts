@@ -3,7 +3,7 @@ import { mkdtemp, rm, mkdir, symlink, readlink, lstat } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { readProfile, writeProfile, listVaultItems, listVaultItemsWithProjectState, linkToProject, unlinkFromProject } from "../../src/core/vault.js";
+import { readProfile, writeProfile, syncProject, listVaultItems, listVaultItemsWithProjectState, linkToProject, unlinkFromProject } from "../../src/core/vault.js";
 import type { AxtProfile, VaultItem } from "../../src/core/vault.js";
 
 describe("vault profile I/O", () => {
@@ -275,5 +275,71 @@ describe("unlinkFromProject", () => {
 
     const profile = await readProfile(projectDir);
     expect(profile!.extensions.skills).not.toContain("tdd");
+  });
+});
+
+describe("syncProject", () => {
+  let vaultDir: string;
+  let projectDir: string;
+
+  beforeEach(async () => {
+    vaultDir = await mkdtemp(join(tmpdir(), "axt-vault-sync-"));
+    projectDir = await mkdtemp(join(tmpdir(), "axt-project-sync-"));
+    await mkdir(join(vaultDir, "skills"), { recursive: true });
+    await mkdir(join(vaultDir, "commands"), { recursive: true });
+    await mkdir(join(vaultDir, "agents"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(vaultDir, { recursive: true });
+    await rm(projectDir, { recursive: true });
+  });
+
+  test("creates missing symlinks from profile", async () => {
+    await mkdir(join(vaultDir, "skills", "tdd"));
+    await Bun.write(join(vaultDir, "commands", "deploy.md"), "# Deploy");
+
+    const profile: AxtProfile = {
+      extensions: { skills: ["tdd"], commands: ["deploy.md"], agents: [], plugins: [] },
+    };
+    await writeProfile(projectDir, profile);
+
+    const result = await syncProject(projectDir, vaultDir);
+    expect(result.linked).toContain("skill:tdd");
+    expect(result.linked).toContain("command:deploy.md");
+    expect(result.errors).toHaveLength(0);
+
+    const s = await lstat(join(projectDir, ".claude", "skills", "tdd"));
+    expect(s.isSymbolicLink()).toBe(true);
+  });
+
+  test("removes extra symlinks not in profile", async () => {
+    await mkdir(join(vaultDir, "skills", "tdd"));
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(join(projectDir, ".claude", "skills"), { recursive: true });
+    await symlink(skillPath, join(projectDir, ".claude", "skills", "tdd"));
+
+    const profile: AxtProfile = {
+      extensions: { skills: [], commands: [], agents: [], plugins: [] },
+    };
+    await writeProfile(projectDir, profile);
+
+    const result = await syncProject(projectDir, vaultDir);
+    expect(result.unlinked).toContain("skill:tdd");
+
+    let exists = true;
+    try { await lstat(join(projectDir, ".claude", "skills", "tdd")); } catch { exists = false; }
+    expect(exists).toBe(false);
+  });
+
+  test("reports error for profile entry not in vault", async () => {
+    const profile: AxtProfile = {
+      extensions: { skills: ["nonexistent"], commands: [], agents: [], plugins: [] },
+    };
+    await writeProfile(projectDir, profile);
+
+    const result = await syncProject(projectDir, vaultDir);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain("nonexistent");
   });
 });
