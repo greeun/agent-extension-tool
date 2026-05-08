@@ -248,6 +248,7 @@ export async function listVaultItemsWithProjectState(
   vaultDir: string,
   projectDir: string,
   installedPlugins?: PluginRef[],
+  globalDir?: string,
 ): Promise<VaultItem[]> {
   const items = await listVaultItems(vaultDir);
 
@@ -262,6 +263,16 @@ export async function listVaultItemsWithProjectState(
     } catch {
       item.isLinked = false;
     }
+
+    if (globalDir) {
+      const globalLinkPath = join(globalDir, targetDir, item.name);
+      try {
+        const gs = await lstat(globalLinkPath);
+        item.isGlobalLinked = gs.isSymbolicLink();
+      } catch {
+        item.isGlobalLinked = false;
+      }
+    }
   }
 
   if (installedPlugins && installedPlugins.length > 0) {
@@ -272,13 +283,21 @@ export async function listVaultItemsWithProjectState(
       enabledPlugins = settings.enabledPlugins ?? {};
     } catch {}
 
+    let globalEnabledPlugins: Record<string, boolean> = {};
+    if (globalDir) {
+      try {
+        const globalSettings = await readJson<{ enabledPlugins?: Record<string, boolean> }>(join(globalDir, "settings.json"), { fallback: {} });
+        globalEnabledPlugins = globalSettings.enabledPlugins ?? {};
+      } catch {}
+    }
+
     for (const p of installedPlugins) {
       items.push({
         name: p.name,
         type: "plugin",
         path: "",
         isLinked: enabledPlugins[p.id] === true,
-        isGlobalLinked: false,
+        isGlobalLinked: globalEnabledPlugins[p.id] === true,
       });
     }
   }

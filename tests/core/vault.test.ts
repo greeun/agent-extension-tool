@@ -172,6 +172,39 @@ describe("listVaultItemsWithProjectState", () => {
     expect(sp).toBeDefined();
     expect(sp!.isLinked).toBe(false);
   });
+
+  test("detects global linked skills via symlink in globalDir", async () => {
+    const skillPath = join(vaultDir, "skills", "tdd");
+    await mkdir(skillPath);
+    await Bun.write(join(skillPath, "skill.md"), "# TDD");
+
+    const globalDir = await mkdtemp(join(tmpdir(), "axt-global-detect-"));
+    await mkdir(join(globalDir, "skills"), { recursive: true });
+    await symlink(skillPath, join(globalDir, "skills", "tdd"));
+
+    const items = await listVaultItemsWithProjectState(vaultDir, projectDir, [], globalDir);
+    const tdd = items.find((i) => i.name === "tdd");
+    expect(tdd).toBeDefined();
+    expect(tdd!.isGlobalLinked).toBe(true);
+    expect(tdd!.isLinked).toBe(false);
+
+    await rm(globalDir, { recursive: true });
+  });
+
+  test("unlinked global items have isGlobalLinked false", async () => {
+    await mkdir(join(vaultDir, "skills", "debug"));
+    await Bun.write(join(vaultDir, "skills", "debug", "skill.md"), "# Debug");
+
+    const globalDir = await mkdtemp(join(tmpdir(), "axt-global-detect2-"));
+    await mkdir(join(globalDir, "skills"), { recursive: true });
+
+    const items = await listVaultItemsWithProjectState(vaultDir, projectDir, [], globalDir);
+    const debug = items.find((i) => i.name === "debug");
+    expect(debug).toBeDefined();
+    expect(debug!.isGlobalLinked).toBe(false);
+
+    await rm(globalDir, { recursive: true });
+  });
 });
 
 describe("linkToProject", () => {
