@@ -35,8 +35,12 @@ function truncateToWidth(str: string, maxW: number): string {
   return str.slice(0, i);
 }
 
+function sanitize(str: string): string {
+  return str.replace(/[\x00-\x1f\x7f]/g, " ");
+}
+
 function fitToWidth(str: string, width: number): string {
-  const truncated = truncateToWidth(str, width);
+  const truncated = truncateToWidth(sanitize(str), width);
   const dw = displayWidth(truncated);
   return truncated + " ".repeat(Math.max(0, width - dw));
 }
@@ -52,11 +56,13 @@ interface Props {
   rows: Record<string, string>[];
   selectedIndex: number;
   maxRows?: number;
+  checked?: Set<number>;
 }
 
-export function Table({ columns, rows, selectedIndex, maxRows }: Props) {
+export function Table({ columns, rows, selectedIndex, maxRows, checked }: Props) {
   const { stdout } = useStdout();
   const termWidth = (stdout?.columns ?? 80) - 2;
+  const termRows = stdout?.rows ?? 24;
   const fixedWidth = 4 + columns.reduce((s, c) => s + c.width, 0);
   const extra = Math.max(0, termWidth - fixedWidth);
 
@@ -64,22 +70,23 @@ export function Table({ columns, rows, selectedIndex, maxRows }: Props) {
     i === columns.length - 1 ? { ...col, width: col.width + extra } : col,
   );
 
+  const effectiveMaxRows = maxRows ?? Math.max(3, termRows - 22);
   let visibleStart = 0;
   let visibleEnd = rows.length;
-  if (maxRows != null && rows.length > maxRows) {
-    const half = Math.floor(maxRows / 2);
-    visibleStart = Math.min(Math.max(0, selectedIndex - half), rows.length - maxRows);
-    visibleEnd = visibleStart + maxRows;
+  if (rows.length > effectiveMaxRows) {
+    const half = Math.floor(effectiveMaxRows / 2);
+    visibleStart = Math.min(Math.max(0, selectedIndex - half), rows.length - effectiveMaxRows);
+    visibleEnd = visibleStart + effectiveMaxRows;
   }
   const visible = rows.slice(visibleStart, visibleEnd);
-  const scrollInfo = maxRows != null && rows.length > maxRows
+  const scrollInfo = rows.length > effectiveMaxRows
     ? ` (${selectedIndex + 1}/${rows.length})`
     : "";
 
   return (
     <Box flexDirection="column">
       <Box>
-        <Box width={4}><Text bold>#</Text></Box>
+        <Box width={4}><Text bold>{checked ? "☑" : "#"}</Text></Box>
         {resolved.map((col) => (
           <Box key={col.key} width={col.width}>
             <Text bold>{col.label}</Text>
@@ -94,7 +101,9 @@ export function Table({ columns, rows, selectedIndex, maxRows }: Props) {
           <Box key={i}>
             <Box width={4}>
               <Text inverse={i === selectedIndex} dimColor={i !== selectedIndex}>
-                {i === selectedIndex ? `▸${String(i + 1).padStart(2)}` : ` ${String(i + 1).padStart(2)}`}
+                {checked
+                  ? (checked.has(i) ? (i === selectedIndex ? "▸☑ " : " ☑ ") : (i === selectedIndex ? "▸☐ " : " ☐ "))
+                  : (i === selectedIndex ? `▸${String(i + 1).padStart(2)}` : ` ${String(i + 1).padStart(2)}`)}
               </Text>
             </Box>
             {resolved.map((col) => (
