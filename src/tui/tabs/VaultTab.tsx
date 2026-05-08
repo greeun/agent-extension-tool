@@ -6,6 +6,8 @@ import {
   listVaultItemsWithProjectState,
   linkToProject,
   unlinkFromProject,
+  linkToGlobal,
+  unlinkFromGlobal,
   migrateToVault,
   syncProject,
 } from "../../core/vault.js";
@@ -35,7 +37,7 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
   const load = async () => {
     const plugins = await listInstalledPlugins(PATHS.installedPlugins);
     const pluginRefs = plugins.map((p) => ({ id: p.id, name: p.name }));
-    const vaultItems = await listVaultItemsWithProjectState(PATHS.vault, projectDir, pluginRefs);
+    const vaultItems = await listVaultItemsWithProjectState(PATHS.vault, projectDir, pluginRefs, PATHS.claudeDir);
     setItems(vaultItems);
     setPending(new Map());
   };
@@ -44,38 +46,52 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
 
   const filtered = items.filter((i) => filter === "all" || i.type === filter);
 
-  const itemKey = (item: VaultItem) => `${item.type}:${item.name}`;
+  const projectKey = (item: VaultItem) => `project:${item.type}:${item.name}`;
+  const globalKey = (item: VaultItem) => `global:${item.type}:${item.name}`;
 
-  const isChecked = (item: VaultItem): boolean => {
-    const key = itemKey(item);
+  const isProjectChecked = (item: VaultItem): boolean => {
+    const key = projectKey(item);
     return pending.has(key) ? pending.get(key)! : item.isLinked;
+  };
+
+  const isGlobalChecked = (item: VaultItem): boolean => {
+    const key = globalKey(item);
+    return pending.has(key) ? pending.get(key)! : item.isGlobalLinked;
   };
 
   const checkedSet = new Set<number>();
   filtered.forEach((item, i) => {
-    if (isChecked(item)) checkedSet.add(i);
+    if (isProjectChecked(item)) checkedSet.add(i);
   });
 
   const pendingChanges = items.filter((item) => {
-    const key = itemKey(item);
-    return pending.has(key) && pending.get(key) !== item.isLinked;
+    const pk = projectKey(item);
+    const gk = globalKey(item);
+    return (pending.has(pk) && pending.get(pk) !== item.isLinked)
+      || (pending.has(gk) && pending.get(gk) !== item.isGlobalLinked);
   });
 
-  const toLink = pendingChanges.filter((i) => !i.isLinked);
-  const toUnlink = pendingChanges.filter((i) => i.isLinked);
+  const projectToLink = pendingChanges.filter((i) => pending.get(projectKey(i)) === true && !i.isLinked);
+  const projectToUnlink = pendingChanges.filter((i) => pending.get(projectKey(i)) === false && i.isLinked);
+  const globalToLink = pendingChanges.filter((i) => pending.get(globalKey(i)) === true && !i.isGlobalLinked);
+  const globalToUnlink = pendingChanges.filter((i) => pending.get(globalKey(i)) === false && i.isGlobalLinked);
 
   const rows = filtered.map((item) => ({
     name: item.name,
     type: item.type,
-    status: isChecked(item)
+    project: isProjectChecked(item)
+      ? (item.type === "plugin" ? "✓ enabled" : "✓ linked")
+      : "─",
+    global: isGlobalChecked(item)
       ? (item.type === "plugin" ? "✓ enabled" : "✓ linked")
       : "─",
   }));
 
   const columns = [
-    { key: "name", label: "Name", width: 28 },
+    { key: "name", label: "Name", width: 24 },
     { key: "type", label: "Type", width: 10 },
-    { key: "status", label: "Status", width: 14 },
+    { key: "project", label: "Project", width: 12 },
+    { key: "global", label: "Global", width: 12 },
   ];
 
   useInput((input, key) => {
@@ -90,8 +106,18 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
     }
     if (input === " " && filtered[index]) {
       const item = filtered[index];
-      const k = itemKey(item);
-      const current = isChecked(item);
+      const k = projectKey(item);
+      const current = isProjectChecked(item);
+      setPending((prev) => {
+        const next = new Map(prev);
+        next.set(k, !current);
+        return next;
+      });
+    }
+    if (input === "g" && filtered[index]) {
+      const item = filtered[index];
+      const k = globalKey(item);
+      const current = isGlobalChecked(item);
       setPending((prev) => {
         const next = new Map(prev);
         next.set(k, !current);
@@ -128,22 +154,42 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
     let ok = 0;
     let err = 0;
     for (const item of pendingChanges) {
-      try {
-        if (item.type === "plugin") {
-          const plugins = await listInstalledPlugins(PATHS.installedPlugins);
-          const plugin = plugins.find((p) => p.name === item.name);
-          if (plugin) {
-            const projSettings = join(projectDir, ".claude", "settings.json");
-            await setPluginEnabled(projSettings, plugin.id, !item.isLinked);
+      const pk = projectKey(item);
+      const gk = globalKey(item);
+
+      if (pending.has(pk) && pending.get(pk) !== item.isLinked) {
+        try {
+          if (item.type === "plugin") {
+            const plugins = await listInstalledPlugins(PATHS.installedPlugins);
+            const plugin = plugins.find((p) => p.name === item.name);
+            if (plugin) {
+              const projSettings = join(projectDir, ".claude", "settings.json");
+              await setPluginEnabled(projSettings, plugin.id, !item.isLinked);
+            }
+          } else if (!item.isLinked) {
+            await linkToProject(projectDir, item);
+          } else {
+            await unlinkFromProject(projectDir, item);
           }
-        } else if (!item.isLinked) {
-          await linkToProject(projectDir, item);
-        } else {
-          await unlinkFromProject(projectDir, item);
-        }
-        ok++;
-      } catch {
-        err++;
+          ok++;
+        } catch { err++; }
+      }
+
+      if (pending.has(gk) && pending.get(gk) !== item.isGlobalLinked) {
+        try {
+          if (item.type === "plugin") {
+            const plugins = await listInstalledPlugins(PATHS.installedPlugins);
+            const plugin = plugins.find((p) => p.name === item.name);
+            if (plugin) {
+              await setPluginEnabled(PATHS.settings, plugin.id, !item.isGlobalLinked);
+            }
+          } else if (!item.isGlobalLinked) {
+            await linkToGlobal(PATHS.claudeDir, item);
+          } else {
+            await unlinkFromGlobal(PATHS.claudeDir, item);
+          }
+          ok++;
+        } catch { err++; }
       }
     }
     setStatus(`Applied: ${ok} changed${err > 0 ? `, ${err} errors` : ""}`);
@@ -158,7 +204,7 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
     <Box flexDirection="column">
       <Box marginBottom={0}>
         <Text dimColor>
-          Filter: {filterLabel} ({filtered.length}) │ {activeCount} active in project
+          Filter: {filterLabel} ({filtered.length}) │ {activeCount} project-active
           {pendingChanges.length > 0 ? ` │ ${pendingChanges.length} pending` : ""}
         </Text>
       </Box>
@@ -179,12 +225,12 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
       {status && <Text dimColor>{status}</Text>}
 
       <Text dimColor>
-        Space:toggle  Enter:apply  Esc:discard  Tab:filter  m:migrate  s:sync
+        Space:project  g:global  Enter:apply  Esc:discard  Tab:filter  m:migrate  s:sync
       </Text>
 
       {mode === "confirm" && (
         <Confirm
-          message={`Link ${toLink.length}, Unlink ${toUnlink.length}. Apply?`}
+          message={`Project: +${projectToLink.length} -${projectToUnlink.length}. Global: +${globalToLink.length} -${globalToUnlink.length}. Apply?`}
           onConfirm={applyChanges}
           onCancel={() => setMode("list")}
         />
