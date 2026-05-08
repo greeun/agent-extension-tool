@@ -9,6 +9,7 @@ export interface VaultItem {
   type: ExtensionType;
   path: string;
   isLinked: boolean;
+  isGlobalLinked: boolean;
 }
 
 export interface AxtProfile {
@@ -69,9 +70,9 @@ export async function listVaultItems(vaultDir: string): Promise<VaultItem[]> {
         continue;
       }
       if (type === "skill" && s.isDirectory()) {
-        items.push({ name: entry, type, path: fullPath, isLinked: false });
+        items.push({ name: entry, type, path: fullPath, isLinked: false, isGlobalLinked: false });
       } else if (type !== "skill" && s.isFile() && entry.endsWith(".md")) {
-        items.push({ name: entry, type, path: fullPath, isLinked: false });
+        items.push({ name: entry, type, path: fullPath, isLinked: false, isGlobalLinked: false });
       }
     }
   };
@@ -242,6 +243,7 @@ export async function listVaultItemsWithProjectState(
         type: "plugin",
         path: "",
         isLinked: enabledPlugins[p.id] === true,
+        isGlobalLinked: false,
       });
     }
   }

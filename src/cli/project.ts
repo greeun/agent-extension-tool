@@ -46,7 +46,7 @@ export function registerProjectCommands(program: Command): void {
     .description("Remove extension from project")
     .action(async (type: string, name: string) => {
       const cwd = process.cwd();
-      const item: VaultItem = { name, type: type as ExtensionType, path: "", isLinked: true };
+      const item: VaultItem = { name, type: type as ExtensionType, path: "", isLinked: true, isGlobalLinked: false };
       await unlinkFromProject(cwd, item);
       console.log(chalk.green(`✓ Unlinked ${type} "${name}"`));
     });
