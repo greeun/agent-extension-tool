@@ -19,6 +19,7 @@ export const PATHS = {
   skills: join(CLAUDE_DIR, "skills"),
   projects: join(CLAUDE_DIR, "projects"),
   statsCache: join(CLAUDE_DIR, "stats-cache.json"),
+  usageSnapshot: join(CLAUDE_DIR, "usage-snapshot.json"),
 
   // Codex
   codexDir: CODEX_DIR,
@@ -32,6 +33,13 @@ export const PATHS = {
   // Cursor
   cursorDir: join(homedir(), ".cursor"),
   cursorTrackingDb: join(homedir(), ".cursor", "ai-tracking", "ai-code-tracking.db"),
+
+  // axt vault
+  axtDir: join(homedir(), ".axt"),
+  vault: join(homedir(), ".axt", "vault"),
+  vaultSkills: join(homedir(), ".axt", "vault", "skills"),
+  vaultCommands: join(homedir(), ".axt", "vault", "commands"),
+  vaultAgents: join(homedir(), ".axt", "vault", "agents"),
 } as const;
 
 const IS_WINDOWS = process.platform === "win32";
