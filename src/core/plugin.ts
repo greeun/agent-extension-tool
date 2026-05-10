@@ -65,6 +65,11 @@ export async function listInstalledPlugins(ipPath: string): Promise<PluginInfo[]
     try {
       manifest = await readJson<PluginManifest>(join(entry.installPath, ".claude-plugin", "plugin.json"), { fallback: {} });
     } catch {}
+    if (!manifest.name && !manifest.description) {
+      try {
+        manifest = await readJson<PluginManifest>(join(entry.installPath, "plugin.json"), { fallback: {} });
+      } catch {}
+    }
     results.push({
       id, name, marketplace, version: entry.version, installPath: entry.installPath,
       scope: entry.scope, installedAt: entry.installedAt, lastUpdated: entry.lastUpdated,
