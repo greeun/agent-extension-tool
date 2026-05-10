@@ -1,4 +1,3 @@
-import React from "react";
 import { Box, Text } from "ink";
 
 export interface DetailField {
@@ -33,9 +32,8 @@ export function DetailPanel({ title, fields, shortcuts, lines }: Props) {
         </Box>
       )}
       {fields?.map((f, i) => (
-        <Box key={i} gap={1}>
-          <Text dimColor>{f.label}:</Text>
-          <Text color={f.color as any}>{f.value}</Text>
+        <Box key={i}>
+          <Text wrap="truncate"><Text dimColor>{f.label}: </Text><Text color={f.color as any}>{f.value}</Text></Text>
         </Box>
       ))}
       {shortcuts && (

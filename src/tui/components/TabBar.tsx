@@ -19,9 +19,6 @@ interface Props {
   focused?: boolean;
 }
 
-const HINT_FULL = "↑↓:focus  ←→:tab  r:refresh  ?:help  q:quit";
-const HINT_SHORT = "↑↓←→ ? q";
-
 export function TabBar({ active, focused = true }: Props) {
   const { stdout } = useStdout();
   const termWidth = stdout?.columns ?? 80;
@@ -41,7 +38,7 @@ export function TabBar({ active, focused = true }: Props) {
         );
       })}
       <Box flexGrow={1} />
-      <Text dimColor>{compact ? HINT_SHORT : HINT_FULL}</Text>
+      <Text dimColor>{"?:help"}</Text>
     </Box>
   );
 }
