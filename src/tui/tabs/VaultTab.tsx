@@ -60,7 +60,7 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
   const [usageIndex, setUsageIndex] = useState<UsageIndex>(new Map());
   const [scanMode, setScanMode] = useState<ScanMode>("default");
   const [scanning, setScanning] = useState(false);
-  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortKey, setSortKey] = useState<SortKey>("updated");
   const [searchTerm, setSearchTerm] = useState("");
   const [searching, setSearching] = useState(false);
 
@@ -170,16 +170,16 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
   const termCols = (stdout?.columns ?? 80) - 2;
   const colGap = 2;
   const noWidth = Math.max(2, String(filtered.length).length + 1);
-  const fixedWidth = 4 + noWidth + 7 + 5 + 11 + 11 + 9 + 9 + 8 + 8 * colGap;
+  const fixedWidth = 4 + noWidth + 7 + 7 + 14 + 14 + 9 + 9 + 8 + 8 * colGap;
   const nameWidth = Math.max(10, termCols - fixedWidth - 2);
   const sortIndicator = (key: SortKey) => sortKey === key ? " ▾" : "";
   const columns = [
     { key: "no", label: "#", width: noWidth },
     { key: "name", label: "Name" + sortIndicator("name"), width: nameWidth },
     { key: "type", label: "Type" + sortIndicator("type"), width: 7 },
-    { key: "vault", label: "Vault" + sortIndicator("vault"), width: 5 },
-    { key: "added", label: "Added" + sortIndicator("added"), width: 11 },
-    { key: "updated", label: "Updated" + sortIndicator("updated"), width: 11 },
+    { key: "vault", label: "Vault" + sortIndicator("vault"), width: 7 },
+    { key: "added", label: "Added" + sortIndicator("added"), width: 14 },
+    { key: "updated", label: "Updated" + sortIndicator("updated"), width: 14 },
     { key: "project", label: "Project" + sortIndicator("project"), width: 9 },
     { key: "global", label: "Global" + sortIndicator("global"), width: 9 },
     { key: "used", label: "Used in", width: 8 },
