@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
+import TextInput from "ink-text-input";
 import { Table } from "../components/Table.js";
 import { DetailPanel } from "../components/DetailPanel.js";
 import { Confirm } from "../components/Confirm.js";
@@ -59,6 +60,8 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
   const [scanMode, setScanMode] = useState<ScanMode>("default");
   const [scanning, setScanning] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [searching, setSearching] = useState(false);
 
   const load = async () => {
     const plugins = await listInstalledPlugins(PATHS.installedPlugins);
@@ -94,6 +97,7 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
 
   const filtered = items
     .filter((i) => filter === "all" || i.type === filter)
+    .filter((i) => !searchTerm || i.name.toLowerCase().includes(searchTerm.toLowerCase()))
     .sort((a, b) => {
       switch (sortKey) {
         case "name": return a.name.localeCompare(b.name);
@@ -181,6 +185,11 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
   useInput((input, key) => {
     if (!isFocused || mode !== "list") return;
 
+    if (searching) {
+      if (key.escape) { setSearching(false); setSearchTerm(""); }
+      return;
+    }
+
     if (input === "j" || key.downArrow) {
       setIndex((i) => Math.min(i + 1, filtered.length - 1));
     }
@@ -259,6 +268,7 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
       setScanMode(next);
       loadUsage(next);
     }
+    if (input === "/") { setSearching(true); setSearchTerm(""); setIndex(0); }
   });
 
   const applyChanges = async () => {
@@ -331,6 +341,19 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
         </Text>
       </Box>
 
+      {searching && (
+        <Box marginBottom={0}>
+          <Text>Search: </Text>
+          <TextInput value={searchTerm} onChange={(v) => { setSearchTerm(v); setIndex(0); }} onSubmit={() => setSearching(false)} />
+          <Text dimColor>  Enter:apply  Esc:clear</Text>
+        </Box>
+      )}
+      {!searching && searchTerm && (
+        <Box marginBottom={0}>
+          <Text dimColor>Search: "{searchTerm}" ({filtered.length}/{items.filter((i) => filter === "all" || i.type === filter).length})  /:edit</Text>
+        </Box>
+      )}
+
       {items.length === 0 ? (
         <Box marginY={1}>
           <Text>Vault is empty. Press <Text bold>m</Text> to migrate global extensions.</Text>
@@ -360,7 +383,7 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
         ] : []}
       />
 
-      <Text dimColor>{`j/k:navigate  PgUp/PgDn:page  Space:project  g:global  i:import  s:sort(${SORT_LABELS[sortKey]})  Enter:apply  Esc:discard  Tab:filter  f:scan  m:migrate  S:sync`}</Text>
+      <Text dimColor>{`j/k:navigate  PgUp/PgDn:page  Space:project  g:global  i:import  /:search  s:sort(${SORT_LABELS[sortKey]})  Enter:apply  Esc:discard  Tab:filter  f:scan  m:migrate  S:sync`}</Text>
       {(status || pendingChanges.length > 0) && (
         <Text dimColor>
           {[
