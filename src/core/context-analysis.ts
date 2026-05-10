@@ -1,6 +1,7 @@
 import { readFile, readdir, lstat } from "fs/promises";
-import { statSync } from "fs";
+import { statSync, existsSync } from "fs";
 import { join, basename } from "path";
+import { spawnSync } from "child_process";
 import { listAllSkills } from "./skill.js";
 import { listCommands } from "./commands.js";
 import { listAllAgents } from "./agents.js";
@@ -53,6 +54,7 @@ export interface ContextSource {
   percentage: number;
   actionable: boolean;
   hint?: string;
+  content?: string;
 }
 
 export interface CollectOptions {
@@ -143,6 +145,7 @@ function makeSource(
     percentage: 0,
     actionable,
     hint,
+    content,
   };
 }
 
@@ -150,16 +153,91 @@ function makeFixed(
   name: string,
   category: Category,
   tokens: number,
+  content?: string,
 ): ContextSource {
   return {
     name,
     category,
     path: "",
-    chars: 0,
+    chars: content?.length ?? 0,
     estimatedTokens: tokens,
     percentage: 0,
     actionable: false,
+    content,
   };
+}
+
+function getClaudeVersion(): string {
+  try {
+    const result = spawnSync("claude", ["--version"], { encoding: "utf-8", timeout: 3000 });
+    return result.stdout?.trim() ?? "unknown";
+  } catch { return "unknown"; }
+}
+
+function getGitStatus(projectDir: string): string {
+  try {
+    const result = spawnSync("git", ["status"], { cwd: projectDir, encoding: "utf-8", timeout: 5000 });
+    return result.stdout?.trim() ?? "";
+  } catch { return ""; }
+}
+
+function buildSystemPromptPreview(version: string): string {
+  return [
+    `# Claude Code System Prompt (v${version})`,
+    "",
+    "The base system prompt is embedded in the Claude Code binary and sent",
+    "at the start of every API call. It cannot be read directly from disk.",
+    "",
+    "## Known Sections",
+    "",
+    "1. Identity — \"You are Claude Code, Anthropic's official CLI for Claude.\"",
+    "2. Tool definitions — Bash, Read, Edit, Write, Agent, WebSearch, etc.",
+    "3. Safety & permissions — OWASP guidelines, destructive-action guards",
+    "4. Git workflow — commit, PR, branch conventions",
+    "5. Tone & style — concise, no emojis, file:line references",
+    "6. Context management — compression, session guidance",
+    "7. Environment — platform, shell, model, working directory",
+    "",
+    `Estimated tokens: ${FIXED_SYSTEM_PROMPT_TOKENS}`,
+    "",
+    "Note: Use \`claude --append-system-prompt <text>\` to add custom instructions.",
+    "Use \`claude --system-prompt <text>\` to replace the entire system prompt.",
+  ].join("\n");
+}
+
+function buildUserContextPreview(homeDir: string, projectDir: string): string {
+  const email = process.env.USER_EMAIL ?? process.env.EMAIL ?? "—";
+  const today = new Date().toLocaleDateString("en-CA");
+  return [
+    "# User Context",
+    "",
+    "Dynamic per-session values injected by Claude Code:",
+    "",
+    `- userEmail: ${email}`,
+    `- currentDate: ${today}`,
+    `- homeDir: ${homeDir}`,
+    `- projectDir: ${projectDir}`,
+    `- platform: ${process.platform}`,
+    `- shell: ${process.env.SHELL ?? "—"}`,
+    "",
+    `Estimated tokens: ${FIXED_USER_CONTEXT_TOKENS}`,
+  ].join("\n");
+}
+
+function buildHookPreview(hook: { event: string; type: string; command?: string; url?: string; server?: string; tool?: string; timeout?: number; matcher?: string }): string {
+  const lines = [
+    `# Hook: ${hook.event}`,
+    "",
+    `Type: ${hook.type}`,
+  ];
+  if (hook.matcher) lines.push(`Matcher: ${hook.matcher}`);
+  if (hook.command) lines.push(`Command: ${hook.command}`);
+  if (hook.url) lines.push(`URL: ${hook.url}`);
+  if (hook.server) lines.push(`MCP Server: ${hook.server}`);
+  if (hook.tool) lines.push(`Tool: ${hook.tool}`);
+  if (hook.timeout) lines.push(`Timeout: ${hook.timeout}ms`);
+  lines.push("", `Estimated output tokens: ${FIXED_HOOK_OUTPUT_TOKENS}`);
+  return lines.join("\n");
 }
 
 // ── Main function ──────────────────────────────────────────────────────────
@@ -169,7 +247,8 @@ export async function collectContextSources(options: CollectOptions): Promise<Co
   const sources: ContextSource[] = [];
 
   // 1. system-prompt (fixed)
-  sources.push(makeFixed("System Prompt", "system-prompt", FIXED_SYSTEM_PROMPT_TOKENS));
+  const claudeVersion = getClaudeVersion();
+  sources.push(makeFixed("System Prompt", "system-prompt", FIXED_SYSTEM_PROMPT_TOKENS, buildSystemPromptPreview(claudeVersion)));
 
   // 2. claude-md
   const claudeMdCandidates = [
@@ -273,7 +352,7 @@ export async function collectContextSources(options: CollectOptions): Promise<Co
     );
     for (const hook of relevantHooks) {
       const name = `Hook: ${hook.event} (${hook.type})`;
-      sources.push(makeFixed(name, "hooks", FIXED_HOOK_OUTPUT_TOKENS));
+      sources.push(makeFixed(name, "hooks", FIXED_HOOK_OUTPUT_TOKENS, buildHookPreview(hook)));
     }
   } catch { /* gracefully handle missing data */ }
 
@@ -296,10 +375,11 @@ export async function collectContextSources(options: CollectOptions): Promise<Co
   } catch { /* gracefully handle missing data */ }
 
   // 11. git-status (fixed)
-  sources.push(makeFixed("Git Status", "git-status", 150));
+  const gitOutput = getGitStatus(projectDir);
+  sources.push(makeFixed("Git Status", "git-status", 150, gitOutput || "No git repository or git not available."));
 
   // 12. user-context (fixed)
-  sources.push(makeFixed("User Context", "user-context", FIXED_USER_CONTEXT_TOKENS));
+  sources.push(makeFixed("User Context", "user-context", FIXED_USER_CONTEXT_TOKENS, buildUserContextPreview(homeDir, projectDir)));
 
   // Calculate percentages
   const totalTokens = sources.reduce((sum, s) => sum + s.estimatedTokens, 0);
