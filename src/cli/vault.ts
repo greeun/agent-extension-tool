@@ -102,7 +102,7 @@ export function registerVaultCommands(program: Command): void {
     .description("Remove symlink from global ~/.claude/ directory")
     .action(async (type: string, name: string) => {
       const { unlinkFromGlobal } = await import("../core/vault.js");
-      const item = { name, type: type as any, path: "", isLinked: false, isGlobalLinked: true };
+      const item = { name, type: type as any, path: "", description: "", isLinked: false, isGlobalLinked: true };
       await unlinkFromGlobal(PATHS.claudeDir, item);
       console.log(chalk.green(`✓ Unlinked ${type} "${name}" from global`));
     });

@@ -226,7 +226,7 @@ describe("linkToProject", () => {
   test("creates symlink for skill and updates profile", async () => {
     const skillPath = join(vaultDir, "skills", "tdd");
     await mkdir(skillPath);
-    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false, isGlobalLinked: false };
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, description: "", isLinked: false, isGlobalLinked: false };
 
     await linkToProject(projectDir, item);
 
@@ -243,7 +243,7 @@ describe("linkToProject", () => {
   test("creates symlink for command and updates profile", async () => {
     const cmdPath = join(vaultDir, "commands", "deploy.md");
     await Bun.write(cmdPath, "# Deploy");
-    const item: VaultItem = { name: "deploy.md", type: "command", path: cmdPath, isLinked: false, isGlobalLinked: false };
+    const item: VaultItem = { name: "deploy.md", type: "command", path: cmdPath, description: "", isLinked: false, isGlobalLinked: false };
 
     await linkToProject(projectDir, item);
 
@@ -258,7 +258,7 @@ describe("linkToProject", () => {
   test("creates .claude subdirectories if missing", async () => {
     const skillPath = join(vaultDir, "skills", "tdd");
     await mkdir(skillPath);
-    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false, isGlobalLinked: false };
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, description: "", isLinked: false, isGlobalLinked: false };
 
     await linkToProject(projectDir, item);
 
@@ -272,7 +272,7 @@ describe("linkToProject", () => {
     await mkdir(skillPath);
     await mkdir(join(projectDir, ".claude", "skills"), { recursive: true });
     await Bun.write(join(projectDir, ".claude", "skills", "tdd"), "conflict");
-    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false, isGlobalLinked: false };
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, description: "", isLinked: false, isGlobalLinked: false };
 
     expect(linkToProject(projectDir, item)).rejects.toThrow("already exists");
   });
@@ -296,7 +296,7 @@ describe("unlinkFromProject", () => {
   test("removes symlink and updates profile", async () => {
     const skillPath = join(vaultDir, "skills", "tdd");
     await mkdir(skillPath);
-    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: true, isGlobalLinked: false };
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, description: "", isLinked: true, isGlobalLinked: false };
 
     await linkToProject(projectDir, item);
     await unlinkFromProject(projectDir, item);
@@ -398,7 +398,7 @@ describe("linkToGlobal", () => {
   test("creates symlink in global dir for skill", async () => {
     const skillPath = join(vaultDir, "skills", "tdd");
     await mkdir(skillPath);
-    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false, isGlobalLinked: false };
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, description: "", isLinked: false, isGlobalLinked: false };
 
     await linkToGlobal(globalDir, item);
 
@@ -412,7 +412,7 @@ describe("linkToGlobal", () => {
   test("creates symlink in global dir for command", async () => {
     const cmdPath = join(vaultDir, "commands", "deploy.md");
     await Bun.write(cmdPath, "# Deploy");
-    const item: VaultItem = { name: "deploy.md", type: "command", path: cmdPath, isLinked: false, isGlobalLinked: false };
+    const item: VaultItem = { name: "deploy.md", type: "command", path: cmdPath, description: "", isLinked: false, isGlobalLinked: false };
 
     await linkToGlobal(globalDir, item);
 
@@ -425,7 +425,7 @@ describe("linkToGlobal", () => {
     const skillPath = join(vaultDir, "skills", "tdd");
     await mkdir(skillPath);
     await Bun.write(join(globalDir, "skills", "tdd"), "conflict");
-    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false, isGlobalLinked: false };
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, description: "", isLinked: false, isGlobalLinked: false };
 
     expect(linkToGlobal(globalDir, item)).rejects.toThrow("already exists");
   });
@@ -450,7 +450,7 @@ describe("unlinkFromGlobal", () => {
   test("removes symlink from global dir", async () => {
     const skillPath = join(vaultDir, "skills", "tdd");
     await mkdir(skillPath);
-    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, isLinked: false, isGlobalLinked: true };
+    const item: VaultItem = { name: "tdd", type: "skill", path: skillPath, description: "", isLinked: false, isGlobalLinked: true };
 
     await linkToGlobal(globalDir, item);
     await unlinkFromGlobal(globalDir, item);
