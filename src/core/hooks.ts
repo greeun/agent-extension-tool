@@ -1,6 +1,8 @@
 import { readJson } from "./json-io.js";
 import { join } from "path";
 import { existsSync } from "fs";
+import { spawn } from "child_process";
+import { listInstalledPlugins } from "./plugin.js";
 
 export type HookType = "command" | "http" | "mcp_tool" | "prompt" | "agent";
 export type HookSource = "user" | "project" | "local" | "plugin";
@@ -106,6 +108,7 @@ function extractHooks(
 export async function listHooks(options: {
   userSettingsPath: string;
   projectDir?: string;
+  installedPluginsPath?: string;
 }): Promise<HookInfo[]> {
   const result: HookInfo[] = [];
 
@@ -132,7 +135,100 @@ export async function listHooks(options: {
     }
   }
 
+  if (options.installedPluginsPath && existsSync(options.installedPluginsPath)) {
+    const plugins = await listInstalledPlugins(options.installedPluginsPath);
+    for (const plugin of plugins) {
+      const hooksPath = join(plugin.installPath, "hooks", "hooks.json");
+      if (!existsSync(hooksPath)) continue;
+      const hooksFile = await readJson<Record<string, unknown>>(
+        hooksPath, { fallback: {} }
+      );
+      result.push(...extractHooks(hooksFile, "plugin", hooksPath));
+    }
+  }
+
   return result;
+}
+
+export interface HookPreviewResult {
+  type: HookType;
+  summary: string;
+  output?: string;
+  error?: string;
+  exitCode?: number;
+}
+
+function buildSamplePayload(hook: HookInfo): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    session_id: "axt-preview",
+    hook_event: hook.event,
+  };
+  if (hook.event === "PreToolUse" || hook.event === "PostToolUse") {
+    base.tool_name = hook.matcher === "*" ? "Bash" : hook.matcher;
+    base.tool_input = {};
+  }
+  if (hook.event === "UserPromptSubmit") {
+    base.user_prompt = "(preview)";
+  }
+  return base;
+}
+
+export async function previewHook(hook: HookInfo, timeoutMs = 5000): Promise<HookPreviewResult> {
+  if (hook.type === "command") {
+    if (!hook.command) return { type: "command", summary: "(no command)" };
+    const payload = JSON.stringify(buildSamplePayload(hook));
+    return new Promise((resolve) => {
+      const child = spawn("sh", ["-c", hook.command!], {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: { ...process.env, HOOK_EVENT: hook.event },
+        timeout: timeoutMs,
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => { stdout += d; });
+      child.stderr.on("data", (d) => { stderr += d; });
+      child.stdin.write(payload);
+      child.stdin.end();
+      child.on("close", (code) => {
+        resolve({
+          type: "command",
+          summary: hook.command!,
+          output: stdout.trim() || undefined,
+          error: stderr.trim() || undefined,
+          exitCode: code ?? 0,
+        });
+      });
+      child.on("error", (err) => {
+        resolve({
+          type: "command",
+          summary: hook.command!,
+          error: err.message,
+        });
+      });
+    });
+  }
+
+  if (hook.type === "http") {
+    return {
+      type: "http",
+      summary: `${hook.url ?? "(no url)"}`,
+      output: `POST ${hook.url}\nContent-Type: application/json\nBody: ${JSON.stringify(buildSamplePayload(hook), null, 2)}`,
+    };
+  }
+
+  if (hook.type === "mcp_tool") {
+    return {
+      type: "mcp_tool",
+      summary: `${hook.server}:${hook.tool}`,
+      output: `Server: ${hook.server}\nTool: ${hook.tool}`,
+    };
+  }
+
+  return {
+    type: hook.type,
+    summary: hook.type,
+    output: hook.prompt ?? "(no prompt)",
+  };
 }
 
 export function getHookDetail(hook: HookInfo): string {
