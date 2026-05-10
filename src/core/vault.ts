@@ -1,5 +1,5 @@
 import { join } from "path";
-import { readdir, readlink, stat, lstat, symlink, unlink, mkdir, rename, cp, rm } from "fs/promises";
+import { readdir, readlink, realpath, stat, lstat, symlink, unlink, mkdir, rename, cp, rm } from "fs/promises";
 import { readJson, writeJsonAtomic } from "./json-io.js";
 
 export type ExtensionType = "skill" | "command" | "agent" | "plugin";
@@ -8,8 +8,12 @@ export interface VaultItem {
   name: string;
   type: ExtensionType;
   path: string;
+  description: string;
   isLinked: boolean;
   isGlobalLinked: boolean;
+  inVault?: boolean;
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export interface AxtProfile {
@@ -34,6 +38,30 @@ export interface MigrateResult {
 }
 
 const PROFILE_NAME = ".axt-profile.json";
+
+async function readDescription(filePath: string): Promise<string> {
+  try {
+    const content = await Bun.file(filePath).text();
+    const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (match) {
+      const descMatch = match[1].match(/^description:\s*(.+)$/m);
+      if (descMatch) return descMatch[1].trim();
+    }
+  } catch {}
+  return "";
+}
+
+async function readDescriptionForItem(fullPath: string, type: ExtensionType): Promise<string> {
+  if (type === "skill") {
+    const candidates = ["index.md", "SKILL.md"];
+    for (const file of candidates) {
+      const desc = await readDescription(join(fullPath, file));
+      if (desc) return desc;
+    }
+    return "";
+  }
+  return readDescription(fullPath);
+}
 
 export function emptyProfile(): AxtProfile {
   return { extensions: { skills: [], commands: [], agents: [], plugins: [] } };
@@ -70,9 +98,11 @@ export async function listVaultItems(vaultDir: string): Promise<VaultItem[]> {
         continue;
       }
       if (type === "skill" && s.isDirectory()) {
-        items.push({ name: entry, type, path: fullPath, isLinked: false, isGlobalLinked: false });
+        const desc = await readDescriptionForItem(fullPath, type);
+        items.push({ name: entry, type, path: fullPath, description: desc, isLinked: false, isGlobalLinked: false, inVault: true, createdAt: s.birthtime, updatedAt: s.mtime });
       } else if (type !== "skill" && s.isFile() && entry.endsWith(".md")) {
-        items.push({ name: entry, type, path: fullPath, isLinked: false, isGlobalLinked: false });
+        const desc = await readDescriptionForItem(fullPath, type);
+        items.push({ name: entry, type, path: fullPath, description: desc, isLinked: false, isGlobalLinked: false, inVault: true, createdAt: s.birthtime, updatedAt: s.mtime });
       }
     }
   };
@@ -87,6 +117,8 @@ export async function listVaultItems(vaultDir: string): Promise<VaultItem[]> {
 export interface PluginRef {
   id: string;
   name: string;
+  description?: string;
+  installPath?: string;
 }
 
 const IS_WINDOWS = process.platform === "win32";
@@ -244,6 +276,84 @@ export async function syncProject(projectDir: string, vaultDir: string): Promise
   return result;
 }
 
+async function listGlobalNonVaultItems(globalDir: string, vaultDir: string): Promise<VaultItem[]> {
+  const vaultItems = await listVaultItems(vaultDir);
+  const vaultNamesByType = new Map<ExtensionType, Set<string>>();
+  for (const item of vaultItems) {
+    if (!vaultNamesByType.has(item.type)) vaultNamesByType.set(item.type, new Set());
+    vaultNamesByType.get(item.type)!.add(item.name);
+  }
+
+  const items: VaultItem[] = [];
+
+  const scanDir = async (subDir: string, type: ExtensionType) => {
+    const dir = join(globalDir, subDir);
+    const vaultNames = vaultNamesByType.get(type) ?? new Set();
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.startsWith(".")) continue;
+      if (vaultNames.has(entry)) continue;
+      const fullPath = join(dir, entry);
+      let s;
+      try {
+        s = await stat(fullPath);
+      } catch {
+        continue;
+      }
+      if (type === "skill" && s.isDirectory()) {
+        const desc = await readDescriptionForItem(fullPath, type);
+        items.push({ name: entry, type, path: fullPath, description: desc, isLinked: false, isGlobalLinked: true, inVault: false, createdAt: s.birthtime, updatedAt: s.mtime });
+      } else if (type !== "skill" && s.isFile() && entry.endsWith(".md")) {
+        const desc = await readDescriptionForItem(fullPath, type);
+        items.push({ name: entry, type, path: fullPath, description: desc, isLinked: false, isGlobalLinked: true, inVault: false, createdAt: s.birthtime, updatedAt: s.mtime });
+      }
+    }
+  };
+
+  await scanDir("skills", "skill");
+  await scanDir("commands", "command");
+  await scanDir("agents", "agent");
+
+  return items;
+}
+
+export async function importToVault(globalDir: string, vaultDir: string, item: VaultItem): Promise<void> {
+  if (item.type === "plugin") throw new Error("Plugins cannot be imported to vault.");
+
+  const subDir = typeToDir(item.type);
+  const srcPath = join(globalDir, subDir, item.name);
+  const destPath = join(vaultDir, subDir, item.name);
+
+  await mkdir(join(vaultDir, subDir), { recursive: true });
+
+  try {
+    await stat(destPath);
+    throw new Error(`"${item.name}" already exists in vault`);
+  } catch (e: any) {
+    if (e.code !== "ENOENT") throw e;
+  }
+
+  const ls = await lstat(srcPath);
+  if (ls.isSymbolicLink()) {
+    const resolvedTarget = await realpath(srcPath);
+    await symlink(resolvedTarget, destPath);
+  } else {
+    try {
+      await rename(srcPath, destPath);
+    } catch {
+      const isDir = item.type === "skill";
+      await cp(srcPath, destPath, { recursive: isDir });
+      await rm(srcPath, { recursive: isDir });
+    }
+    await symlink(destPath, srcPath);
+  }
+}
+
 export async function listVaultItemsWithProjectState(
   vaultDir: string,
   projectDir: string,
@@ -292,14 +402,41 @@ export async function listVaultItemsWithProjectState(
     }
 
     for (const p of installedPlugins) {
+      let createdAt: Date | undefined;
+      let updatedAt: Date | undefined;
+      if (p.installPath) {
+        try {
+          const ps = await stat(p.installPath);
+          createdAt = ps.birthtime;
+          updatedAt = ps.mtime;
+        } catch {}
+      }
       items.push({
         name: p.name,
         type: "plugin",
-        path: "",
+        path: p.installPath ?? "",
+        description: p.description ?? "",
         isLinked: enabledPlugins[p.id] === true,
         isGlobalLinked: globalEnabledPlugins[p.id] === true,
+        createdAt,
+        updatedAt,
       });
     }
+  }
+
+  if (globalDir) {
+    const globalItems = await listGlobalNonVaultItems(globalDir, vaultDir);
+    for (const item of globalItems) {
+      const targetDir = typeToDir(item.type);
+      const linkPath = join(claudeDir, targetDir, item.name);
+      try {
+        const s = await lstat(linkPath);
+        item.isLinked = s.isSymbolicLink();
+      } catch {
+        item.isLinked = false;
+      }
+    }
+    items.push(...globalItems);
   }
 
   return items;
@@ -349,20 +486,27 @@ export async function migrateToVault(globalDir: string, vaultDir: string): Promi
       } catch {}
 
       try {
-        await rename(srcPath, destPath);
-        result.moved.push(`${type}:${entry}`);
-      } catch {
-        try {
-          if (isDir) {
-            await cp(srcPath, destPath, { recursive: true });
-          } else {
-            await cp(srcPath, destPath);
-          }
-          await rm(srcPath, { recursive: true });
+        const ls = await lstat(srcPath);
+        if (ls.isSymbolicLink()) {
+          const resolvedTarget = await realpath(srcPath);
+          await symlink(resolvedTarget, destPath);
           result.moved.push(`${type}:${entry}`);
-        } catch (e: any) {
-          result.errors.push(`${type}:${entry}: ${e.message}`);
+        } else {
+          try {
+            await rename(srcPath, destPath);
+            result.moved.push(`${type}:${entry}`);
+          } catch {
+            if (isDir) {
+              await cp(srcPath, destPath, { recursive: true });
+            } else {
+              await cp(srcPath, destPath);
+            }
+            await rm(srcPath, { recursive: true });
+            result.moved.push(`${type}:${entry}`);
+          }
         }
+      } catch (e: any) {
+        result.errors.push(`${type}:${entry}: ${e.message}`);
       }
     }
   }
