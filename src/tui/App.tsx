@@ -33,12 +33,18 @@ function App() {
   const [focusLayer, setFocusLayer] = useState<"mainTab" | "subTab" | "content">("content");
   const [showHelp, setShowHelp] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [contextInSubView, setContextInSubView] = useState(false);
+  const [extensionsInSubView, setExtensionsInSubView] = useState(false);
   const { exit } = useApp();
   const { columns: termWidth, rows: termHeight } = useTerminalSize();
 
   useInput((input, key) => {
     if (showHelp) return;
-    if (input === "q" || key.escape) exit();
+    if (input === "q" || key.escape) {
+      if (tab === "context" && contextInSubView) return;
+      if (tab === "extensions" && extensionsInSubView) return;
+      exit();
+    }
     if (input === "?") { setShowHelp(true); return; }
     if (input === "r") { setRefreshKey((k) => k + 1); return; }
 
@@ -71,7 +77,7 @@ function App() {
     return (
       <Box flexDirection="column" height={termHeight}>
         <TabBar active={tab} focused={focusLayer === "mainTab"} />
-        <Text dimColor>{"─".repeat(termWidth)}</Text>
+        <Box height={1} overflow="hidden"><Text dimColor>{"─".repeat(termWidth)}</Text></Box>
         <Box height={contentHeight} justifyContent="center" alignItems="center" overflow="hidden">
           <HelpPopup onClose={() => setShowHelp(false)} />
         </Box>
@@ -82,10 +88,10 @@ function App() {
   return (
     <Box flexDirection="column" height={termHeight}>
       <TabBar active={tab} focused={focusLayer === "mainTab"} />
-      <Text dimColor>{"─".repeat(termWidth)}</Text>
+      <Box height={1} overflow="hidden"><Text dimColor>{"─".repeat(termWidth)}</Text></Box>
       <Box flexDirection="column" height={contentHeight} paddingX={1} paddingY={1} overflow="hidden">
-        {tab === "extensions" && <ExtensionsTab focusLayer={focusLayer} setFocusLayer={setFocusLayer} />}
-        {tab === "context" && <ContextTab key={`context-${refreshKey}`} />}
+        {tab === "extensions" && <ExtensionsTab focusLayer={focusLayer} setFocusLayer={setFocusLayer} onSubViewChange={setExtensionsInSubView} />}
+        {tab === "context" && <ContextTab key={`context-${refreshKey}`} onSubViewChange={setContextInSubView} />}
         {tab === "project" && <ProjectTab key={refreshKey} isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("mainTab")} />}
         {tab === "dashboard" && <OverviewTab key={refreshKey} />}
         {tab === "claude" && <UsageTab platform="claude" key={`claude-${refreshKey}`} />}

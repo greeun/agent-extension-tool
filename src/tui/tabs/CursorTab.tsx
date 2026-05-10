@@ -7,7 +7,12 @@ import type { CursorSummary } from "../../core/usage-cursor.js";
 // tabbar(1) + separator(1) + paddingY(2) + header(1) + cards(6) + marginTop(1) + label(1) + table header(1) + table sep(1)
 const CURSOR_OVERHEAD = 15;
 
-export function CursorTab() {
+interface Props {
+  isFocused?: boolean;
+  onFocusUp?: () => void;
+}
+
+export function CursorTab({ isFocused = true, onFocusUp }: Props) {
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 24;
   const maxRows = Math.max(5, termHeight - CURSOR_OVERHEAD);
@@ -43,9 +48,15 @@ export function CursorTab() {
 
   useInput((input, key) => {
     if (error || !summary) return;
-    if (input === "j" || key.downArrow) setIndex((i) => Math.min(i + 1, commits.length - 1));
-    if (input === "k" || key.upArrow) setIndex((i) => Math.max(i - 1, 0));
     if (input === "r") load();
+    if (!isFocused) return;
+    if (input === "j" || key.downArrow) {
+      if (commits.length > 0) setIndex((i) => Math.min(i + 1, commits.length - 1));
+    }
+    if (input === "k" || key.upArrow) {
+      if (index <= 0 && onFocusUp) { onFocusUp(); return; }
+      setIndex((i) => Math.max(i - 1, 0));
+    }
   });
 
   if (error) {
