@@ -1,12 +1,17 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { homedir } from "os";
 import { Table } from "../components/Table.js";
 import { DetailPanel } from "../components/DetailPanel.js";
+import { PreviewPanel, previewScrollHandler } from "../components/PreviewPanel.js";
 import { Confirm } from "../components/Confirm.js";
-import { PATHS } from "../../core/paths.js";
+import { PATHS, AXT_CONFIG_PATH } from "../../core/paths.js";
 import { formatTokens } from "../../cli/formatters.js";
 import { unlinkSkill } from "../../core/skill.js";
+import { aggregateBySession } from "../../core/usage.js";
+import { loadUnifiedUsage } from "../../core/usage-unified.js";
+import { loadConfig } from "../../config/index.js";
+import { readRateLimits, type RateLimitData } from "../../core/rate-limits.js";
 import {
   analyzeContext,
   type ContextAnalysis,
@@ -14,18 +19,51 @@ import {
   type Category,
 } from "../../core/context-analysis.js";
 
-// ── Types ──────────────────────────────────────────────────────────────────
+interface SessionTokens {
+  inputTokens: number;
+  outputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
+}
+
+function emptySessionTokens(): SessionTokens {
+  return { inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0 };
+}
+
+function formatResetTime(resetAt: Date | null, tz: string): string {
+  if (!resetAt) return "";
+  const diffMs = resetAt.getTime() - Date.now();
+  if (diffMs <= 0) return "now";
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  if (hours < 24) return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
+}
+
+function quotaBar(pct: number, width = 16): string {
+  const filled = Math.round(Math.min(pct / 100, 1) * width);
+  return "█".repeat(filled) + "░".repeat(width - filled);
+}
+
+function quotaColor(pct: number): string {
+  if (pct >= 90) return "red";
+  if (pct >= 70) return "yellow";
+  return "green";
+}
 
 interface CategoryRow {
   category: string;
+  catKey: Category;
   items: string;
   tokens: string;
   pct: string;
   bar: string;
   sources: ContextSource[];
 }
-
-// ── Constants ──────────────────────────────────────────────────────────────
 
 const CATEGORY_LABELS: Record<Category, string> = {
   "system-prompt": "System prompt",
@@ -44,18 +82,14 @@ const CATEGORY_LABELS: Record<Category, string> = {
 
 const BAR_WIDTH = 16;
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
 function makeBar(pct: number, width: number = BAR_WIDTH): string {
   const filled = Math.round(Math.min(pct / 100, 1) * width);
-  const empty = width - filled;
-  return "█".repeat(filled) + "░".repeat(empty);
+  return "█".repeat(filled) + "░".repeat(width - filled);
 }
 
 function makeUsageBar(pct: number, width: number = 30): string {
   const filled = Math.round(Math.min(pct / 100, 1) * width);
-  const empty = width - filled;
-  return "▓".repeat(filled) + "░".repeat(empty);
+  return "▓".repeat(filled) + "░".repeat(width - filled);
 }
 
 function groupByCategory(sources: ContextSource[]): CategoryRow[] {
@@ -74,6 +108,7 @@ function groupByCategory(sources: ContextSource[]): CategoryRow[] {
     const catPct = totalTokens > 0 ? (catTokens / totalTokens) * 100 : 0;
     rows.push({
       category: CATEGORY_LABELS[cat] ?? cat,
+      catKey: cat,
       items: String(srcs.length),
       tokens: formatTokens(catTokens),
       pct: `${catPct.toFixed(1)}%`,
@@ -91,20 +126,48 @@ function groupByCategory(sources: ContextSource[]): CategoryRow[] {
   return rows;
 }
 
-// ── Component ──────────────────────────────────────────────────────────────
+function openInEditor(filePath: string, onDone: () => void, setStatus: (s: string) => void) {
+  const editor = process.env.EDITOR ?? "vi";
+  try {
+    process.stdout.write("\x1b[?1049l");
+    Bun.spawnSync([editor, filePath], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J");
+    onDone();
+  } catch {
+    process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J");
+    setStatus("Could not open editor");
+  }
+}
 
-export function ContextTab() {
+type ViewMode = "categories" | "sources" | "preview" | "confirm";
+
+interface ContextTabProps {
+  onSubViewChange?: (inSubView: boolean) => void;
+}
+
+export function ContextTab({ onSubViewChange }: ContextTabProps) {
   const [analysis, setAnalysis] = useState<ContextAnalysis | null>(null);
   const [rows, setRows] = useState<CategoryRow[]>([]);
-  const [index, setIndex] = useState(0);
-  const [expanded, setExpanded] = useState(false);
-  const [mode, setMode] = useState<"list" | "confirm">("list");
+  const [catIndex, setCatIndex] = useState(0);
+  const [srcIndex, setSrcIndex] = useState(0);
+  const [viewMode, setViewMode] = useState<ViewMode>("categories");
+  const [previewScroll, setPreviewScroll] = useState(0);
   const [confirmMsg, setConfirmMsg] = useState("");
   const [confirmAction, setConfirmAction] = useState<(() => Promise<void>) | null>(null);
   const [status, setStatus] = useState("");
 
+  const [rateLimits, setRateLimits] = useState<RateLimitData | null>(null);
+  const [sessionTokens, setSessionTokens] = useState<SessionTokens>(emptySessionTokens());
+  const [timezone, setTimezone] = useState("Asia/Seoul");
+
   const { stdout } = useStdout();
-  const termWidth = stdout?.columns ?? 80;
+  const termRows = stdout?.rows ?? 24;
+  // App chrome (tabbar+separator=2) + content padding (top+bottom=2) + PreviewPanel chrome (~9)
+  const previewMaxLines = Math.max(5, termRows - 13);
+
+  useEffect(() => {
+    onSubViewChange?.(viewMode !== "categories");
+  }, [viewMode]);
 
   const load = async () => {
     const result = await analyzeContext({
@@ -117,81 +180,129 @@ export function ContextTab() {
     });
     setAnalysis(result);
     setRows(groupByCategory(result.sources));
-    setIndex(0);
+    setCatIndex(0);
+    setSrcIndex(0);
+
+    try {
+      const config = await loadConfig(AXT_CONFIG_PATH);
+      const tz = config.timezone;
+      setTimezone(tz);
+
+      setRateLimits(readRateLimits(PATHS.usageSnapshot));
+
+      const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: tz });
+      const allEntries = await loadUnifiedUsage({
+        claudeProjectsDir: PATHS.projects,
+        codexSessionsDir: PATHS.codexSessions,
+        geminiTmpDir: PATHS.geminiTmp,
+        since: todayStr,
+        platform: "claude",
+      });
+
+      const legacyEntries = allEntries.map((e) => ({
+        ...e,
+        cacheCreationTokens: e.cacheWriteTokens,
+      }));
+      const sessions = aggregateBySession(legacyEntries);
+      if (sessions.length > 0) {
+        const latest = sessions.sort((a, b) => b.lastTimestamp.localeCompare(a.lastTimestamp))[0];
+        setSessionTokens({
+          inputTokens: latest.inputTokens,
+          outputTokens: latest.outputTokens,
+          cacheWriteTokens: latest.cacheCreationTokens,
+          cacheReadTokens: latest.cacheReadTokens,
+        });
+      } else {
+        setSessionTokens(emptySessionTokens());
+      }
+    } catch {
+      // usage loading is non-critical
+    }
   };
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
+
+  const selectedRow = rows[catIndex];
+  const selectedSource = selectedRow?.sources[srcIndex];
 
   useInput((input, key) => {
-    if (mode !== "list") return;
+    if (viewMode === "confirm") return;
 
-    if (input === "j" || key.downArrow) {
-      if (rows.length > 0) setIndex((i) => Math.min(i + 1, rows.length - 1));
-      return;
-    }
-    if (input === "k" || key.upArrow) {
-      setIndex((i) => Math.max(i - 1, 0));
-      return;
-    }
-    if (key.return) {
-      setExpanded((e) => !e);
-      return;
-    }
     if (input === "r") {
       setStatus("Refreshed");
+      setViewMode("categories");
       load();
       return;
     }
-    if (input === "e") {
-      const selected = rows[index];
-      if (!selected) return;
-      const firstWithPath = selected.sources.find((s) => s.path);
-      if (!firstWithPath?.path) return;
-      const editor = process.env.EDITOR ?? "vi";
-      try {
-        Bun.spawn([editor, firstWithPath.path], { stdio: ["inherit", "inherit", "inherit"] });
-      } catch {
-        setStatus("Could not open editor");
+
+    if (viewMode === "categories") {
+      if (input === "j" || key.downArrow) setCatIndex((i) => Math.min(i + 1, rows.length - 1));
+      if (input === "k" || key.upArrow) setCatIndex((i) => Math.max(i - 1, 0));
+      if (key.return && selectedRow) {
+        setSrcIndex(0);
+        setViewMode("sources");
+      }
+      if (input === "e" && selectedRow) {
+        const first = selectedRow.sources.find((s) => s.path);
+        if (first?.path) {
+          openInEditor(first.path, load, setStatus);
+        }
       }
       return;
     }
-    if (input === "d") {
-      const selected = rows[index];
-      if (!selected) return;
-      const actionable = selected.sources.filter((s) => s.actionable);
-      if (actionable.length === 0) return;
 
-      const firstActionable = actionable[0];
-      const catKey = firstActionable.category as Category;
-
-      if (catKey === "skills") {
-        setConfirmMsg(`Remove skill "${firstActionable.name}"?`);
-        setConfirmAction(() => async () => {
-          try {
-            await unlinkSkill(PATHS.skills, firstActionable.name);
-            setStatus(`Removed "${firstActionable.name}"`);
-            await load();
-          } catch (e: any) {
-            setStatus(`Error: ${e.message}`);
-          }
-        });
-        setMode("confirm");
-      } else if (catKey === "memory") {
-        setConfirmMsg(`Delete memory file "${firstActionable.name}"?`);
-        setConfirmAction(() => async () => {
-          try {
-            const { unlink } = await import("fs/promises");
-            await unlink(firstActionable.path);
-            setStatus(`Deleted "${firstActionable.name}"`);
-            await load();
-          } catch (e: any) {
-            setStatus(`Error: ${e.message}`);
-          }
-        });
-        setMode("confirm");
+    if (viewMode === "sources") {
+      if (input === "j" || key.downArrow) setSrcIndex((i) => Math.min(i + 1, (selectedRow?.sources.length ?? 1) - 1));
+      if (input === "k" || key.upArrow) setSrcIndex((i) => Math.max(i - 1, 0));
+      if (key.escape || key.backspace || key.delete) {
+        setViewMode("categories");
+        return;
       }
+      if (key.return && selectedSource?.content) {
+        setPreviewScroll(0);
+        setViewMode("preview");
+        return;
+      }
+      if (input === "e" && selectedSource?.path) {
+        openInEditor(selectedSource.path, load, setStatus);
+        return;
+      }
+      if (input === "d" && selectedSource?.actionable) {
+        if (selectedSource.category === "skills") {
+          const skillName = selectedSource.name;
+          setConfirmMsg(`Unlink skill "${skillName}"?`);
+          setConfirmAction(() => async () => {
+            try {
+              await unlinkSkill(PATHS.skills, skillName);
+              setStatus(`Unlinked "${skillName}"`);
+              await load();
+            } catch (e: any) { setStatus(`Error: ${e.message}`); }
+          });
+          setViewMode("confirm");
+        } else if (selectedSource.category === "memory") {
+          setConfirmMsg(`Delete memory "${selectedSource.name}"?`);
+          setConfirmAction(() => async () => {
+            try {
+              const { unlink } = await import("fs/promises");
+              await unlink(selectedSource.path);
+              setStatus(`Deleted "${selectedSource.name}"`);
+              await load();
+            } catch (e: any) { setStatus(`Error: ${e.message}`); }
+          });
+          setViewMode("confirm");
+        }
+      }
+      return;
+    }
+
+    if (viewMode === "preview") {
+      if (key.escape || key.backspace || key.delete || key.return) {
+        setViewMode("sources");
+        return;
+      }
+      const lines = selectedSource?.content?.split("\n") ?? [];
+      setPreviewScroll((s) => previewScrollHandler(input, key, s, lines.length, previewMaxLines));
+      return;
     }
   });
 
@@ -203,27 +314,28 @@ export function ContextTab() {
     );
   }
 
-  const selected = rows[index];
+  if (viewMode === "preview" && selectedSource?.content) {
+    return (
+      <Box flexDirection="column">
+        <PreviewPanel
+          title={selectedSource.name}
+          subtitle={`${formatTokens(selectedSource.estimatedTokens)} tok  ${selectedSource.path}`}
+          lines={selectedSource.content.split("\n")}
+          scroll={previewScroll}
+          maxLines={previewMaxLines}
+          shortcuts="j/k:scroll  PgUp/PgDn:page  enter/esc:back"
+        />
+        {status && (
+          <Box marginTop={1}>
+            <Text dimColor>{status}</Text>
+          </Box>
+        )}
+      </Box>
+    );
+  }
+
   const { model, totalTokens, contextWindowSize, usedPercent, costImpact } = analysis;
   const usageBar = makeUsageBar(usedPercent);
-
-  // Build detail panel content
-  const detailFields = selected ? (() => {
-    const catTokens = selected.sources.reduce((s, src) => s + src.estimatedTokens, 0);
-    if (!expanded) {
-      const firstHint = selected.sources.find((s) => s.hint)?.hint;
-      return [
-        { label: "Total tokens", value: formatTokens(catTokens) },
-        { label: "Items", value: selected.items },
-        ...(firstHint ? [{ label: "Hint", value: firstHint }] : []),
-      ];
-    }
-    // Expanded: each source
-    return selected.sources.map((src) => ({
-      label: src.name,
-      value: `${formatTokens(src.estimatedTokens)}${src.hint ? ` — ${src.hint}` : ""}`,
-    }));
-  })() : undefined;
 
   const tableRows = rows.map((r) => ({
     category: r.category,
@@ -233,33 +345,110 @@ export function ContextTab() {
     bar: r.bar,
   }));
 
-  const shortcuts = selected
-    ? `enter:${expanded ? "collapse" : "expand"}  e:edit  d:delete  r:refresh`
-    : "r:refresh";
+  const renderDetail = () => {
+    if (!selectedRow) {
+      return <DetailPanel lines={["No context sources found."]} />;
+    }
+
+    if (viewMode === "sources") {
+      const sourceFields = selectedRow.sources.map((src, i) => ({
+        label: `${i === srcIndex ? "▸" : " "} ${src.name}`,
+        value: `${formatTokens(src.estimatedTokens)} tok${src.content ? "" : " (fixed)"}${src.hint ? ` — ${src.hint}` : ""}`,
+        color: i === srcIndex ? "cyan" : undefined,
+      }));
+      return (
+        <DetailPanel
+          title={`${selectedRow.category} — ${selectedRow.tokens} (${selectedRow.pct})`}
+          fields={sourceFields}
+          shortcuts="j/k:navigate  enter:preview  e:edit  d:delete  esc:back"
+        />
+      );
+    }
+
+    // viewMode === "categories"
+    const firstHint = selectedRow.sources.find((s) => s.hint)?.hint;
+    return (
+      <DetailPanel
+        title={selectedRow.category}
+        fields={[
+          { label: "Total tokens", value: selectedRow.tokens },
+          { label: "Items", value: selectedRow.items },
+          { label: "Percentage", value: selectedRow.pct },
+          ...(firstHint ? [{ label: "Hint", value: firstHint }] : []),
+        ]}
+        shortcuts="j/k:navigate  enter:expand  e:edit  r:refresh"
+      />
+    );
+  };
 
   return (
     <Box flexDirection="column">
-      {/* Header */}
       <Box marginBottom={1}>
         <Text bold>Context</Text>
         <Box flexGrow={1} />
         <Text dimColor>{`Model: ${model} (${formatTokens(contextWindowSize)})`}</Text>
       </Box>
 
-      {/* Usage summary */}
       <Box marginBottom={1} flexDirection="column">
+        <Box>
+          <Text dimColor>{"5h:  "}</Text>
+          {rateLimits?.fiveHour != null ? (
+            <>
+              <Text color={quotaColor(rateLimits.fiveHour)}>
+                {quotaBar(rateLimits.fiveHour)} {rateLimits.fiveHour}%
+              </Text>
+              {rateLimits.fiveHourResetAt && (
+                <Text dimColor>{` (resets in ${formatResetTime(rateLimits.fiveHourResetAt, timezone)})`}</Text>
+              )}
+            </>
+          ) : (
+            <Text dimColor>{"—  (no snapshot at ~/.claude/usage-snapshot.json)"}</Text>
+          )}
+        </Box>
+        <Box>
+          <Text dimColor>{"7d:  "}</Text>
+          {rateLimits?.sevenDay != null ? (
+            <>
+              <Text color={quotaColor(rateLimits.sevenDay)}>
+                {quotaBar(rateLimits.sevenDay)} {rateLimits.sevenDay}%
+              </Text>
+              {rateLimits.sevenDayResetAt && (
+                <Text dimColor>{` (resets in ${formatResetTime(rateLimits.sevenDayResetAt, timezone)})`}</Text>
+              )}
+            </>
+          ) : (
+            <Text dimColor>—</Text>
+          )}
+        </Box>
+        <Box>
+          <Text dimColor>{"Tok: "}</Text>
+          {(() => {
+            const total = sessionTokens.inputTokens + sessionTokens.outputTokens + sessionTokens.cacheWriteTokens + sessionTokens.cacheReadTokens;
+            if (total === 0) return <Text dimColor>— (no session)</Text>;
+            const cache = sessionTokens.cacheWriteTokens + sessionTokens.cacheReadTokens;
+            return (
+              <Text>
+                {`${formatTokens(total)} `}
+                <Text dimColor>{`(In: ${formatTokens(sessionTokens.inputTokens)}, Out: ${formatTokens(sessionTokens.outputTokens)}${cache > 0 ? `, Cache: ${formatTokens(cache)}` : ""})`}</Text>
+              </Text>
+            );
+          })()}
+        </Box>
+      </Box>
+
+      <Box marginBottom={0} flexDirection="column">
         <Text>
-          {"Session Start Context Usage  "}
-          <Text bold>{`${usedPercent.toFixed(1)}%`}</Text>
-          {` of ${formatTokens(contextWindowSize)} tokens (${formatTokens(totalTokens)} tok)`}
+          {"Context Budget  "}
+          <Text bold color={usedPercent > 10 ? "yellow" : "green"}>
+            {usedPercent.toFixed(1)}%
+          </Text>
+          {` of ${formatTokens(contextWindowSize)} (${formatTokens(totalTokens)} tok)`}
         </Text>
         <Box>
           <Text>{usageBar}</Text>
           <Text dimColor>{`  ${usedPercent.toFixed(1)}%`}</Text>
         </Box>
       </Box>
-
-      {/* Table */}
       <Table
         columns={[
           { key: "category", label: "Category", width: 20 },
@@ -269,21 +458,11 @@ export function ContextTab() {
           { key: "bar", label: "Usage", width: 18 },
         ]}
         rows={tableRows}
-        selectedIndex={index}
+        selectedIndex={catIndex}
       />
 
-      {/* Detail panel */}
-      {selected ? (
-        <DetailPanel
-          title={selected.category}
-          fields={detailFields}
-          shortcuts={shortcuts}
-        />
-      ) : (
-        <DetailPanel lines={["No context sources found."]} />
-      )}
+      {renderDetail()}
 
-      {/* Cost Impact */}
       <Box borderStyle="single" paddingX={1} marginTop={1} flexDirection="column">
         <Text bold>{`Cost Impact (${model})`}</Text>
         <Box gap={2}>
@@ -306,23 +485,21 @@ export function ContextTab() {
         </Box>
       </Box>
 
-      {/* Confirm dialog */}
-      {mode === "confirm" && confirmAction && (
+      {viewMode === "confirm" && confirmAction && (
         <Confirm
           message={confirmMsg}
           onConfirm={async () => {
             await confirmAction();
-            setMode("list");
+            setViewMode("sources");
             setConfirmAction(null);
           }}
           onCancel={() => {
-            setMode("list");
+            setViewMode("sources");
             setConfirmAction(null);
           }}
         />
       )}
 
-      {/* Status */}
       {status && (
         <Box marginTop={1}>
           <Text dimColor>{status}</Text>
