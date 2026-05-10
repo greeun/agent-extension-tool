@@ -45,9 +45,10 @@ function formatDate(d?: Date): string {
 interface Props {
   isFocused: boolean;
   onFocusUp?: () => void;
+  onSubViewChange?: (inSubView: boolean) => void;
 }
 
-export function VaultTab({ isFocused, onFocusUp }: Props) {
+export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
   const { stdout } = useStdout();
   const [items, setItems] = useState<VaultItem[]>([]);
   const [index, setIndex] = useState(0);
@@ -62,6 +63,8 @@ export function VaultTab({ isFocused, onFocusUp }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("name");
   const [searchTerm, setSearchTerm] = useState("");
   const [searching, setSearching] = useState(false);
+
+  useEffect(() => { onSubViewChange?.(searching); }, [searching]);
 
   const load = async () => {
     const plugins = await listInstalledPlugins(PATHS.installedPlugins);
