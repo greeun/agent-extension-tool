@@ -4,13 +4,15 @@ import { Table } from "../components/Table.js";
 import { DetailView } from "../components/DetailView.js";
 import { SOURCE_COLORS } from "../constants.js";
 import { listCommands, type CommandInfo } from "../../core/commands.js";
+import { getProjectCount, type UsageIndex } from "../../core/project-usage.js";
 
 interface Props {
   isFocused?: boolean;
   onFocusUp?: () => void;
+  usageIndex?: UsageIndex;
 }
 
-export function CommandsTab({ isFocused = true, onFocusUp }: Props) {
+export function CommandsTab({ isFocused = true, onFocusUp, usageIndex }: Props) {
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [index, setIndex] = useState(0);
 
@@ -29,11 +31,15 @@ export function CommandsTab({ isFocused = true, onFocusUp }: Props) {
     }
   });
 
-  const rows = commands.map((c) => ({
-    name: `/${c.name}`,
-    source: c.source,
-    description: c.description.slice(0, 40),
-  }));
+  const rows = commands.map((c) => {
+    const count = usageIndex ? getProjectCount(usageIndex, "command", `${c.name}.md`) : 0;
+    return {
+      name: `/${c.name}`,
+      source: c.source,
+      projects: count > 0 ? `${count}` : "─",
+      description: c.description.slice(0, 36),
+    };
+  });
 
   const selected = commands[index];
 
@@ -41,9 +47,10 @@ export function CommandsTab({ isFocused = true, onFocusUp }: Props) {
     <Box flexDirection="column">
       <Table
         columns={[
-          { key: "name", label: "Command", width: 28 },
+          { key: "name", label: "Command", width: 24 },
           { key: "source", label: "Source", width: 9 },
-          { key: "description", label: "Description", width: 42 },
+          { key: "projects", label: "Proj", width: 6 },
+          { key: "description", label: "Description", width: 40 },
         ]}
         rows={rows}
         selectedIndex={index}

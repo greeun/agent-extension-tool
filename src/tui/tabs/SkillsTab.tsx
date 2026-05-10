@@ -8,13 +8,15 @@ import { Confirm } from "../components/Confirm.js";
 import { SOURCE_COLORS } from "../constants.js";
 import { PATHS } from "../../core/paths.js";
 import { listAllSkills, unlinkSkill, linkSkill, isSymlinkSupported, type SkillInfo } from "../../core/skill.js";
+import { getProjectCount, type UsageIndex } from "../../core/project-usage.js";
 
 interface Props {
   isFocused?: boolean;
   onFocusUp?: () => void;
+  usageIndex?: UsageIndex;
 }
 
-export function SkillsTab({ isFocused = true, onFocusUp }: Props) {
+export function SkillsTab({ isFocused = true, onFocusUp, usageIndex }: Props) {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [index, setIndex] = useState(0);
   const [mode, setMode] = useState<"list" | "confirm-unlink" | "link-input">("list");
@@ -44,12 +46,16 @@ export function SkillsTab({ isFocused = true, onFocusUp }: Props) {
     }
   });
 
-  const rows = skills.map((s) => ({
-    name: s.name,
-    source: s.source,
-    type: s.isSymlink ? "symlink" : "dir",
-    target: s.isSymlink ? s.target ?? "" : s.path,
-  }));
+  const rows = skills.map((s) => {
+    const count = usageIndex ? getProjectCount(usageIndex, "skill", s.name) : 0;
+    return {
+      name: s.name,
+      source: s.source,
+      type: s.isSymlink ? "symlink" : "dir",
+      target: s.isSymlink ? s.target ?? "" : s.path,
+      projects: count > 0 ? `${count}` : "─",
+    };
+  });
 
   const selected = skills[index];
 
@@ -57,9 +63,10 @@ export function SkillsTab({ isFocused = true, onFocusUp }: Props) {
     <Box flexDirection="column">
       <Table
         columns={[
-          { key: "name", label: "Skill", width: 28 },
+          { key: "name", label: "Skill", width: 24 },
           { key: "source", label: "Source", width: 9 },
-          { key: "type", label: "Type", width: 10 },
+          { key: "type", label: "Type", width: 8 },
+          { key: "projects", label: "Proj", width: 6 },
           { key: "target", label: "Path", width: 35 },
         ]}
         rows={rows}

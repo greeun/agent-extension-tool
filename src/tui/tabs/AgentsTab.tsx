@@ -6,13 +6,15 @@ import { DetailView, useDetailView } from "../components/DetailView.js";
 import { SourceSummary } from "../components/SourceSummary.js";
 import { SOURCE_COLORS } from "../constants.js";
 import { listAllAgents, type AgentInfo } from "../../core/agents.js";
+import { getProjectCount, type UsageIndex } from "../../core/project-usage.js";
 
 interface Props {
   isFocused?: boolean;
   onFocusUp?: () => void;
+  usageIndex?: UsageIndex;
 }
 
-export function AgentsTab({ isFocused = true, onFocusUp }: Props) {
+export function AgentsTab({ isFocused = true, onFocusUp, usageIndex }: Props) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [index, setIndex] = useState(0);
 
@@ -38,19 +40,24 @@ export function AgentsTab({ isFocused = true, onFocusUp }: Props) {
     }
   });
 
-  const rows = agents.map((a) => ({
-    name: a.name,
-    source: a.source,
-    description: a.description.slice(0, 40),
-  }));
+  const rows = agents.map((a) => {
+    const count = usageIndex ? getProjectCount(usageIndex, "agent", `${a.name}.md`) : 0;
+    return {
+      name: a.name,
+      source: a.source,
+      projects: count > 0 ? `${count}` : "─",
+      description: a.description.slice(0, 36),
+    };
+  });
 
   return (
     <Box flexDirection="column">
       <Table
         columns={[
-          { key: "name", label: "Agent", width: 28 },
+          { key: "name", label: "Agent", width: 24 },
           { key: "source", label: "Source", width: 9 },
-          { key: "description", label: "Description", width: 42 },
+          { key: "projects", label: "Proj", width: 6 },
+          { key: "description", label: "Description", width: 40 },
         ]}
         rows={rows}
         selectedIndex={index}
