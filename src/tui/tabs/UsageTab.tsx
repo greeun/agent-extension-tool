@@ -257,13 +257,32 @@ export function UsageTab({ platform }: Props) {
             <Text dimColor>d:day  w:week</Text>
           </Box>
           {insights.subagentHeavyPct > 0 && (
-            <Text>{insights.subagentHeavyPct}% subagent-heavy sessions</Text>
+            <Box flexDirection="column">
+              <Text>{insights.subagentHeavyPct}% of your usage came from subagent-heavy sessions</Text>
+              <Text dimColor>  Each subagent runs its own requests. Be deliberate about spawning them —</Text>
+              <Text dimColor>  consider configuring a cheaper model for simpler subagents.</Text>
+            </Box>
           )}
           {insights.largeContextPct > 0 && (
-            <Text>{insights.largeContextPct}% sessions at &gt;150k context</Text>
+            <Box flexDirection="column" marginTop={insights.subagentHeavyPct > 0 ? 1 : 0}>
+              <Text>{insights.largeContextPct}% of your usage was at &gt;150k context</Text>
+              <Text dimColor>  Longer sessions are more expensive even when cached. /compact mid-task,</Text>
+              <Text dimColor>  /clear when switching to new tasks.</Text>
+            </Box>
           )}
           {insights.parallelSessionPct > 0 && (
-            <Text>{insights.parallelSessionPct}% parallel sessions (4+)</Text>
+            <Box flexDirection="column" marginTop={1}>
+              <Text>{insights.parallelSessionPct}% of your usage was while 4+ sessions ran in parallel</Text>
+              <Text dimColor>  All sessions share one limit. If you don{"'"}t need them all at once,</Text>
+              <Text dimColor>  queueing uses it more evenly.</Text>
+            </Box>
+          )}
+          {insights.pluginBreakdown.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text>{insights.pluginBreakdown[0].tokenPct}% of your usage came from plugin "{insights.pluginBreakdown[0].name}"</Text>
+              <Text dimColor>  Review what this plugin contributes — its agents, skills, and MCP tools all</Text>
+              <Text dimColor>  count toward your limit.</Text>
+            </Box>
           )}
 
           {(insights.skillBreakdown.length > 0 || insights.subagentBreakdown.length > 0 || insights.pluginBreakdown.length > 0) && (
