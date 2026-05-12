@@ -31,7 +31,7 @@ export function TabBar({ active, focused = true }: Props) {
         const isActive = tab.key === active;
         return (
           <Box key={tab.key} marginRight={0}>
-            <Text dimColor={!isActive} bold={isActive} inverse={isActive && focused}>
+            <Text dimColor={!isActive} bold={isActive} color={isActive ? "yellow" : undefined} inverse={isActive && focused}>
               {` ${i + 1}:${label} `}
             </Text>
           </Box>

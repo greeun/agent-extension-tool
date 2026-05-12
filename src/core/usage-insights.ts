@@ -1,5 +1,10 @@
 import { readdir, readFile, stat } from "fs/promises";
 import { join } from "path";
+import { readJson, writeJsonAtomic } from "./json-io.js";
+import { AXT_CONFIG_DIR } from "./paths.js";
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const insightsCachePath = (days: number) => join(AXT_CONFIG_DIR, "cache", `insights-${days}d.json`);
 
 export interface PlanLimits {
   sessionUsedPct: number;
@@ -179,8 +184,19 @@ function computeParallelPct(sessions: ParsedSession[], grandTotal: number): numb
   return Math.round((parallelTokens / grandTotal) * 100);
 }
 
+interface InsightsCacheFile {
+  savedAt: number;
+  data: UsageInsights;
+}
+
 export async function loadUsageInsights(opts: LoadInsightsOpts): Promise<UsageInsights> {
   const { days, projectsDir, usageSnapshotPath } = opts;
+
+  const cached = await readJson<InsightsCacheFile>(insightsCachePath(days), { fallback: null as unknown as InsightsCacheFile });
+  if (cached && Date.now() - cached.savedAt < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
   const [planLimits, jsonlFiles] = await Promise.all([
@@ -233,7 +249,7 @@ export async function loadUsageInsights(opts: LoadInsightsOpts): Promise<UsageIn
     }
   }
 
-  return {
+  const result: UsageInsights = {
     planLimits,
     subagentHeavyPct,
     largeContextPct,
@@ -242,4 +258,8 @@ export async function loadUsageInsights(opts: LoadInsightsOpts): Promise<UsageIn
     subagentBreakdown: toBreakdown(agentTokens),
     pluginBreakdown: toBreakdown(pluginTokens),
   };
+
+  writeJsonAtomic(insightsCachePath(days), { savedAt: Date.now(), data: result } satisfies InsightsCacheFile).catch(() => {});
+
+  return result;
 }
