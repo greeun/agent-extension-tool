@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Box, Text, useInput } from "ink";
 import { BarChart } from "../components/BarChart.js";
 import { PATHS, AXT_CONFIG_PATH } from "../../core/paths.js";
@@ -8,6 +8,7 @@ import type { UnifiedUsageEntry } from "../../core/types.js";
 import { calculateCost } from "../../pricing/models.js";
 import { loadConfig } from "../../config/index.js";
 import { formatTokens, formatCost, budgetBar } from "../../cli/formatters.js";
+import { loadUsageInsights, type UsageInsights } from "../../core/usage-insights.js";
 
 interface Summary {
   sessions: number;
@@ -32,6 +33,8 @@ interface TabState {
   budgetLine: string;
   exchangeRate: number;
   lastRefresh: string;
+  insights: UsageInsights | null;
+  insightDays: 1 | 7;
 }
 
 const stateCache = new Map<string, TabState>();
@@ -53,6 +56,10 @@ export function UsageTab({ platform }: Props) {
   const [exchangeRate, setExchangeRate] = useState(cached?.exchangeRate ?? 1400);
   const [loading, setLoading] = useState(!cached);
   const [lastRefresh, setLastRefresh] = useState(cached?.lastRefresh ?? "");
+  const [insights, setInsights] = useState<UsageInsights | null>(cached?.insights ?? null);
+  const [insightDays, setInsightDays] = useState<1 | 7>(cached?.insightDays ?? 7);
+
+  const mountedRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -126,23 +133,71 @@ export function UsageTab({ platform }: Props) {
     setBudgetLine(newBudgetLine);
 
     const refreshTime = new Date().toLocaleTimeString();
-    setLoading(false);
     setLastRefresh(refreshTime);
+
+    let newInsights: UsageInsights | null = null;
+    if (!platform || platform === "claude") {
+      newInsights = await loadUsageInsights({
+        days: insightDays,
+        projectsDir: PATHS.projects,
+        sessionMetaDir: `${PATHS.claudeDir}/usage-data/session-meta`,
+        usageSnapshotPath: PATHS.usageSnapshot,
+      }).catch(() => null);
+      setInsights(newInsights);
+    }
+
+    setLoading(false);
 
     stateCache.set(cacheKey, {
       today: newToday, week: newWeek, month: newMonth,
       chartData: newChartData, activeBlock: newActiveBlock, budgetLine: newBudgetLine,
       exchangeRate: config.exchangeRate, lastRefresh: refreshTime,
+      insights: newInsights,
+      insightDays,
     });
-  }, [platform, cacheKey]);
+  }, [platform, cacheKey, insightDays]);
 
   useEffect(() => {
     if (!cached) load();
+    mountedRef.current = true;
   }, []);
+
+  useEffect(() => {
+    if (!mountedRef.current) return;
+    if (!platform || platform === "claude") {
+      load();
+    }
+  }, [insightDays]);
 
   useInput((input) => {
     if (input === "r") load();
+    if ((input === "d" || input === "w") && (!platform || platform === "claude")) {
+      const newDays: 1 | 7 = input === "d" ? 1 : 7;
+      setInsightDays(newDays);
+      stateCache.delete(cacheKey);
+    }
   });
+
+  const renderLimitBar = (label: string, pct: number, resetsAt: Date) => {
+    const filled = Math.round(pct / 5);
+    const empty = 20 - filled;
+    const bar = "█".repeat(Math.max(0, filled)) + "░".repeat(Math.max(0, empty));
+    const resetStr = resetsAt.toLocaleString("ko-KR", {
+      timeZone: "Asia/Seoul",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return (
+      <Box key={label}>
+        <Text color="cyan">{label.padEnd(8)}</Text>
+        <Text> [{bar}] </Text>
+        <Text color={pct > 80 ? "red" : pct > 50 ? "yellow" : "green"}>{String(pct).padStart(3)}%</Text>
+        <Text dimColor>  resets {resetStr}</Text>
+      </Box>
+    );
+  };
 
   const renderCard = (label: string, s: Summary) => (
     <Box flexDirection="column" borderStyle="single" paddingX={1} width={24}>
@@ -182,6 +237,68 @@ export function UsageTab({ platform }: Props) {
       )}
       {activeBlock !== "" && <Text color="green">{activeBlock}</Text>}
       {budgetLine !== "" && <Text>{budgetLine}</Text>}
+      {(!platform || platform === "claude") && insights && (
+        <Box flexDirection="column" marginTop={1}>
+          <Box>
+            <Text bold dimColor>── Claude Plan Limits ──────────────────────</Text>
+          </Box>
+          {insights.planLimits ? (
+            <>
+              {renderLimitBar("Session", insights.planLimits.sessionUsedPct, insights.planLimits.sessionResetsAt)}
+              {renderLimitBar("Week", insights.planLimits.weekUsedPct, insights.planLimits.weekResetsAt)}
+            </>
+          ) : (
+            <Text dimColor>Plan data unavailable</Text>
+          )}
+
+          <Box marginTop={1}>
+            <Text bold dimColor>── Last {insightDays === 1 ? "24h" : "7d"} Insights ──────────────────</Text>
+            <Box flexGrow={1} />
+            <Text dimColor>d:day  w:week</Text>
+          </Box>
+          {insights.subagentHeavyPct > 0 && (
+            <Text>{insights.subagentHeavyPct}% subagent-heavy sessions</Text>
+          )}
+          {insights.largeContextPct > 0 && (
+            <Text>{insights.largeContextPct}% sessions at &gt;150k context</Text>
+          )}
+          {insights.parallelSessionPct > 0 && (
+            <Text>{insights.parallelSessionPct}% parallel sessions (4+)</Text>
+          )}
+
+          {(insights.skillBreakdown.length > 0 || insights.subagentBreakdown.length > 0 || insights.pluginBreakdown.length > 0) && (
+            <Box marginTop={1} gap={2}>
+              <Box flexDirection="column" width={28}>
+                <Text bold>Skills</Text>
+                {insights.skillBreakdown.slice(0, 5).map((s) => (
+                  <Text key={s.name}>
+                    <Text dimColor>{s.name.length > 20 ? s.name.slice(0, 19) + "…" : s.name.padEnd(20)}</Text>
+                    {" "}<Text color="cyan">{String(s.tokenPct).padStart(3)}%</Text>
+                  </Text>
+                ))}
+              </Box>
+              <Box flexDirection="column" width={26}>
+                <Text bold>Subagents</Text>
+                {insights.subagentBreakdown.slice(0, 5).map((s) => (
+                  <Text key={s.name}>
+                    <Text dimColor>{s.name.length > 18 ? s.name.slice(0, 17) + "…" : s.name.padEnd(18)}</Text>
+                    {" "}<Text color="cyan">{String(s.tokenPct).padStart(3)}%</Text>
+                  </Text>
+                ))}
+              </Box>
+              <Box flexDirection="column" width={20}>
+                <Text bold>Plugins</Text>
+                {insights.pluginBreakdown.slice(0, 5).map((s) => (
+                  <Text key={s.name}>
+                    <Text dimColor>{s.name.length > 14 ? s.name.slice(0, 13) + "…" : s.name.padEnd(14)}</Text>
+                    {" "}<Text color="cyan">{String(s.tokenPct).padStart(3)}%</Text>
+                  </Text>
+                ))}
+              </Box>
+            </Box>
+          )}
+        </Box>
+      )}
     </Box>
   );
 }
