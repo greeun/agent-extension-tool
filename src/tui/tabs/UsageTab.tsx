@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Box, Text, useInput } from "ink";
 import { BarChart } from "../components/BarChart.js";
 import { PATHS, AXT_CONFIG_PATH } from "../../core/paths.js";
