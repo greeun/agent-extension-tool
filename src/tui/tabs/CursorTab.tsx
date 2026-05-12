@@ -10,9 +10,10 @@ const CURSOR_OVERHEAD = 15;
 interface Props {
   isFocused?: boolean;
   onFocusUp?: () => void;
+  refreshKey?: number;
 }
 
-export function CursorTab({ isFocused = true, onFocusUp }: Props) {
+export function CursorTab({ isFocused = true, onFocusUp, refreshKey }: Props) {
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 24;
   const maxRows = Math.max(5, termHeight - CURSOR_OVERHEAD);
@@ -46,10 +47,14 @@ export function CursorTab({ isFocused = true, onFocusUp }: Props) {
 
   useEffect(() => { load(); }, []);
 
+  useEffect(() => {
+    if (!refreshKey) return;
+    load();
+  }, [refreshKey]);
+
   useInput((input, key) => {
-    if (error || !summary) return;
-    if (input === "r") load();
     if (!isFocused) return;
+    if (error || !summary) return;
     if (input === "j" || key.downArrow) {
       if (commits.length > 0) setIndex((i) => Math.min(i + 1, commits.length - 1));
     }

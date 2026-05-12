@@ -94,10 +94,18 @@ function App() {
         {tab === "context" && <ContextTab key={`context-${refreshKey}`} onSubViewChange={setContextInSubView} />}
         {tab === "project" && <ProjectTab key={refreshKey} isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("mainTab")} />}
         {tab === "dashboard" && <OverviewTab key={refreshKey} />}
-        {tab === "claude" && <UsageTab platform="claude" key={`claude-${refreshKey}`} />}
-        {tab === "codex" && <UsageTab platform="codex" key={`codex-${refreshKey}`} />}
-        {tab === "gemini" && <UsageTab platform="gemini" key={`gemini-${refreshKey}`} />}
-        {tab === "cursor" && <CursorTab key={`cursor-${refreshKey}`} isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("mainTab")} />}
+        <Box display={tab === "claude" ? "flex" : "none"} flexDirection="column">
+          <UsageTab platform="claude" isFocused={tab === "claude"} refreshKey={refreshKey} />
+        </Box>
+        <Box display={tab === "codex" ? "flex" : "none"} flexDirection="column">
+          <UsageTab platform="codex" isFocused={tab === "codex"} refreshKey={refreshKey} />
+        </Box>
+        <Box display={tab === "gemini" ? "flex" : "none"} flexDirection="column">
+          <UsageTab platform="gemini" isFocused={tab === "gemini"} refreshKey={refreshKey} />
+        </Box>
+        <Box display={tab === "cursor" ? "flex" : "none"} flexDirection="column">
+          <CursorTab isFocused={tab === "cursor" && focusLayer === "content"} onFocusUp={() => setFocusLayer("mainTab")} refreshKey={refreshKey} />
+        </Box>
       </Box>
     </Box>
   );

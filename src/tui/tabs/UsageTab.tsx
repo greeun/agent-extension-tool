@@ -41,9 +41,11 @@ const stateCache = new Map<string, TabState>();
 
 interface Props {
   platform?: "claude" | "codex" | "gemini";
+  isFocused?: boolean;
+  refreshKey?: number;
 }
 
-export function UsageTab({ platform }: Props) {
+export function UsageTab({ platform, isFocused = true, refreshKey }: Props) {
   const cacheKey = platform ?? "all";
   const cached = stateCache.get(cacheKey);
 
@@ -169,8 +171,14 @@ export function UsageTab({ platform }: Props) {
     }
   }, [insightDays]);
 
+  useEffect(() => {
+    if (!refreshKey) return;
+    stateCache.delete(cacheKey);
+    load();
+  }, [refreshKey]);
+
   useInput((input) => {
-    if (input === "r") load();
+    if (!isFocused) return;
     if ((input === "d" || input === "w") && (!platform || platform === "claude")) {
       const newDays: 1 | 7 = input === "d" ? 1 : 7;
       setInsightDays(newDays);
