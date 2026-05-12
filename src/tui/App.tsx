@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { render, Box, Text, useInput, useApp, useStdout } from "ink";
 import { TabBar, type TabName, TABS } from "./components/TabBar.js";
 import { HelpPopup } from "./components/HelpPopup.js";
@@ -43,31 +43,42 @@ function App() {
     if (input === "q" || key.escape) {
       if (tab === "context" && contextInSubView) return;
       if (tab === "extensions" && extensionsInSubView) return;
+      if (tab === "claude" && focusLayer !== "mainTab") {
+        setFocusLayer(focusLayer === "content" ? "subTab" : "mainTab");
+        return;
+      }
       exit();
     }
     if (input === "?") { setShowHelp(true); return; }
     if (input === "r") { setRefreshKey((k) => k + 1); return; }
 
-    if (focusLayer === "mainTab" && key.downArrow) {
-      setFocusLayer(tab === "extensions" ? "subTab" : "content");
+    if (focusLayer === "mainTab" && (key.downArrow || key.return)) {
+      setFocusLayer(tab === "extensions" || tab === "claude" ? "subTab" : "content");
       return;
     }
 
+    const tabDefaultFocus = (t: TabName) => (t === "claude" ? "subTab" : "content") as "subTab" | "content";
+
     if (key.leftArrow) {
-      if (tab === "extensions" && focusLayer !== "mainTab") return;
+      if ((tab === "extensions" || tab === "claude") && focusLayer !== "mainTab") return;
       const idx = TABS.findIndex((t) => t.key === tab);
-      setTab(TABS[(idx - 1 + TABS.length) % TABS.length].key);
+      const next = TABS[(idx - 1 + TABS.length) % TABS.length];
+      setTab(next.key);
+      setFocusLayer(tabDefaultFocus(next.key));
     }
     if (key.rightArrow) {
-      if (tab === "extensions" && focusLayer !== "mainTab") return;
+      if ((tab === "extensions" || tab === "claude") && focusLayer !== "mainTab") return;
       const idx = TABS.findIndex((t) => t.key === tab);
-      setTab(TABS[(idx + 1) % TABS.length].key);
+      const next = TABS[(idx + 1) % TABS.length];
+      setTab(next.key);
+      setFocusLayer(tabDefaultFocus(next.key));
     }
 
     const num = parseInt(input);
     if (num >= 1 && num <= TABS.length) {
-      setTab(TABS[num - 1].key);
-      setFocusLayer("content");
+      const next = TABS[num - 1];
+      setTab(next.key);
+      setFocusLayer(tabDefaultFocus(next.key));
     }
   });
 
@@ -94,10 +105,10 @@ function App() {
         {tab === "context" && <ContextTab key={`context-${refreshKey}`} onSubViewChange={setContextInSubView} />}
         {tab === "project" && <ProjectTab key={refreshKey} isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("mainTab")} />}
         {tab === "dashboard" && <OverviewTab key={refreshKey} />}
-        {tab === "claude" && <UsageTab platform="claude" key={`claude-${refreshKey}`} />}
-        {tab === "codex" && <UsageTab platform="codex" key={`codex-${refreshKey}`} />}
-        {tab === "gemini" && <UsageTab platform="gemini" key={`gemini-${refreshKey}`} />}
-        {tab === "cursor" && <CursorTab key={`cursor-${refreshKey}`} isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("mainTab")} />}
+        {tab === "claude" && <UsageTab platform="claude" isFocused refreshKey={refreshKey} focusLayer={focusLayer} setFocusLayer={setFocusLayer} />}
+        {tab === "codex" && <UsageTab platform="codex" isFocused refreshKey={refreshKey} />}
+        {tab === "gemini" && <UsageTab platform="gemini" isFocused refreshKey={refreshKey} />}
+        {tab === "cursor" && <CursorTab isFocused={focusLayer === "content"} onFocusUp={() => setFocusLayer("mainTab")} refreshKey={refreshKey} />}
       </Box>
     </Box>
   );

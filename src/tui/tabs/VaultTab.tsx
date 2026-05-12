@@ -25,7 +25,7 @@ type FilterType = "all" | "skill" | "command" | "agent" | "plugin";
 const FILTERS: FilterType[] = ["all", "skill", "command", "agent", "plugin"];
 
 type SortKey = "name" | "added" | "updated" | "type" | "vault" | "project" | "global";
-const SORT_KEYS: SortKey[] = ["name", "added", "updated", "type", "vault", "project", "global"];
+const SORT_KEYS: SortKey[] = ["name", "type", "vault", "added", "updated", "project", "global"];
 const SORT_LABELS: Record<SortKey, string> = {
   name: "Name", added: "Added", updated: "Updated", type: "Type", vault: "Vault", project: "Project", global: "Global",
 };
