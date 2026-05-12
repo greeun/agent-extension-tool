@@ -1,4 +1,4 @@
-import { readdir, readFile } from "fs/promises";
+import { readdir, readFile, stat } from "fs/promises";
 import { join } from "path";
 
 export interface PlanLimits {
@@ -26,7 +26,7 @@ export interface UsageInsights {
 export interface LoadInsightsOpts {
   days: 1 | 7;
   projectsDir: string;
-  sessionMetaDir: string;
+  sessionMetaDir?: string; // kept for API compatibility, not used
   usageSnapshotPath: string;
 }
 
@@ -48,163 +48,172 @@ async function loadPlanLimits(snapshotPath: string): Promise<PlanLimits | null> 
   }
 }
 
-interface SessionMeta {
-  session_id: string;
-  start_time: string;
-  duration_minutes: number;
-  input_tokens: number;
-  output_tokens: number;
-  tool_counts: Record<string, number>;
-}
-
-async function loadSessionMetas(metaDir: string, cutoff: Date): Promise<SessionMeta[]> {
-  let files: string[];
-  try {
-    files = await readdir(metaDir);
-  } catch {
-    return [];
-  }
-  const metas: SessionMeta[] = [];
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-    try {
-      const raw = JSON.parse(await readFile(join(metaDir, file), "utf-8")) as SessionMeta;
-      if (new Date(raw.start_time) >= cutoff) metas.push(raw);
-    } catch {
-      // skip malformed
-    }
-  }
-  return metas;
-}
-
-interface SessionTools {
+interface ParsedSession {
+  filePath: string;
+  inputTokens: number;
+  outputTokens: number;
+  hasAgentCalls: boolean;
   skills: string[];
   agents: string[];
+  firstTimestamp: Date | null;
+  lastTimestamp: Date | null;
 }
 
-async function extractToolsFromJsonl(filePath: string, sessionId: string): Promise<SessionTools> {
-  const skills: string[] = [];
-  const agents: string[] = [];
+async function parseJsonlSession(filePath: string): Promise<ParsedSession> {
+  const empty: ParsedSession = {
+    filePath, inputTokens: 0, outputTokens: 0,
+    hasAgentCalls: false, skills: [], agents: [],
+    firstTimestamp: null, lastTimestamp: null,
+  };
   let content: string;
   try {
     content = await readFile(filePath, "utf-8");
   } catch {
-    return { skills, agents };
+    return empty;
   }
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let hasAgentCalls = false;
+  const skills: string[] = [];
+  const agents: string[] = [];
+  let firstTimestamp: Date | null = null;
+  let lastTimestamp: Date | null = null;
+
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
     try {
       const record = JSON.parse(line) as {
         type?: string;
-        sessionId?: string;
+        timestamp?: string;
         message?: {
+          usage?: { input_tokens?: number; output_tokens?: number };
           content?: Array<{ type?: string; name?: string; input?: Record<string, unknown> }>;
         };
       };
-      if (record.sessionId !== sessionId) continue;
+
+      if (record.timestamp) {
+        const ts = new Date(record.timestamp);
+        if (!isNaN(ts.getTime())) {
+          if (!firstTimestamp || ts < firstTimestamp) firstTimestamp = ts;
+          if (!lastTimestamp || ts > lastTimestamp) lastTimestamp = ts;
+        }
+      }
+
       if (record.type !== "assistant") continue;
+
+      const usage = record.message?.usage;
+      if (usage) {
+        inputTokens += usage.input_tokens ?? 0;
+        outputTokens += usage.output_tokens ?? 0;
+      }
+
       const contentArr = record.message?.content;
       if (!Array.isArray(contentArr)) continue;
       for (const block of contentArr) {
         if (block.type !== "tool_use") continue;
         if (block.name === "Skill") {
-          const skill = (block.input?.skill as string) ?? "unknown";
-          skills.push(skill);
+          skills.push((block.input?.skill as string) ?? "unknown");
         } else if (block.name === "Agent") {
-          const sub =
+          hasAgentCalls = true;
+          agents.push(
             (block.input?.subagent_type as string) ??
             (block.input?.name as string) ??
-            "general-purpose";
-          agents.push(sub);
+            "general-purpose"
+          );
         }
       }
     } catch {
       // skip malformed line
     }
   }
-  return { skills, agents };
+
+  return { filePath, inputTokens, outputTokens, hasAgentCalls, skills, agents, firstTimestamp, lastTimestamp };
 }
 
-async function findJsonlForSession(projectsDir: string, sessionId: string): Promise<string | null> {
+async function findRecentJsonlFiles(projectsDir: string, cutoff: Date): Promise<string[]> {
+  const result: string[] = [];
   let projects: string[];
   try {
     projects = await readdir(projectsDir);
   } catch {
-    return null;
+    return [];
   }
-  for (const proj of projects) {
-    const candidate = join(projectsDir, proj, `${sessionId}.jsonl`);
+  await Promise.all(projects.map(async (proj) => {
+    const projDir = join(projectsDir, proj);
+    let files: string[];
     try {
-      await readFile(candidate, "utf-8");
-      return candidate;
+      files = await readdir(projDir);
     } catch {
-      // not found here
+      return;
     }
-  }
-  return null;
+    await Promise.all(files.map(async (file) => {
+      if (!file.endsWith(".jsonl")) return;
+      const filePath = join(projDir, file);
+      try {
+        const s = await stat(filePath);
+        if (s.mtime >= cutoff) result.push(filePath);
+      } catch {
+        // skip
+      }
+    }));
+  }));
+  return result;
 }
 
-function computeParallelPct(metas: SessionMeta[], grandTotal: number): number {
+function computeParallelPct(sessions: ParsedSession[], grandTotal: number): number {
   if (grandTotal === 0) return 0;
+  const timed = sessions.filter((s) => s.firstTimestamp && s.lastTimestamp);
   let parallelTokens = 0;
-  for (const m of metas) {
-    const start = new Date(m.start_time).getTime();
-    const end = start + m.duration_minutes * 60 * 1000;
-    const overlaps = metas.filter((other) => {
-      if (other.session_id === m.session_id) return false;
-      const oStart = new Date(other.start_time).getTime();
-      const oEnd = oStart + other.duration_minutes * 60 * 1000;
+  for (const m of timed) {
+    const start = m.firstTimestamp!.getTime();
+    const end = m.lastTimestamp!.getTime();
+    const overlaps = timed.filter((other) => {
+      if (other.filePath === m.filePath) return false;
+      const oStart = other.firstTimestamp!.getTime();
+      const oEnd = other.lastTimestamp!.getTime();
       return oStart < end && oEnd > start;
     });
-    if (overlaps.length >= 3) {
-      parallelTokens += m.input_tokens + m.output_tokens;
-    }
+    if (overlaps.length >= 3) parallelTokens += m.inputTokens + m.outputTokens;
   }
   return Math.round((parallelTokens / grandTotal) * 100);
 }
 
 export async function loadUsageInsights(opts: LoadInsightsOpts): Promise<UsageInsights> {
-  const { days, projectsDir, sessionMetaDir, usageSnapshotPath } = opts;
+  const { days, projectsDir, usageSnapshotPath } = opts;
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
-  const [planLimits, metas] = await Promise.all([
+  const [planLimits, jsonlFiles] = await Promise.all([
     loadPlanLimits(usageSnapshotPath),
-    loadSessionMetas(sessionMetaDir, cutoff),
+    findRecentJsonlFiles(projectsDir, cutoff),
   ]);
 
-  const grandTotal = metas.reduce((s, m) => s + m.input_tokens + m.output_tokens, 0);
+  const sessions = await Promise.all(jsonlFiles.map(parseJsonlSession));
 
-  const subagentHeavyTokens = metas
-    .filter((m) => (m.tool_counts["Agent"] ?? 0) > 0)
-    .reduce((s, m) => s + m.input_tokens + m.output_tokens, 0);
-  const largeContextTokens = metas
-    .filter((m) => m.input_tokens > 150_000)
-    .reduce((s, m) => s + m.input_tokens + m.output_tokens, 0);
+  const grandTotal = sessions.reduce((s, m) => s + m.inputTokens + m.outputTokens, 0);
+
+  const subagentHeavyTokens = sessions
+    .filter((m) => m.hasAgentCalls)
+    .reduce((s, m) => s + m.inputTokens + m.outputTokens, 0);
+  const largeContextTokens = sessions
+    .filter((m) => m.inputTokens > 150_000)
+    .reduce((s, m) => s + m.inputTokens + m.outputTokens, 0);
 
   const subagentHeavyPct = grandTotal > 0 ? Math.round((subagentHeavyTokens / grandTotal) * 100) : 0;
   const largeContextPct = grandTotal > 0 ? Math.round((largeContextTokens / grandTotal) * 100) : 0;
-  const parallelSessionPct = computeParallelPct(metas, grandTotal);
+  const parallelSessionPct = computeParallelPct(sessions, grandTotal);
 
   const skillTokens: Record<string, number> = {};
   const agentTokens: Record<string, number> = {};
 
-  const sessionsWithTools = metas.filter(
-    (m) => (m.tool_counts["Skill"] ?? 0) > 0 || (m.tool_counts["Agent"] ?? 0) > 0
-  );
-
-  await Promise.all(
-    sessionsWithTools.map(async (m) => {
-      const jsonlPath = await findJsonlForSession(projectsDir, m.session_id);
-      if (!jsonlPath) return;
-      const { skills, agents } = await extractToolsFromJsonl(jsonlPath, m.session_id);
-      const sessionTokens = m.input_tokens + m.output_tokens;
-      const total = skills.length + agents.length;
-      if (total === 0) return;
-      const share = sessionTokens / total;
-      for (const s of skills) skillTokens[s] = (skillTokens[s] ?? 0) + share;
-      for (const a of agents) agentTokens[a] = (agentTokens[a] ?? 0) + share;
-    })
-  );
+  for (const m of sessions) {
+    const sessionTokens = m.inputTokens + m.outputTokens;
+    const total = m.skills.length + m.agents.length;
+    if (total === 0) continue;
+    const share = sessionTokens / total;
+    for (const s of m.skills) skillTokens[s] = (skillTokens[s] ?? 0) + share;
+    for (const a of m.agents) agentTokens[a] = (agentTokens[a] ?? 0) + share;
+  }
 
   const toBreakdown = (map: Record<string, number>): NamedPct[] =>
     Object.entries(map)
@@ -223,7 +232,6 @@ export async function loadUsageInsights(opts: LoadInsightsOpts): Promise<UsageIn
       pluginTokens[plugin] = (pluginTokens[plugin] ?? 0) + tokens;
     }
   }
-  const pluginBreakdown = toBreakdown(pluginTokens);
 
   return {
     planLimits,
@@ -232,6 +240,6 @@ export async function loadUsageInsights(opts: LoadInsightsOpts): Promise<UsageIn
     parallelSessionPct,
     skillBreakdown,
     subagentBreakdown: toBreakdown(agentTokens),
-    pluginBreakdown,
+    pluginBreakdown: toBreakdown(pluginTokens),
   };
 }
