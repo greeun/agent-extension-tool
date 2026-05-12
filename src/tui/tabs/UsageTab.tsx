@@ -60,6 +60,7 @@ export function UsageTab({ platform, isFocused = true, refreshKey }: Props) {
   const [lastRefresh, setLastRefresh] = useState(cached?.lastRefresh ?? "");
   const [insights, setInsights] = useState<UsageInsights | null>(cached?.insights ?? null);
   const [insightDays, setInsightDays] = useState<1 | 7>(cached?.insightDays ?? 7);
+  const [insightSubTab, setInsightSubTab] = useState<"overview" | "skills" | "agents" | "plugins">("overview");
 
   const mountedRef = useRef(false);
 
@@ -179,10 +180,16 @@ export function UsageTab({ platform, isFocused = true, refreshKey }: Props) {
 
   useInput((input) => {
     if (!isFocused) return;
-    if ((input === "d" || input === "w") && (!platform || platform === "claude")) {
-      const newDays: 1 | 7 = input === "d" ? 1 : 7;
-      setInsightDays(newDays);
-      stateCache.delete(cacheKey);
+    if (!platform || platform === "claude") {
+      if (input === "d" || input === "w") {
+        const newDays: 1 | 7 = input === "d" ? 1 : 7;
+        setInsightDays(newDays);
+        stateCache.delete(cacheKey);
+      }
+      if (input === "o") setInsightSubTab("overview");
+      if (input === "s") setInsightSubTab("skills");
+      if (input === "a") setInsightSubTab("agents");
+      if (input === "p") setInsightSubTab("plugins");
     }
   });
 
@@ -247,81 +254,115 @@ export function UsageTab({ platform, isFocused = true, refreshKey }: Props) {
       {budgetLine !== "" && <Text>{budgetLine}</Text>}
       {(!platform || platform === "claude") && insights && (
         <Box flexDirection="column" marginTop={1}>
+          {/* 서브탭 바 */}
           <Box>
-            <Text bold dimColor>── Claude Plan Limits ──────────────────────</Text>
-          </Box>
-          {insights.planLimits ? (
-            <>
-              {renderLimitBar("Session", insights.planLimits.sessionUsedPct, insights.planLimits.sessionResetsAt)}
-              {renderLimitBar("Week", insights.planLimits.weekUsedPct, insights.planLimits.weekResetsAt)}
-            </>
-          ) : (
-            <Text dimColor>Plan data unavailable</Text>
-          )}
-
-          <Box marginTop={1}>
-            <Text bold dimColor>── Last {insightDays === 1 ? "24h" : "7d"} Insights ──────────────────</Text>
+            {(["overview", "skills", "agents", "plugins"] as const).map((t) => {
+              const labels = { overview: "o:Overview", skills: "s:Skills", agents: "a:Agents", plugins: "p:Plugins" };
+              const active = insightSubTab === t;
+              return (
+                <Box key={t} marginRight={1}>
+                  <Text bold={active} inverse={active} color={active ? undefined : undefined} dimColor={!active}>
+                    {` ${labels[t]} `}
+                  </Text>
+                </Box>
+              );
+            })}
             <Box flexGrow={1} />
             <Text dimColor>d:day  w:week</Text>
           </Box>
-          {insights.subagentHeavyPct > 0 && (
-            <Box flexDirection="column">
-              <Text>{insights.subagentHeavyPct}% of your usage came from subagent-heavy sessions</Text>
-              <Text dimColor>  Each subagent runs its own requests. Be deliberate about spawning them —</Text>
-              <Text dimColor>  consider configuring a cheaper model for simpler subagents.</Text>
-            </Box>
-          )}
-          {insights.largeContextPct > 0 && (
-            <Box flexDirection="column" marginTop={insights.subagentHeavyPct > 0 ? 1 : 0}>
-              <Text>{insights.largeContextPct}% of your usage was at &gt;150k context</Text>
-              <Text dimColor>  Longer sessions are more expensive even when cached. /compact mid-task,</Text>
-              <Text dimColor>  /clear when switching to new tasks.</Text>
-            </Box>
-          )}
-          {insights.parallelSessionPct > 0 && (
+
+          {/* Overview 탭: 플랜 한도 + 인사이트 지표 */}
+          {insightSubTab === "overview" && (
             <Box flexDirection="column" marginTop={1}>
-              <Text>{insights.parallelSessionPct}% of your usage was while 4+ sessions ran in parallel</Text>
-              <Text dimColor>  All sessions share one limit. If you don{"'"}t need them all at once,</Text>
-              <Text dimColor>  queueing uses it more evenly.</Text>
-            </Box>
-          )}
-          {insights.pluginBreakdown.length > 0 && (
-            <Box flexDirection="column" marginTop={1}>
-              <Text>{insights.pluginBreakdown[0].tokenPct}% of your usage came from plugin "{insights.pluginBreakdown[0].name}"</Text>
-              <Text dimColor>  Review what this plugin contributes — its agents, skills, and MCP tools all</Text>
-              <Text dimColor>  count toward your limit.</Text>
+              <Text bold dimColor>── Claude Plan Limits ──────────────────────</Text>
+              {insights.planLimits ? (
+                <>
+                  {renderLimitBar("Session", insights.planLimits.sessionUsedPct, insights.planLimits.sessionResetsAt)}
+                  {renderLimitBar("Week", insights.planLimits.weekUsedPct, insights.planLimits.weekResetsAt)}
+                </>
+              ) : (
+                <Text dimColor>Plan data unavailable</Text>
+              )}
+              <Box marginTop={1}><Text bold dimColor>── Last {insightDays === 1 ? "24h" : "7d"} · What{"'"}s contributing? ────</Text></Box>
+              {insights.subagentHeavyPct > 0 && (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text>{insights.subagentHeavyPct}% of your usage came from subagent-heavy sessions</Text>
+                  <Text dimColor>  Each subagent runs its own requests. Be deliberate about spawning them —</Text>
+                  <Text dimColor>  consider configuring a cheaper model for simpler subagents.</Text>
+                </Box>
+              )}
+              {insights.largeContextPct > 0 && (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text>{insights.largeContextPct}% of your usage was at &gt;150k context</Text>
+                  <Text dimColor>  Longer sessions are more expensive even when cached. /compact mid-task,</Text>
+                  <Text dimColor>  /clear when switching to new tasks.</Text>
+                </Box>
+              )}
+              {insights.parallelSessionPct > 0 && (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text>{insights.parallelSessionPct}% of your usage was while 4+ sessions ran in parallel</Text>
+                  <Text dimColor>  All sessions share one limit. If you don{"'"}t need them all at once,</Text>
+                  <Text dimColor>  queueing uses it more evenly.</Text>
+                </Box>
+              )}
+              {insights.pluginBreakdown.length > 0 && insights.pluginBreakdown[0].tokenPct > 0 && (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text>{insights.pluginBreakdown[0].tokenPct}% of your usage came from plugin "{insights.pluginBreakdown[0].name}"</Text>
+                  <Text dimColor>  Review what this plugin contributes — its agents, skills, and MCP tools all</Text>
+                  <Text dimColor>  count toward your limit.</Text>
+                </Box>
+              )}
             </Box>
           )}
 
-          {(insights.skillBreakdown.length > 0 || insights.subagentBreakdown.length > 0 || insights.pluginBreakdown.length > 0) && (
-            <Box marginTop={1} gap={2}>
-              <Box flexDirection="column" width={28}>
-                <Text bold>Skills</Text>
-                {insights.skillBreakdown.slice(0, 5).map((s) => (
-                  <Text key={s.name}>
-                    <Text dimColor>{s.name.length > 20 ? s.name.slice(0, 19) + "…" : s.name.padEnd(20)}</Text>
-                    {" "}<Text color="cyan">{String(s.tokenPct).padStart(3)}%</Text>
-                  </Text>
-                ))}
+          {/* Skills 탭 */}
+          {insightSubTab === "skills" && (
+            <Box flexDirection="column" marginTop={1}>
+              <Box>
+                <Text bold dimColor>{"Skills"}</Text>
+                <Text dimColor>{"                % of usage"}</Text>
               </Box>
-              <Box flexDirection="column" width={26}>
-                <Text bold>Subagents</Text>
-                {insights.subagentBreakdown.slice(0, 5).map((s) => (
-                  <Text key={s.name}>
-                    <Text dimColor>{s.name.length > 18 ? s.name.slice(0, 17) + "…" : s.name.padEnd(18)}</Text>
-                    {" "}<Text color="cyan">{String(s.tokenPct).padStart(3)}%</Text>
-                  </Text>
-                ))}
+              {insights.skillBreakdown.length === 0 && <Text dimColor>No skill data for this period.</Text>}
+              {insights.skillBreakdown.map((s) => (
+                <Box key={s.name}>
+                  <Text dimColor>{"/"}{s.name.length > 34 ? s.name.slice(0, 33) + "…" : s.name.padEnd(34)}</Text>
+                  <Text color="cyan">{String(s.tokenPct).padStart(4)}%</Text>
+                </Box>
+              ))}
+            </Box>
+          )}
+
+          {/* Agents 탭 */}
+          {insightSubTab === "agents" && (
+            <Box flexDirection="column" marginTop={1}>
+              <Box>
+                <Text bold dimColor>{"Subagents"}</Text>
+                <Text dimColor>{"             % of usage"}</Text>
               </Box>
-              <Box flexDirection="column" width={20}>
-                <Text bold>Plugins</Text>
-                {insights.pluginBreakdown.slice(0, 5).map((s) => (
-                  <Text key={s.name}>
-                    <Text dimColor>{s.name.length > 14 ? s.name.slice(0, 13) + "…" : s.name.padEnd(14)}</Text>
-                    {" "}<Text color="cyan">{String(s.tokenPct).padStart(3)}%</Text>
-                  </Text>
-                ))}
+              {insights.subagentBreakdown.length === 0 && <Text dimColor>No subagent data for this period.</Text>}
+              {insights.subagentBreakdown.map((s) => (
+                <Box key={s.name}>
+                  <Text dimColor>{s.name.length > 34 ? s.name.slice(0, 33) + "…" : s.name.padEnd(34)}</Text>
+                  <Text color="cyan">{String(s.tokenPct).padStart(4)}%</Text>
+                </Box>
+              ))}
+            </Box>
+          )}
+
+          {/* Plugins 탭 */}
+          {insightSubTab === "plugins" && (
+            <Box flexDirection="column" marginTop={1}>
+              <Box>
+                <Text bold dimColor>{"Plugins"}</Text>
+                <Text dimColor>{"               % of usage"}</Text>
               </Box>
+              {insights.pluginBreakdown.length === 0 && <Text dimColor>No plugin data for this period.</Text>}
+              {insights.pluginBreakdown.map((s) => (
+                <Box key={s.name}>
+                  <Text dimColor>{s.name.length > 34 ? s.name.slice(0, 33) + "…" : s.name.padEnd(34)}</Text>
+                  <Text color="cyan">{String(s.tokenPct).padStart(4)}%</Text>
+                </Box>
+              ))}
             </Box>
           )}
         </Box>
