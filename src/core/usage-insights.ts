@@ -33,6 +33,7 @@ export interface LoadInsightsOpts {
   projectsDir: string;
   sessionMetaDir?: string; // kept for API compatibility, not used
   usageSnapshotPath: string;
+  cacheDir?: string;
 }
 
 async function loadPlanLimits(snapshotPath: string): Promise<PlanLimits | null> {
@@ -191,8 +192,11 @@ interface InsightsCacheFile {
 
 export async function loadUsageInsights(opts: LoadInsightsOpts): Promise<UsageInsights> {
   const { days, projectsDir, usageSnapshotPath } = opts;
+  const cachePath = opts.cacheDir
+    ? join(opts.cacheDir, `insights-${days}d.json`)
+    : insightsCachePath(days);
 
-  const cached = await readJson<InsightsCacheFile>(insightsCachePath(days), { fallback: null as unknown as InsightsCacheFile });
+  const cached = await readJson<InsightsCacheFile>(cachePath, { fallback: null as unknown as InsightsCacheFile });
   if (cached && Date.now() - cached.savedAt < CACHE_TTL_MS) {
     return cached.data;
   }
@@ -259,7 +263,7 @@ export async function loadUsageInsights(opts: LoadInsightsOpts): Promise<UsageIn
     pluginBreakdown: toBreakdown(pluginTokens),
   };
 
-  writeJsonAtomic(insightsCachePath(days), { savedAt: Date.now(), data: result } satisfies InsightsCacheFile).catch(() => {});
+  writeJsonAtomic(cachePath, { savedAt: Date.now(), data: result } satisfies InsightsCacheFile).catch(() => {});
 
   return result;
 }

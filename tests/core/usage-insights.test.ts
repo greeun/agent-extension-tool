@@ -10,11 +10,14 @@ describe("loadUsageInsights", () => {
   let tmpDir: string;
   let projectsDir: string;
   let usageSnapshotPath: string;
+  let cacheDir: string;
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(join(tmpdir(), "axt-insights-"));
     projectsDir = join(tmpDir, "projects");
     usageSnapshotPath = join(tmpDir, "usage-snapshot.json");
+    cacheDir = join(tmpDir, "cache");
+    await mkdir(cacheDir, { recursive: true });
 
     const projDir = join(projectsDir, "test-project");
     await mkdir(projDir, { recursive: true });
@@ -38,7 +41,7 @@ describe("loadUsageInsights", () => {
   });
 
   test("planLimits reads usage-snapshot.json", async () => {
-    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath });
+    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath, cacheDir });
     expect(result.planLimits).not.toBeNull();
     expect(result.planLimits!.sessionUsedPct).toBe(14);
     expect(result.planLimits!.weekUsedPct).toBe(8);
@@ -51,38 +54,39 @@ describe("loadUsageInsights", () => {
       days: 7,
       projectsDir,
       usageSnapshotPath: join(tmpDir, "nonexistent.json"),
+      cacheDir,
     });
     expect(result.planLimits).toBeNull();
   });
 
   test("skillBreakdown identifies skills from JSONL", async () => {
-    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath });
+    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath, cacheDir });
     const names = result.skillBreakdown.map((s) => s.name);
     expect(names).toContain("superpowers:brainstorming");
     expect(names).toContain("superpowers:writing-plans");
   });
 
   test("subagentBreakdown identifies agents from JSONL", async () => {
-    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath });
+    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath, cacheDir });
     const names = result.subagentBreakdown.map((s) => s.name);
     expect(names).toContain("general-purpose");
   });
 
   test("pluginBreakdown derives from skill prefix", async () => {
-    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath });
+    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath, cacheDir });
     const names = result.pluginBreakdown.map((s) => s.name);
     expect(names).toContain("superpowers");
   });
 
   test("subagentHeavyPct reflects sessions with Agent calls", async () => {
-    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath });
+    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath, cacheDir });
     // sess-skills-001 has Agent calls → subagentHeavy
     expect(result.subagentHeavyPct).toBeGreaterThan(0);
     expect(result.subagentHeavyPct).toBeLessThan(100);
   });
 
   test("largeContextPct reflects sessions with input_tokens > 150000", async () => {
-    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath });
+    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath, cacheDir });
     // sess-large: input_tokens=200000 → largeContext
     // sess-skills-001: input_tokens=50000 → not large
     // large session tokens = 230000, total ≈ 310000 → ~74%
@@ -90,7 +94,7 @@ describe("loadUsageInsights", () => {
   });
 
   test("tokenPct values sum to ≤ 100 for each breakdown", async () => {
-    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath });
+    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath, cacheDir });
     const skillSum = result.skillBreakdown.reduce((s, x) => s + x.tokenPct, 0);
     const agentSum = result.subagentBreakdown.reduce((s, x) => s + x.tokenPct, 0);
     expect(skillSum).toBeLessThanOrEqual(100.1);
@@ -100,7 +104,7 @@ describe("loadUsageInsights", () => {
   test("returns empty breakdowns when no JSONL files exist", async () => {
     await rm(projectsDir, { recursive: true });
     await mkdir(projectsDir, { recursive: true });
-    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath });
+    const result = await loadUsageInsights({ days: 7, projectsDir, usageSnapshotPath, cacheDir });
     expect(result.skillBreakdown).toHaveLength(0);
     expect(result.subagentBreakdown).toHaveLength(0);
   });
