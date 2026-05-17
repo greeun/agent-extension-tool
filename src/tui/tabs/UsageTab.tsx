@@ -8,6 +8,7 @@ import type { UnifiedUsageEntry } from "../../core/types.js";
 import { calculateCost } from "../../pricing/models.js";
 import { loadConfig } from "../../config/index.js";
 import { formatTokens, formatCost, budgetBar } from "../../cli/formatters.js";
+import { TUI_LOCALE } from "../locale.js";
 import { loadUsageInsights, type UsageInsights } from "../../core/usage-insights.js";
 
 interface Summary {
@@ -129,8 +130,8 @@ export function UsageTab({ platform, isFocused = true, refreshKey, focusLayer, s
     const blocks = computeBlocks(legacyEntries, tz);
     const active = blocks.find((b) => b.isActive);
     if (active) {
-      const start = new Date(active.startTime).toLocaleTimeString(config.locale, { timeZone: tz, hour: "2-digit", minute: "2-digit" });
-      const end = new Date(active.endTime).toLocaleTimeString(config.locale, { timeZone: tz, hour: "2-digit", minute: "2-digit" });
+      const start = new Date(active.startTime).toLocaleTimeString(TUI_LOCALE, { timeZone: tz, hour: "2-digit", minute: "2-digit" });
+      const end = new Date(active.endTime).toLocaleTimeString(TUI_LOCALE, { timeZone: tz, hour: "2-digit", minute: "2-digit" });
       const burn = active.burnRatePerMin ? `${formatTokens(active.burnRatePerMin)}/min` : "";
       const blockCost = (active.inputTokens / 1e6 * 15) + (active.outputTokens / 1e6 * 75) + (active.cacheCreationTokens / 1e6 * 18.75) + (active.cacheReadTokens / 1e6 * 1.5);
       newActiveBlock = `Active Block: ${start}~${end}  ${formatTokens(active.totalTokens)} tokens  ${burn}  $${blockCost.toFixed(2)}`;
@@ -140,7 +141,7 @@ export function UsageTab({ platform, isFocused = true, refreshKey, focusLayer, s
     const newBudgetLine = budgetBar(summarize(allEntries).cost, config.monthlyBudget);
     setBudgetLine(newBudgetLine);
 
-    const refreshTime = new Date().toLocaleTimeString();
+    const refreshTime = new Date().toLocaleTimeString(TUI_LOCALE);
     setLastRefresh(refreshTime);
 
     setLoading(false);
@@ -243,7 +244,7 @@ export function UsageTab({ platform, isFocused = true, refreshKey, focusLayer, s
     const filled = Math.round(pct / 5);
     const empty = 20 - filled;
     const bar = "█".repeat(Math.max(0, filled)) + "░".repeat(Math.max(0, empty));
-    const resetStr = resetsAt.toLocaleString("ko-KR", {
+    const resetStr = resetsAt.toLocaleString(TUI_LOCALE, {
       timeZone: "Asia/Seoul",
       month: "short",
       day: "numeric",

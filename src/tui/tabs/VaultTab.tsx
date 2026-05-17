@@ -19,6 +19,7 @@ import { setPluginEnabled } from "../../core/settings.js";
 import { PATHS } from "../../core/paths.js";
 import { scanProjectUsage, getProjects, type UsageIndex, type ProjectRef } from "../../core/project-usage.js";
 import type { VaultItem } from "../../core/vault.js";
+import { TUI_LOCALE } from "../locale.js";
 import { join } from "path";
 
 type FilterType = "all" | "skill" | "command" | "agent" | "plugin";
@@ -60,7 +61,7 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
   const [usageIndex, setUsageIndex] = useState<UsageIndex>(new Map());
   const [scanMode, setScanMode] = useState<ScanMode>("default");
   const [scanning, setScanning] = useState(false);
-  const [sortKey, setSortKey] = useState<SortKey>("updated");
+  const [sortKey, setSortKey] = useState<SortKey>("project");
   const [searchTerm, setSearchTerm] = useState("");
   const [searching, setSearching] = useState(false);
 
@@ -377,8 +378,8 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
         fields={selectedItem ? [
           { label: "Description", value: selectedItem.description || "—" },
           { label: "Extension path", value: selectedItem.path || "—" },
-          { label: "Added", value: selectedItem.createdAt ? selectedItem.createdAt.toLocaleString() : "—" },
-          { label: "Updated", value: selectedItem.updatedAt ? selectedItem.updatedAt.toLocaleString() : "—" },
+          { label: "Added", value: selectedItem.createdAt ? selectedItem.createdAt.toLocaleString(TUI_LOCALE) : "—" },
+          { label: "Updated", value: selectedItem.updatedAt ? selectedItem.updatedAt.toLocaleString(TUI_LOCALE) : "—" },
           { label: "Vault", value: selectedItem.inVault !== false ? "in vault" : "global only (press i to import)" },
           { label: "Project", value: isProjectChecked(selectedItem) ? (selectedItem.type === "plugin" ? "enabled" : "linked") : "not linked" },
           { label: "Global", value: isGlobalChecked(selectedItem) ? (selectedItem.type === "plugin" ? "enabled" : "linked") : "not linked" },

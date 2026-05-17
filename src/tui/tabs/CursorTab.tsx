@@ -3,6 +3,7 @@ import { Box, Text, useInput, useStdout } from "ink";
 import { Table } from "../components/Table.js";
 import { PATHS } from "../../core/paths.js";
 import type { CursorSummary } from "../../core/usage-cursor.js";
+import { TUI_LOCALE } from "../locale.js";
 
 // tabbar(1) + separator(1) + paddingY(2) + header(1) + cards(6) + marginTop(1) + label(1) + table header(1) + table sep(1)
 const CURSOR_OVERHEAD = 15;
@@ -39,7 +40,7 @@ export function CursorTab({ isFocused = true, onFocusUp, refreshKey }: Props) {
           date: m.commitDate.slice(0, 16),
         }))
       );
-      setLastRefresh(new Date().toLocaleTimeString());
+      setLastRefresh(new Date().toLocaleTimeString(TUI_LOCALE));
     } catch (e: any) {
       setError(e.message);
     }

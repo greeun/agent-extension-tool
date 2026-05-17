@@ -1,6 +1,6 @@
 {
   "name": "axt",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent eXtension Tool — manage marketplaces, plugins, skills, MCP, and usage across AI agent platforms",
   "type": "module",
   "bin": {

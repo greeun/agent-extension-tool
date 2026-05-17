@@ -7,6 +7,7 @@ import { calculateCost } from "../../pricing/models.js";
 import { loadConfig } from "../../config/index.js";
 import { computePlanUsage, getDaysInBillingPeriod } from "../../plans/index.js";
 import { formatTokens, formatCost, budgetBar } from "../../cli/formatters.js";
+import { TUI_LOCALE } from "../locale.js";
 import type { Platform } from "../../core/types.js";
 
 interface PlatformSummary {
@@ -107,7 +108,7 @@ export function OverviewTab() {
     const newChartData = sorted.map(([date, val]) => ({ label: date.slice(5), value: val }));
     setChartData(newChartData);
 
-    const refreshTime = new Date().toLocaleTimeString();
+    const refreshTime = new Date().toLocaleTimeString(TUI_LOCALE);
     setLoading(false);
     setLastRefresh(refreshTime);
 
