@@ -319,6 +319,7 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
     }
     setStatus(`Applied: ${ok} changed${err > 0 ? `, ${err} errors` : ""}`);
     await load();
+    await loadUsage(scanMode);
     setMode("list");
   };
 
