@@ -6,7 +6,7 @@ import { loadUnifiedUsage } from "../../core/usage-unified.js";
 import { calculateCost } from "../../pricing/models.js";
 import { loadConfig } from "../../config/index.js";
 import { computePlanUsage, getDaysInBillingPeriod } from "../../plans/index.js";
-import { formatTokens, formatCost, budgetBar } from "../../cli/formatters.js";
+import { formatTokens, formatCost, budgetBar } from "@utils/format.js";
 import { TUI_LOCALE } from "../locale.js";
 import type { Platform } from "../../core/types.js";
 

@@ -3,7 +3,7 @@ import chalk from "chalk";
 import { homedir } from "os";
 import { PATHS, AXT_CONFIG_PATH } from "../core/paths.js";
 import { loadConfig } from "../config/index.js";
-import { formatTokens, formatCost } from "./formatters.js";
+import { formatTokens, formatCost } from "@utils/format.js";
 import { analyzeContext, type Category } from "../core/context-analysis.js";
 
 const CATEGORY_LABELS: Record<Category, string> = {

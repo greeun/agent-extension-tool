@@ -7,7 +7,7 @@ import { loadUnifiedUsage } from "../core/usage-unified.js";
 import type { UnifiedUsageEntry } from "../core/types.js";
 import { calculateCost } from "../pricing/models.js";
 import { loadConfig } from "../config/index.js";
-import { formatTokens, formatCost, budgetBar } from "./formatters.js";
+import { formatTokens, formatCost, budgetBar } from "@utils/format.js";
 
 function unifiedToUsageEntry(e: UnifiedUsageEntry): UsageEntry {
   return {

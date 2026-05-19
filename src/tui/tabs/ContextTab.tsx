@@ -7,7 +7,7 @@ import { DetailPanel } from "../components/DetailPanel.js";
 import { PreviewPanel, previewScrollHandler } from "../components/PreviewPanel.js";
 import { Confirm } from "../components/Confirm.js";
 import { PATHS, AXT_CONFIG_PATH } from "../../core/paths.js";
-import { formatTokens } from "../../cli/formatters.js";
+import { formatTokens } from "@utils/format.js";
 import { unlinkSkill } from "../../core/skill.js";
 import { aggregateBySession } from "../../core/usage.js";
 import { loadUnifiedUsage } from "../../core/usage-unified.js";
