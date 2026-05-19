@@ -1,4 +1,4 @@
-import type { UsageEntry } from "../usage.js";
+import type { UsageEntry } from "./claude.js";
 
 export interface DailyUsage {
   date: string;
