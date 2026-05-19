@@ -17,8 +17,8 @@ import {
   analyzeContext,
   type ContextAnalysis,
   type ContextSource,
-  type Category,
 } from "../../core/context-analysis.js";
+import { groupByCategory, CATEGORY_LABELS, type CategoryRow } from "../../core/context/group.js";
 
 interface SessionTokens {
   inputTokens: number;
@@ -56,75 +56,9 @@ function quotaColor(pct: number): string {
   return "green";
 }
 
-interface CategoryRow {
-  category: string;
-  catKey: Category;
-  items: string;
-  tokens: string;
-  pct: string;
-  bar: string;
-  sources: ContextSource[];
-}
-
-const CATEGORY_LABELS: Record<Category, string> = {
-  "system-prompt": "System prompt",
-  "claude-md": "CLAUDE.md",
-  "settings": "Settings",
-  "memory": "Memory",
-  "skills": "Skills metadata",
-  "mcp-tools": "MCP tools",
-  "plugins": "Plugins",
-  "hooks": "Hooks output",
-  "commands": "Commands",
-  "agents": "Agents",
-  "git-status": "Git status",
-  "user-context": "User context",
-};
-
-const BAR_WIDTH = 16;
-
-function makeBar(pct: number, width: number = BAR_WIDTH): string {
-  const filled = Math.round(Math.min(pct / 100, 1) * width);
-  return "█".repeat(filled) + "░".repeat(width - filled);
-}
-
 function makeUsageBar(pct: number, width: number = 30): string {
   const filled = Math.round(Math.min(pct / 100, 1) * width);
   return "▓".repeat(filled) + "░".repeat(width - filled);
-}
-
-function groupByCategory(sources: ContextSource[]): CategoryRow[] {
-  const map = new Map<Category, ContextSource[]>();
-  for (const src of sources) {
-    const existing = map.get(src.category) ?? [];
-    existing.push(src);
-    map.set(src.category, existing);
-  }
-
-  const totalTokens = sources.reduce((s, src) => s + src.estimatedTokens, 0);
-
-  const rows: CategoryRow[] = [];
-  for (const [cat, srcs] of map.entries()) {
-    const catTokens = srcs.reduce((s, src) => s + src.estimatedTokens, 0);
-    const catPct = totalTokens > 0 ? (catTokens / totalTokens) * 100 : 0;
-    rows.push({
-      category: CATEGORY_LABELS[cat] ?? cat,
-      catKey: cat,
-      items: String(srcs.length),
-      tokens: formatTokens(catTokens),
-      pct: `${catPct.toFixed(1)}%`,
-      bar: makeBar(catPct),
-      sources: srcs,
-    });
-  }
-
-  rows.sort((a, b) => {
-    const aT = a.sources.reduce((s, src) => s + src.estimatedTokens, 0);
-    const bT = b.sources.reduce((s, src) => s + src.estimatedTokens, 0);
-    return bT - aT;
-  });
-
-  return rows;
 }
 
 function openInEditor(filePath: string, onDone: () => void, setStatus: (s: string) => void) {
