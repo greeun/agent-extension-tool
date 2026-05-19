@@ -15,7 +15,8 @@
       "@cli/*": ["./src/cli/*"],
       "@tui/*": ["./src/tui/*"],
       "@pricing/*": ["./src/pricing/*"],
-      "@config/*": ["./src/config/*"]
+      "@config/*": ["./src/config/*"],
+      "@utils/*": ["./src/utils/*"]
     }
   },
   "include": ["src/**/*", "bin/**/*", "tests/**/*"]
