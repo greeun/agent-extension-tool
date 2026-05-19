@@ -39,3 +39,16 @@ export function visibleWindow(
   const start = Math.min(Math.max(0, selectedIndex - half), length - cap);
   return [start, start + cap];
 }
+
+export function openInEditor(filePath: string, onDone: () => void, setStatus: (s: string) => void) {
+  const editor = process.env.EDITOR ?? "vi";
+  try {
+    process.stdout.write("\x1b[?1049l");
+    Bun.spawnSync([editor, filePath], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J");
+    onDone();
+  } catch {
+    process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J");
+    setStatus("Could not open editor");
+  }
+}

@@ -5,7 +5,7 @@ import { loadConfig, saveConfig } from "../config/index.js";
 import { loadUnifiedUsage } from "../core/usage-unified.js";
 import { calculateCost } from "../pricing/models.js";
 import { computePlanUsage, getDaysInBillingPeriod } from "../plans/index.js";
-import { formatCost, budgetBar } from "./formatters.js";
+import { formatCost, budgetBar } from "@utils/format.js";
 import type { Platform } from "../core/types.js";
 
 export function registerPlanCommands(program: Command): void {

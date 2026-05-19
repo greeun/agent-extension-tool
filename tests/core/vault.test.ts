@@ -3,7 +3,7 @@ import { mkdtemp, rm, mkdir, symlink, readlink, lstat, stat } from "fs/promises"
 import { join } from "path";
 import { tmpdir } from "os";
 
-import { readProfile, writeProfile, syncProject, listVaultItems, listVaultItemsWithProjectState, linkToProject, unlinkFromProject, linkToGlobal, unlinkFromGlobal, migrateToVault } from "../../src/core/vault.js";
+import { readProfile, writeProfile, syncProject, listVaultItems, listVaultItemsWithProjectState, linkToProject, unlinkFromProject, linkToGlobal, unlinkFromGlobal, migrateToVault, parseYamlDescription } from "../../src/core/vault.js";
 import type { AxtProfile, VaultItem } from "../../src/core/vault.js";
 
 describe("vault profile I/O", () => {
@@ -514,5 +514,53 @@ describe("migrateToVault", () => {
 
     const content = await Bun.file(join(vaultDir, "skills", "tdd", "skill.md")).text();
     expect(content).toBe("# Vault TDD");
+  });
+});
+
+describe("parseYamlDescription", () => {
+  test("plain single-line scalar", () => {
+    expect(parseYamlDescription("name: x\ndescription: Hello world.")).toBe("Hello world.");
+  });
+
+  test("double-quoted single-line scalar is unquoted", () => {
+    expect(parseYamlDescription('description: "Hello \\"world\\"."')).toBe('Hello "world".');
+  });
+
+  test("single-quoted scalar with escaped quote", () => {
+    expect(parseYamlDescription("description: 'it''s fine'")).toBe("it's fine");
+  });
+
+  test("literal block scalar (|) is collapsed to one line", () => {
+    const fm = "name: x\ndescription: |\n  Line one.\n  Line two.\nother: y";
+    expect(parseYamlDescription(fm)).toBe("Line one. Line two.");
+  });
+
+  test("folded block scalar (>-) joins with spaces", () => {
+    const fm = "description: >-\n  alpha\n  beta\n";
+    expect(parseYamlDescription(fm)).toBe("alpha beta");
+  });
+
+  test("block scalar stops at next top-level key", () => {
+    const fm = "description: |\n  kept\nname: not-part-of-desc";
+    expect(parseYamlDescription(fm)).toBe("kept");
+  });
+
+  test("CRLF line endings are handled", () => {
+    expect(parseYamlDescription("name: x\r\ndescription: CRLF works.\r\n")).toBe("CRLF works.");
+  });
+
+  test("multi-line double-quoted: trailing backslash joins with NO space", () => {
+    // YAML double-quoted line continuation: `pale\` + `ttes` => `palettes`
+    const fm = 'description: "21 pale\\\n  ttes, 50 fonts"';
+    expect(parseYamlDescription(fm)).toBe("21 palettes, 50 fonts");
+  });
+
+  test("multi-line double-quoted: natural wrap folds to a space", () => {
+    const fm = 'description: "first\n  second"';
+    expect(parseYamlDescription(fm)).toBe("first second");
+  });
+
+  test("missing description returns empty string", () => {
+    expect(parseYamlDescription("name: x\nother: y")).toBe("");
   });
 });

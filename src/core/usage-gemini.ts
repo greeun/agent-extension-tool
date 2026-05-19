@@ -1,5 +1,6 @@
 import { readFile } from "fs/promises";
 import { basename, dirname } from "path";
+import { readJsonlRecords } from "@utils/jsonl.js";
 import type { UnifiedUsageEntry } from "./types.js";
 
 interface GeminiMessage {
@@ -10,15 +11,16 @@ interface GeminiMessage {
 interface GeminiSession { sessionId?: string; messages?: GeminiMessage[]; }
 
 export async function parseGeminiFile(filePath: string): Promise<UnifiedUsageEntry[]> {
-  const content = await readFile(filePath, "utf-8");
   const entries: UnifiedUsageEntry[] = [];
 
   let session: GeminiSession;
   if (filePath.endsWith(".jsonl")) {
-    const lines = content.split("\n").filter((l) => l.trim());
-    if (lines.length === 0) return [];
-    try { session = JSON.parse(lines[0]); } catch { return []; }
+    const records = await readJsonlRecords(filePath);
+    if (records.length === 0) return [];
+    session = records[0] as GeminiSession;
   } else {
+    let content: string;
+    try { content = await readFile(filePath, "utf-8"); } catch { return []; }
     try { session = JSON.parse(content); } catch { return []; }
   }
 

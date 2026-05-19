@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from "fs/promises";
 import { join } from "path";
 import { readJson, writeJsonAtomic } from "./json-io.js";
 import { AXT_CONFIG_DIR } from "./paths.js";
+import { readJsonlRecords } from "@utils/jsonl.js";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const insightsCachePath = (days: number) => join(AXT_CONFIG_DIR, "cache", `insights-${days}d.json`);
@@ -71,12 +72,8 @@ async function parseJsonlSession(filePath: string): Promise<ParsedSession> {
     hasAgentCalls: false, skills: [], agents: [],
     firstTimestamp: null, lastTimestamp: null,
   };
-  let content: string;
-  try {
-    content = await readFile(filePath, "utf-8");
-  } catch {
-    return empty;
-  }
+  const records = await readJsonlRecords(filePath);
+  if (records.length === 0) return empty;
 
   let inputTokens = 0;
   let outputTokens = 0;
@@ -86,51 +83,46 @@ async function parseJsonlSession(filePath: string): Promise<ParsedSession> {
   let firstTimestamp: Date | null = null;
   let lastTimestamp: Date | null = null;
 
-  for (const line of content.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const record = JSON.parse(line) as {
-        type?: string;
-        timestamp?: string;
-        message?: {
-          usage?: { input_tokens?: number; output_tokens?: number };
-          content?: Array<{ type?: string; name?: string; input?: Record<string, unknown> }>;
-        };
+  for (const rec of records) {
+    const record = rec as {
+      type?: string;
+      timestamp?: string;
+      message?: {
+        usage?: { input_tokens?: number; output_tokens?: number };
+        content?: Array<{ type?: string; name?: string; input?: Record<string, unknown> }>;
       };
+    };
 
-      if (record.timestamp) {
-        const ts = new Date(record.timestamp);
-        if (!isNaN(ts.getTime())) {
-          if (!firstTimestamp || ts < firstTimestamp) firstTimestamp = ts;
-          if (!lastTimestamp || ts > lastTimestamp) lastTimestamp = ts;
-        }
+    if (record.timestamp) {
+      const ts = new Date(record.timestamp);
+      if (!isNaN(ts.getTime())) {
+        if (!firstTimestamp || ts < firstTimestamp) firstTimestamp = ts;
+        if (!lastTimestamp || ts > lastTimestamp) lastTimestamp = ts;
       }
+    }
 
-      if (record.type !== "assistant") continue;
+    if (record.type !== "assistant") continue;
 
-      const usage = record.message?.usage;
-      if (usage) {
-        inputTokens += usage.input_tokens ?? 0;
-        outputTokens += usage.output_tokens ?? 0;
+    const usage = record.message?.usage;
+    if (usage) {
+      inputTokens += usage.input_tokens ?? 0;
+      outputTokens += usage.output_tokens ?? 0;
+    }
+
+    const contentArr = record.message?.content;
+    if (!Array.isArray(contentArr)) continue;
+    for (const block of contentArr) {
+      if (block.type !== "tool_use") continue;
+      if (block.name === "Skill") {
+        skills.push((block.input?.skill as string) ?? "unknown");
+      } else if (block.name === "Agent") {
+        hasAgentCalls = true;
+        agents.push(
+          (block.input?.subagent_type as string) ??
+          (block.input?.name as string) ??
+          "general-purpose"
+        );
       }
-
-      const contentArr = record.message?.content;
-      if (!Array.isArray(contentArr)) continue;
-      for (const block of contentArr) {
-        if (block.type !== "tool_use") continue;
-        if (block.name === "Skill") {
-          skills.push((block.input?.skill as string) ?? "unknown");
-        } else if (block.name === "Agent") {
-          hasAgentCalls = true;
-          agents.push(
-            (block.input?.subagent_type as string) ??
-            (block.input?.name as string) ??
-            "general-purpose"
-          );
-        }
-      }
-    } catch {
-      // skip malformed line
     }
   }
 
