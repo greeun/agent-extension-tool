@@ -1,24 +1,7 @@
 import type { UnifiedUsageEntry, Platform } from "./types.js";
-import type { UsageEntry } from "./usage.js";
-import { loadAllUsage } from "./usage.js";
-import { loadCodexUsage } from "./usage-codex.js";
-import { loadGeminiUsage } from "./usage-gemini.js";
+import { claudeLoader, codexLoader, geminiLoader, withCache, claudeToUnified } from "./usage/loader.js";
 
-export function claudeToUnified(entry: UsageEntry): UnifiedUsageEntry {
-  return {
-    platform: "claude",
-    model: entry.model,
-    timestamp: entry.timestamp,
-    sessionId: entry.sessionId,
-    projectPath: entry.projectPath,
-    inputTokens: entry.inputTokens,
-    outputTokens: entry.outputTokens,
-    cacheWriteTokens: entry.cacheCreationTokens,
-    cacheReadTokens: entry.cacheReadTokens,
-    reasoningTokens: 0,
-    toolTokens: 0,
-  };
-}
+export { claudeToUnified };
 
 interface LoadOptions {
   claudeProjectsDir: string;
@@ -34,30 +17,24 @@ interface LoadOptions {
 export async function loadUnifiedUsage(options: LoadOptions): Promise<UnifiedUsageEntry[]> {
   const entries: UnifiedUsageEntry[] = [];
   const platform = options.platform ?? "all";
-  const dateFilter = { since: options.since, until: options.until };
 
-  if (platform === "all" || platform === "claude") {
+  const jobs: Array<{ p: Platform; dir: string; loader: ReturnType<typeof withCache> }> = [
+    { p: "claude", dir: options.claudeProjectsDir, loader: withCache(claudeLoader) },
+    { p: "codex", dir: options.codexSessionsDir, loader: codexLoader },
+    { p: "gemini", dir: options.geminiTmpDir, loader: geminiLoader },
+  ];
+
+  for (const job of jobs) {
+    if (platform !== "all" && platform !== job.p) continue;
     try {
-      const claude = await loadAllUsage(options.claudeProjectsDir, {
-        ...dateFilter,
-        project: options.project,
-        forceRefresh: options.forceRefresh,
+      const out = await job.loader.load({
+        dir: job.dir,
+        since: options.since,
+        until: options.until,
+        project: job.p === "claude" ? options.project : undefined,
+        forceRefresh: job.p === "claude" ? options.forceRefresh : undefined,
       });
-      entries.push(...claude.map(claudeToUnified));
-    } catch {}
-  }
-
-  if (platform === "all" || platform === "codex") {
-    try {
-      const codex = await loadCodexUsage(options.codexSessionsDir, dateFilter);
-      entries.push(...codex);
-    } catch {}
-  }
-
-  if (platform === "all" || platform === "gemini") {
-    try {
-      const gemini = await loadGeminiUsage(options.geminiTmpDir, dateFilter);
-      entries.push(...gemini);
+      entries.push(...out);
     } catch {}
   }
 
