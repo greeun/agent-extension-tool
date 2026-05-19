@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, mkdir } from "fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, symlink } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
@@ -8,6 +8,10 @@ import {
   getProjects,
   type UsageIndex,
 } from "../../src/core/project-usage.js";
+
+function encodeProjectPath(p: string): string {
+  return p.replace(/[/.]/g, "-");
+}
 
 describe("getProjectCount", () => {
   test("returns 0 for an empty index", () => {
@@ -74,5 +78,37 @@ describe("scanProjectUsage", () => {
     await mkdir(join(projectsDir, "misc-dir"), { recursive: true });
     const index = await scanProjectUsage(projectsDir, vaultDir);
     expect(index.size).toBe(0);
+  });
+
+  test("decodes project dir names containing dots (e.g. tlog.net)", async () => {
+    const realProj = join(tmpDir, "workspace", "tlog.net", "url-shortener-mvp");
+    await mkdir(join(realProj, ".claude", "skills"), { recursive: true });
+    await mkdir(join(vaultDir, "skills", "harness-driven-dev"), { recursive: true });
+    await symlink(
+      join(vaultDir, "skills", "harness-driven-dev"),
+      join(realProj, ".claude", "skills", "harness-driven-dev"),
+    );
+
+    const encoded = encodeProjectPath(realProj);
+    await mkdir(join(projectsDir, encoded), { recursive: true });
+
+    const index = await scanProjectUsage(projectsDir, vaultDir);
+    const projects = getProjects(index, "skill", "harness-driven-dev");
+    expect(projects.map((p) => p.name)).toContain("url-shortener-mvp");
+  });
+
+  test("decodes project dir names with leading-dot subdir (e.g. .config)", async () => {
+    const realProj = join(tmpDir, ".config", "my-app");
+    await mkdir(realProj, { recursive: true });
+    await writeFile(
+      join(realProj, ".axt-profile.json"),
+      JSON.stringify({ extensions: { skills: ["x"] } }),
+    );
+
+    const encoded = encodeProjectPath(realProj);
+    await mkdir(join(projectsDir, encoded), { recursive: true });
+
+    const index = await scanProjectUsage(projectsDir, vaultDir);
+    expect(getProjects(index, "skill", "x").map((p) => p.name)).toContain("my-app");
   });
 });

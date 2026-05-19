@@ -19,28 +19,45 @@ export type UsageIndex = Map<string, ExtensionUsage>;
 async function decodeProjectDirName(encoded: string): Promise<string | null> {
   const segments = encoded.substring(1).split("-");
   let current = "/";
-
   let i = 0;
-  while (i < segments.length) {
-    let matched = false;
-    for (let len = segments.length - i; len >= 1; len--) {
-      const candidate = segments.slice(i, i + len).join("-");
 
-      for (const prefix of ["", "."]) {
-        const testPath = join(current, prefix + candidate);
-        try {
-          const s = await stat(testPath);
-          if (s.isDirectory()) {
-            current = testPath;
-            i += len;
-            matched = true;
-            break;
-          }
-        } catch {}
-      }
-      if (matched) break;
+  while (i < segments.length) {
+    let entries: string[];
+    try {
+      entries = await readdir(current);
+    } catch {
+      return null;
     }
-    if (!matched) return null;
+
+    // Claude Code encodes both `/` and `.` as `-`, so "tlog.net" and a
+    // hypothetical two-level "tlog/net" produce the same encoded segments.
+    // Resolve by encoding each child name and matching against segments,
+    // preferring the longest match.
+    let bestMatch: { name: string; len: number } | null = null;
+    for (const name of entries) {
+      const parts = name.replace(/\./g, "-").split("-");
+      if (parts.length > segments.length - i) continue;
+      let isMatch = true;
+      for (let j = 0; j < parts.length; j++) {
+        if (parts[j] !== segments[i + j]) { isMatch = false; break; }
+      }
+      if (!isMatch) continue;
+      if (!bestMatch || parts.length > bestMatch.len) {
+        bestMatch = { name, len: parts.length };
+      }
+    }
+
+    if (!bestMatch) return null;
+
+    const next = join(current, bestMatch.name);
+    try {
+      const s = await stat(next);
+      if (!s.isDirectory()) return null;
+    } catch {
+      return null;
+    }
+    current = next;
+    i += bestMatch.len;
   }
 
   return current;
