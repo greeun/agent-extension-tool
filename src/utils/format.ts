@@ -1,5 +1,6 @@
 import chalk from "chalk";
 import { convertCurrency } from "@pricing/models.js";
+import { renderBar } from "@utils/bar.js";
 
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -15,8 +16,7 @@ export function formatCost(usd: number, exchangeRate: number): string {
 export function budgetBar(used: number, budget: number, width: number = 25): string {
   const pct = Math.min(used / budget, 1.5);
   const filled = Math.round(Math.min(pct, 1) * width);
-  const empty = width - filled;
-  const bar = "█".repeat(filled) + "░".repeat(empty);
+  const bar = renderBar(filled, width);
   const label = `$${used.toFixed(2)}/$${budget} (${(pct * 100).toFixed(0)}%)`;
   if (pct >= 1) return chalk.red(`${bar} ${label} ⛔`);
   if (pct >= 0.8) return chalk.yellow(`${bar} ${label} ⚠`);
