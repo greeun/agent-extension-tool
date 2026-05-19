@@ -39,14 +39,122 @@ export interface MigrateResult {
 
 const PROFILE_NAME = ".axt-profile.json";
 
+// Collapse all whitespace (incl. newlines from block scalars) to single
+// spaces so multi-line YAML descriptions render on one TUI line.
+function normalizeDescription(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+// Read a (possibly multi-line) double-quoted scalar starting at lines[i]
+// from `start` (just past the opening quote). Honors \" \\ \n \t escapes
+// and the trailing-backslash line continuation (joins with NO space, e.g.
+// `pale\` + `ttes` -> `palettes`); natural line wraps fold to a space.
+function readDoubleQuoted(lines: string[], i: number, start: string): string {
+  let buf = "";
+  let line = start;
+  let idx = i;
+  for (;;) {
+    let k = 0;
+    let continued = false;
+    let closed = false;
+    while (k < line.length) {
+      const ch = line[k];
+      if (ch === "\\") {
+        if (k + 1 >= line.length) { continued = true; k++; break; }
+        const nx = line[k + 1];
+        buf += nx === "n" ? "\n" : nx === "t" ? "\t" : nx;
+        k += 2;
+        continue;
+      }
+      if (ch === '"') { closed = true; break; }
+      buf += ch;
+      k++;
+    }
+    if (closed || idx + 1 >= lines.length) break;
+    if (!continued) buf += " "; // folded line break => space
+    idx++;
+    line = lines[idx].replace(/^\s+/, "");
+  }
+  return buf;
+}
+
+// Read a (possibly multi-line) single-quoted scalar; '' is a literal
+// quote, line breaks fold to a single space.
+function readSingleQuoted(lines: string[], i: number, start: string): string {
+  let buf = "";
+  let line = start;
+  let idx = i;
+  for (;;) {
+    let k = 0;
+    let closed = false;
+    while (k < line.length) {
+      if (line[k] === "'") {
+        if (line[k + 1] === "'") { buf += "'"; k += 2; continue; }
+        closed = true;
+        break;
+      }
+      buf += line[k];
+      k++;
+    }
+    if (closed || idx + 1 >= lines.length) break;
+    buf += " ";
+    idx++;
+    line = lines[idx].replace(/^\s+/, "");
+  }
+  return buf;
+}
+
+/**
+ * Extract the `description` value from YAML frontmatter, handling plain,
+ * single-line/multi-line quoted, and block-scalar (`|`, `>`, with
+ * chomping/indent indicators) forms, plus CRLF line endings. The previous
+ * regex-only approach captured only same-line text, so `description: |`
+ * skills showed an empty/garbage description and CRLF/multi-line quoted
+ * descriptions were truncated.
+ */
+export function parseYamlDescription(frontmatter: string): string {
+  const lines = frontmatter.replace(/\r\n?/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(\s*)description:(.*)$/);
+    if (!m) continue;
+    const keyIndent = m[1].length;
+    const rest = m[2].replace(/^\s+/, "").replace(/\s+$/, "");
+
+    // Block scalar: | or > optionally followed by chomping/indent indicators.
+    if (/^[|>][0-9+-]*$/.test(rest)) {
+      const folded = rest[0] === ">";
+      const block: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const l = lines[j];
+        if (l.trim() === "") {
+          block.push("");
+          continue;
+        }
+        const indent = l.match(/^(\s*)/)![1].length;
+        if (indent <= keyIndent) break; // dedent => next key, block ends
+        block.push(l);
+      }
+      while (block.length && block[block.length - 1] === "") block.pop();
+      const nonEmpty = block.filter((x) => x.trim() !== "");
+      if (nonEmpty.length === 0) return "";
+      const common = Math.min(...nonEmpty.map((x) => x.match(/^(\s*)/)![1].length));
+      const dedented = block.map((x) => x.slice(common));
+      return normalizeDescription(dedented.join(folded ? " " : "\n"));
+    }
+
+    if (rest === "") return "";
+    if (rest[0] === '"') return normalizeDescription(readDoubleQuoted(lines, i, rest.slice(1)));
+    if (rest[0] === "'") return normalizeDescription(readSingleQuoted(lines, i, rest.slice(1)));
+    return normalizeDescription(rest);
+  }
+  return "";
+}
+
 async function readDescription(filePath: string): Promise<string> {
   try {
-    const content = await Bun.file(filePath).text();
+    const content = (await Bun.file(filePath).text()).replace(/\r\n?/g, "\n");
     const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
-    if (match) {
-      const descMatch = match[1].match(/^description:\s*(.+)$/m);
-      if (descMatch) return descMatch[1].trim();
-    }
+    if (match) return parseYamlDescription(match[1]);
   } catch {}
   return "";
 }
