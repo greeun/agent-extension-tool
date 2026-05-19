@@ -2,12 +2,13 @@ import { useState, useEffect } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { homedir } from "os";
 import { Table } from "../components/Table.js";
-import { visibleWindow } from "../utils.js";
+import { visibleWindow, openInEditor } from "../utils.js";
 import { DetailPanel } from "../components/DetailPanel.js";
 import { PreviewPanel, previewScrollHandler } from "../components/PreviewPanel.js";
 import { Confirm } from "../components/Confirm.js";
 import { PATHS, AXT_CONFIG_PATH } from "../../core/paths.js";
-import { formatTokens } from "@utils/format.js";
+import { formatTokens, formatResetTime } from "@utils/format.js";
+import { renderBar } from "@utils/bar.js";
 import { unlinkSkill } from "../../core/skill.js";
 import { aggregateBySession } from "../../core/usage.js";
 import { loadUnifiedUsage } from "../../core/usage-unified.js";
@@ -31,23 +32,8 @@ function emptySessionTokens(): SessionTokens {
   return { inputTokens: 0, outputTokens: 0, cacheWriteTokens: 0, cacheReadTokens: 0 };
 }
 
-function formatResetTime(resetAt: Date | null, tz: string): string {
-  if (!resetAt) return "";
-  const diffMs = resetAt.getTime() - Date.now();
-  if (diffMs <= 0) return "now";
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  const remMins = mins % 60;
-  if (hours < 24) return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
-  const days = Math.floor(hours / 24);
-  const remHours = hours % 24;
-  return remHours > 0 ? `${days}d ${remHours}h` : `${days}d`;
-}
-
 function quotaBar(pct: number, width = 16): string {
-  const filled = Math.round(Math.min(pct / 100, 1) * width);
-  return "█".repeat(filled) + "░".repeat(width - filled);
+  return renderBar(Math.round(Math.min(pct / 100, 1) * width), width);
 }
 
 function quotaColor(pct: number): string {
@@ -57,21 +43,7 @@ function quotaColor(pct: number): string {
 }
 
 function makeUsageBar(pct: number, width: number = 30): string {
-  const filled = Math.round(Math.min(pct / 100, 1) * width);
-  return "▓".repeat(filled) + "░".repeat(width - filled);
-}
-
-function openInEditor(filePath: string, onDone: () => void, setStatus: (s: string) => void) {
-  const editor = process.env.EDITOR ?? "vi";
-  try {
-    process.stdout.write("\x1b[?1049l");
-    Bun.spawnSync([editor, filePath], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J");
-    onDone();
-  } catch {
-    process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J");
-    setStatus("Could not open editor");
-  }
+  return renderBar(Math.round(Math.min(pct / 100, 1) * width), width, "▓");
 }
 
 type ViewMode = "categories" | "sources" | "preview" | "confirm";
