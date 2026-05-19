@@ -1,6 +1,5 @@
 import { statSync, existsSync } from "fs";
 import { join, basename } from "path";
-import { spawnSync } from "child_process";
 import { listAllSkills } from "./skill.js";
 import { listCommands } from "./commands.js";
 import { listAllAgents } from "./agents.js";
@@ -11,6 +10,16 @@ import { readEnabledPlugins } from "./settings.js";
 import { getModelPricing, getContextWindowSize } from "../pricing/models.js";
 import { estimateTokens } from "@utils/tokens.js";
 import { safeRead, safeReaddir } from "@utils/safe-io.js";
+import {
+  FIXED_SYSTEM_PROMPT_TOKENS,
+  FIXED_USER_CONTEXT_TOKENS,
+  FIXED_HOOK_OUTPUT_TOKENS,
+  getClaudeVersion,
+  getGitStatus,
+  buildSystemPromptPreview,
+  buildUserContextPreview,
+  buildHookPreview,
+} from "./context/preview.js";
 import type {
   Category,
   ContextSource,
@@ -33,9 +42,6 @@ export type {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const FIXED_SYSTEM_PROMPT_TOKENS = 4200;
-const FIXED_USER_CONTEXT_TOKENS = 280;
-const FIXED_HOOK_OUTPUT_TOKENS = 200;
 const MEMORY_LINE_LIMIT = 200;
 const MEMORY_BYTE_LIMIT = 25 * 1024;
 
@@ -94,79 +100,6 @@ function makeFixed(
     actionable: false,
     content,
   };
-}
-
-function getClaudeVersion(): string {
-  try {
-    const result = spawnSync("claude", ["--version"], { encoding: "utf-8", timeout: 3000 });
-    return result.stdout?.trim() ?? "unknown";
-  } catch { return "unknown"; }
-}
-
-function getGitStatus(projectDir: string): string {
-  try {
-    const result = spawnSync("git", ["status"], { cwd: projectDir, encoding: "utf-8", timeout: 5000 });
-    return result.stdout?.trim() ?? "";
-  } catch { return ""; }
-}
-
-function buildSystemPromptPreview(version: string): string {
-  return [
-    `# Claude Code System Prompt (v${version})`,
-    "",
-    "The base system prompt is embedded in the Claude Code binary and sent",
-    "at the start of every API call. It cannot be read directly from disk.",
-    "",
-    "## Known Sections",
-    "",
-    "1. Identity — \"You are Claude Code, Anthropic's official CLI for Claude.\"",
-    "2. Tool definitions — Bash, Read, Edit, Write, Agent, WebSearch, etc.",
-    "3. Safety & permissions — OWASP guidelines, destructive-action guards",
-    "4. Git workflow — commit, PR, branch conventions",
-    "5. Tone & style — concise, no emojis, file:line references",
-    "6. Context management — compression, session guidance",
-    "7. Environment — platform, shell, model, working directory",
-    "",
-    `Estimated tokens: ${FIXED_SYSTEM_PROMPT_TOKENS}`,
-    "",
-    "Note: Use \`claude --append-system-prompt <text>\` to add custom instructions.",
-    "Use \`claude --system-prompt <text>\` to replace the entire system prompt.",
-  ].join("\n");
-}
-
-function buildUserContextPreview(homeDir: string, projectDir: string): string {
-  const email = process.env.USER_EMAIL ?? process.env.EMAIL ?? "—";
-  const today = new Date().toLocaleDateString("en-CA");
-  return [
-    "# User Context",
-    "",
-    "Dynamic per-session values injected by Claude Code:",
-    "",
-    `- userEmail: ${email}`,
-    `- currentDate: ${today}`,
-    `- homeDir: ${homeDir}`,
-    `- projectDir: ${projectDir}`,
-    `- platform: ${process.platform}`,
-    `- shell: ${process.env.SHELL ?? "—"}`,
-    "",
-    `Estimated tokens: ${FIXED_USER_CONTEXT_TOKENS}`,
-  ].join("\n");
-}
-
-function buildHookPreview(hook: { event: string; type: string; command?: string; url?: string; server?: string; tool?: string; timeout?: number; matcher?: string }): string {
-  const lines = [
-    `# Hook: ${hook.event}`,
-    "",
-    `Type: ${hook.type}`,
-  ];
-  if (hook.matcher) lines.push(`Matcher: ${hook.matcher}`);
-  if (hook.command) lines.push(`Command: ${hook.command}`);
-  if (hook.url) lines.push(`URL: ${hook.url}`);
-  if (hook.server) lines.push(`MCP Server: ${hook.server}`);
-  if (hook.tool) lines.push(`Tool: ${hook.tool}`);
-  if (hook.timeout) lines.push(`Timeout: ${hook.timeout}ms`);
-  lines.push("", `Estimated output tokens: ${FIXED_HOOK_OUTPUT_TOKENS}`);
-  return lines.join("\n");
 }
 
 // ── Main function ──────────────────────────────────────────────────────────
