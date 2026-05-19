@@ -4,6 +4,7 @@ import { Table } from "../components/Table.js";
 import { PATHS } from "../../core/paths.js";
 import type { CursorSummary } from "../../core/usage-cursor.js";
 import { TUI_LOCALE } from "../locale.js";
+import { renderBar } from "@utils/bar.js";
 
 // tabbar(1) + separator(1) + paddingY(2) + header(1) + cards(6) + marginTop(1) + label(1) + table header(1) + table sep(1)
 const CURSOR_OVERHEAD = 15;
@@ -83,10 +84,7 @@ export function CursorTab({ isFocused = true, onFocusUp, refreshKey }: Props) {
     );
   }
 
-  const pctBar = (pct: number) => {
-    const filled = Math.round(pct / 100 * 20);
-    return "█".repeat(filled) + "░".repeat(20 - filled);
-  };
+  const pctBar = (pct: number) => renderBar(Math.round(pct / 100 * 20), 20);
 
   return (
     <Box flexDirection="column">

@@ -10,6 +10,7 @@ import { loadConfig } from "../../config/index.js";
 import { formatTokens, formatCost, budgetBar } from "@utils/format.js";
 import { TUI_LOCALE } from "../locale.js";
 import { loadUsageInsights, type UsageInsights } from "../../core/usage-insights.js";
+import { renderBar } from "@utils/bar.js";
 
 interface Summary {
   sessions: number;
@@ -242,8 +243,7 @@ export function UsageTab({ platform, isFocused = true, refreshKey, focusLayer, s
 
   const renderLimitBar = (label: string, pct: number, resetsAt: Date) => {
     const filled = Math.round(pct / 5);
-    const empty = 20 - filled;
-    const bar = "█".repeat(Math.max(0, filled)) + "░".repeat(Math.max(0, empty));
+    const bar = renderBar(filled, 20);
     const resetStr = resetsAt.toLocaleString(TUI_LOCALE, {
       timeZone: "Asia/Seoul",
       month: "short",
