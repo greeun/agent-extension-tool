@@ -1,0 +1,235 @@
+import { join, basename } from "path";
+import { listAllSkills } from "../skill.js";
+import { listCommands } from "../commands.js";
+import { listAllAgents } from "../agents.js";
+import { listHooks } from "../hooks.js";
+import { listMcpServers } from "../mcp.js";
+import { listInstalledPlugins } from "../plugin.js";
+import { readEnabledPlugins } from "../settings.js";
+import { estimateTokens } from "@utils/tokens.js";
+import { safeRead, safeReaddir } from "@utils/safe-io.js";
+import type { Category, ContextSource, CollectOptions } from "./types.js";
+import {
+  FIXED_SYSTEM_PROMPT_TOKENS,
+  FIXED_USER_CONTEXT_TOKENS,
+  FIXED_HOOK_OUTPUT_TOKENS,
+  getClaudeVersion,
+  getGitStatus,
+  buildSystemPromptPreview,
+  buildUserContextPreview,
+  buildHookPreview,
+} from "./preview.js";
+
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const MEMORY_LINE_LIMIT = 200;
+const MEMORY_BYTE_LIMIT = 25 * 1024;
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function truncateMemory(content: string): string {
+  const lines = content.split("\n");
+  const limitedLines = lines.slice(0, MEMORY_LINE_LIMIT);
+  const joined = limitedLines.join("\n");
+  if (Buffer.byteLength(joined, "utf-8") <= MEMORY_BYTE_LIMIT) {
+    return joined;
+  }
+  // Byte limit: trim chars until within limit
+  let result = joined;
+  while (Buffer.byteLength(result, "utf-8") > MEMORY_BYTE_LIMIT) {
+    result = result.slice(0, result.length - 100);
+  }
+  return result;
+}
+
+function makeSource(
+  name: string,
+  category: Category,
+  path: string,
+  content: string,
+  actionable: boolean,
+  hint?: string,
+): ContextSource {
+  const tokens = estimateTokens(content);
+  return {
+    name,
+    category,
+    path,
+    chars: content.length,
+    estimatedTokens: tokens,
+    percentage: 0,
+    actionable,
+    hint,
+    content,
+  };
+}
+
+function makeFixed(
+  name: string,
+  category: Category,
+  tokens: number,
+  content?: string,
+): ContextSource {
+  return {
+    name,
+    category,
+    path: "",
+    chars: content?.length ?? 0,
+    estimatedTokens: tokens,
+    percentage: 0,
+    actionable: false,
+    content,
+  };
+}
+
+// ── Main function ──────────────────────────────────────────────────────────
+
+export async function collectContextSources(options: CollectOptions): Promise<ContextSource[]> {
+  const { homeDir, projectDir, installedPluginsPath } = options;
+  const sources: ContextSource[] = [];
+
+  // 1. system-prompt (fixed)
+  const claudeVersion = getClaudeVersion();
+  sources.push(makeFixed("System Prompt", "system-prompt", FIXED_SYSTEM_PROMPT_TOKENS, buildSystemPromptPreview(claudeVersion)));
+
+  // 2. claude-md
+  const claudeMdCandidates = [
+    { name: "CLAUDE.md (global)", path: join(homeDir, "CLAUDE.md") },
+    { name: "CLAUDE.md (user)", path: join(homeDir, ".claude", "CLAUDE.md") },
+    { name: "CLAUDE.md (project)", path: join(projectDir, "CLAUDE.md") },
+    { name: "CLAUDE.md (project/.claude)", path: join(projectDir, ".claude", "CLAUDE.md") },
+    { name: "CLAUDE.local.md (local)", path: join(projectDir, "CLAUDE.local.md") },
+  ];
+  for (const c of claudeMdCandidates) {
+    const content = await safeRead(c.path);
+    if (content !== null) {
+      sources.push(makeSource(c.name, "claude-md", c.path, content, true));
+    }
+  }
+
+  // 3. settings
+  const projectSettingsKey = projectDir.replace(/\//g, "-").replace(/^-/, "");
+  const projectSettingsDir = join(homeDir, ".claude", "projects", projectSettingsKey);
+  const settingsCandidates = [
+    { name: "settings.json (global)", path: join(homeDir, ".claude", "settings.json") },
+    { name: "settings.local.json (global)", path: join(homeDir, ".claude", "settings.local.json") },
+    { name: "settings.json (project)", path: join(projectSettingsDir, "settings.json") },
+    { name: "settings.local.json (project)", path: join(projectSettingsDir, "settings.local.json") },
+  ];
+  for (const c of settingsCandidates) {
+    const content = await safeRead(c.path);
+    if (content !== null) {
+      sources.push(makeSource(c.name, "settings", c.path, content, true));
+    }
+  }
+
+  // 4. memory
+  const memoryDir = join(homeDir, ".claude", "projects", projectSettingsKey, "memory");
+  const memoryMainPath = join(memoryDir, "MEMORY.md");
+  const memoryMain = await safeRead(memoryMainPath);
+  if (memoryMain !== null) {
+    const truncated = truncateMemory(memoryMain);
+    sources.push(makeSource("MEMORY.md", "memory", memoryMainPath, truncated, true));
+  }
+  const memFiles = await safeReaddir(memoryDir);
+  for (const f of memFiles) {
+    if (!f.endsWith(".md") || f === "MEMORY.md") continue;
+    const fullPath = join(memoryDir, f);
+    const content = await safeRead(fullPath);
+    if (content !== null) {
+      sources.push(makeSource(`Memory: ${basename(f, ".md")}`, "memory", fullPath, content, true));
+    }
+  }
+
+  // 5. skills
+  try {
+    const skills = await listAllSkills({ projectDir });
+    for (const skill of skills) {
+      const skillMdPath = join(skill.path, "SKILL.md");
+      const skillMd = await safeRead(skillMdPath);
+      let skillName = skill.name;
+      let description = "";
+      if (skillMd) {
+        const fmMatch = skillMd.match(/^---\s*\n([\s\S]*?)\n---/);
+        if (fmMatch) {
+          const nameLine = fmMatch[1].match(/name:\s*"?([^"\n]+)"?/);
+          if (nameLine) skillName = nameLine[1].trim();
+          const descLine = fmMatch[1].match(/description:\s*"?([^"\n]+)"?/);
+          if (descLine) description = descLine[1].trim();
+        }
+      }
+      const text = `- ${skillName}: ${description}`;
+      sources.push(makeSource(skill.name, "skills", skill.path, text, true));
+    }
+  } catch { /* gracefully handle missing data */ }
+
+  // 6. mcp-tools
+  try {
+    const plugins = await listInstalledPlugins(installedPluginsPath);
+    const mcpServers = await listMcpServers(plugins);
+    for (const server of mcpServers) {
+      const text = `- ${server.name} (${server.pluginId})`;
+      sources.push(makeSource(server.name, "mcp-tools", "", text, false));
+    }
+  } catch { /* gracefully handle missing data */ }
+
+  // 7. plugins
+  try {
+    const plugins = await listInstalledPlugins(installedPluginsPath);
+    const userSettingsPath = join(homeDir, ".claude", "settings.json");
+    const enabled = await readEnabledPlugins(userSettingsPath);
+    for (const plugin of plugins) {
+      if (enabled[plugin.id] !== true) continue;
+      const text = `Plugin: ${plugin.name} v${plugin.version} — ${plugin.description ?? ""}`;
+      sources.push(makeSource(plugin.name, "plugins", plugin.installPath, text, false));
+    }
+  } catch { /* gracefully handle missing data */ }
+
+  // 8. hooks
+  try {
+    const userSettingsPath = join(homeDir, ".claude", "settings.json");
+    const hooks = await listHooks({ userSettingsPath, projectDir, installedPluginsPath });
+    const relevantHooks = hooks.filter(
+      (h) => h.event === "SessionStart" || h.event === "UserPromptSubmit"
+    );
+    for (const hook of relevantHooks) {
+      const name = `Hook: ${hook.event} (${hook.type})`;
+      sources.push(makeFixed(name, "hooks", FIXED_HOOK_OUTPUT_TOKENS, buildHookPreview(hook)));
+    }
+  } catch { /* gracefully handle missing data */ }
+
+  // 9. commands
+  try {
+    const commands = await listCommands({ projectDir });
+    for (const cmd of commands) {
+      const text = `- ${cmd.name}: ${cmd.description}`;
+      sources.push(makeSource(cmd.name, "commands", cmd.sourcePath, text, true));
+    }
+  } catch { /* gracefully handle missing data */ }
+
+  // 10. agents
+  try {
+    const agents = await listAllAgents({ projectDir });
+    for (const agent of agents) {
+      const text = `- ${agent.name}: ${agent.description}`;
+      sources.push(makeSource(agent.name, "agents", agent.sourcePath, text, true));
+    }
+  } catch { /* gracefully handle missing data */ }
+
+  // 11. git-status (fixed)
+  const gitOutput = getGitStatus(projectDir);
+  sources.push(makeFixed("Git Status", "git-status", 150, gitOutput || "No git repository or git not available."));
+
+  // 12. user-context (fixed)
+  sources.push(makeFixed("User Context", "user-context", FIXED_USER_CONTEXT_TOKENS, buildUserContextPreview(homeDir, projectDir)));
+
+  // Calculate percentages
+  const totalTokens = sources.reduce((sum, s) => sum + s.estimatedTokens, 0);
+  for (const source of sources) {
+    source.percentage = totalTokens > 0
+      ? (source.estimatedTokens / totalTokens) * 100
+      : 0;
+  }
+
+  return sources;
+}
