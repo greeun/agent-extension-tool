@@ -1,18 +1,17 @@
-import { readFile } from "fs/promises";
 import { basename, dirname } from "path";
+import { readFile } from "fs/promises";
+import { readJsonlRecords } from "@utils/jsonl.js";
 import type { UnifiedUsageEntry, RateLimitInfo } from "./types.js";
 
 export async function parseCodexFile(filePath: string): Promise<UnifiedUsageEntry[]> {
-  const content = await readFile(filePath, "utf-8");
-  const lines = content.split("\n").filter((l) => l.trim());
+  const records = await readJsonlRecords(filePath);
   const entries: UnifiedUsageEntry[] = [];
   let currentModel = "unknown";
   let sessionId = basename(filePath, ".jsonl");
   const projectPath = basename(dirname(filePath));
 
-  for (const line of lines) {
-    let record: any;
-    try { record = JSON.parse(line); } catch { continue; }
+  for (const rec of records) {
+    const record = rec as any;
     if (record.type === "session_meta" && record.payload?.model) {
       currentModel = record.payload.model;
       if (record.payload.session_id) sessionId = record.payload.session_id;
@@ -34,7 +33,12 @@ export async function parseCodexFile(filePath: string): Promise<UnifiedUsageEntr
 }
 
 export async function extractCodexRateLimit(filePath: string): Promise<RateLimitInfo | null> {
-  const content = await readFile(filePath, "utf-8");
+  let content: string;
+  try {
+    content = await readFile(filePath, "utf-8");
+  } catch {
+    return null;
+  }
   const lines = content.split("\n").filter((l) => l.trim()).reverse();
   for (const line of lines) {
     let record: any;
