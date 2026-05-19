@@ -1,6 +1,6 @@
 import { Box, Text, useStdout } from "ink";
 import stringWidth from "string-width";
-import { truncateToWidth, sanitize, fitToWidth } from "../utils.js";
+import { truncateToWidth, sanitize, fitToWidth, visibleWindow } from "../utils.js";
 
 interface Column {
   key: string;
@@ -32,13 +32,7 @@ export function Table({ columns, rows, selectedIndex, maxRows, checked, availabl
     i === columns.length - 1 ? { ...col, width: col.width + extra } : col,
   );
 
-  let visibleStart = 0;
-  let visibleEnd = rows.length;
-  if (rows.length > effectiveMaxRows) {
-    const half = Math.floor(effectiveMaxRows / 2);
-    visibleStart = Math.min(Math.max(0, selectedIndex - half), rows.length - effectiveMaxRows);
-    visibleEnd = visibleStart + effectiveMaxRows;
-  }
+  const [visibleStart, visibleEnd] = visibleWindow(rows.length, selectedIndex, effectiveMaxRows);
   const visible = rows.slice(visibleStart, visibleEnd);
 
   return (

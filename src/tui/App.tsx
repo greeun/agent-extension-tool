@@ -9,6 +9,21 @@ import { ExtensionsTab } from "./tabs/ExtensionsTab.js";
 import { ProjectTab } from "./tabs/ProjectTab.js";
 import { ContextTab } from "./tabs/ContextTab.js";
 
+type FocusLayer = "mainTab" | "subTab" | "content";
+
+/**
+ * Decide the focus layer after switching top-level tabs.
+ *
+ * When the user is in the top-tab (mainTab) layer, navigating between top
+ * tabs must keep focus in mainTab — focus only descends into a tab's
+ * sub-tab/content via an explicit down/enter. Otherwise fall back to the
+ * destination tab's default layer (claude opens on its sub-tab row).
+ */
+export function nextFocusLayer(current: FocusLayer, destination: TabName): FocusLayer {
+  if (current === "mainTab") return "mainTab";
+  return destination === "claude" ? "subTab" : "content";
+}
+
 function useTerminalSize() {
   const { stdout } = useStdout();
   const [size, setSize] = useState({
@@ -30,7 +45,7 @@ function useTerminalSize() {
 
 function App() {
   const [tab, setTab] = useState<TabName>("extensions");
-  const [focusLayer, setFocusLayer] = useState<"mainTab" | "subTab" | "content">("content");
+  const [focusLayer, setFocusLayer] = useState<FocusLayer>("content");
   const [showHelp, setShowHelp] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [contextInSubView, setContextInSubView] = useState(false);
@@ -57,28 +72,26 @@ function App() {
       return;
     }
 
-    const tabDefaultFocus = (t: TabName) => (t === "claude" ? "subTab" : "content") as "subTab" | "content";
-
     if (key.leftArrow) {
       if ((tab === "extensions" || tab === "claude") && focusLayer !== "mainTab") return;
       const idx = TABS.findIndex((t) => t.key === tab);
       const next = TABS[(idx - 1 + TABS.length) % TABS.length];
       setTab(next.key);
-      setFocusLayer(tabDefaultFocus(next.key));
+      setFocusLayer(nextFocusLayer(focusLayer, next.key));
     }
     if (key.rightArrow) {
       if ((tab === "extensions" || tab === "claude") && focusLayer !== "mainTab") return;
       const idx = TABS.findIndex((t) => t.key === tab);
       const next = TABS[(idx + 1) % TABS.length];
       setTab(next.key);
-      setFocusLayer(tabDefaultFocus(next.key));
+      setFocusLayer(nextFocusLayer(focusLayer, next.key));
     }
 
     const num = parseInt(input);
     if (num >= 1 && num <= TABS.length) {
       const next = TABS[num - 1];
       setTab(next.key);
-      setFocusLayer(tabDefaultFocus(next.key));
+      setFocusLayer(nextFocusLayer(focusLayer, next.key));
     }
   });
 

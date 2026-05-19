@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import { homedir } from "os";
 import { Table } from "../components/Table.js";
+import { visibleWindow } from "../utils.js";
 import { DetailPanel } from "../components/DetailPanel.js";
 import { PreviewPanel, previewScrollHandler } from "../components/PreviewPanel.js";
 import { Confirm } from "../components/Confirm.js";
@@ -164,6 +165,12 @@ export function ContextTab({ onSubViewChange }: ContextTabProps) {
   const termRows = stdout?.rows ?? 24;
   // App chrome (tabbar+separator=2) + content padding (top+bottom=2) + PreviewPanel chrome (~9)
   const previewMaxLines = Math.max(5, termRows - 13);
+  // ContextTab stacks rate-limit + budget + table + detail + cost-impact blocks.
+  // Reserve ~31 rows of chrome (same as VaultTab's heavy layout) so the table
+  // and the sources list window to the space that actually fits. Without this
+  // the pane overflows the terminal and the top rows — including the table
+  // column-header — scroll out of view while navigating.
+  const listMaxRows = Math.max(3, termRows - 31);
 
   useEffect(() => {
     onSubViewChange?.(viewMode !== "categories");
@@ -351,14 +358,22 @@ export function ContextTab({ onSubViewChange }: ContextTabProps) {
     }
 
     if (viewMode === "sources") {
-      const sourceFields = selectedRow.sources.map((src, i) => ({
-        label: `${i === srcIndex ? "▸" : " "} ${src.name}`,
-        value: `${formatTokens(src.estimatedTokens)} tok${src.content ? "" : " (fixed)"}${src.hint ? ` — ${src.hint}` : ""}`,
-        color: i === srcIndex ? "cyan" : undefined,
-      }));
+      const all = selectedRow.sources;
+      const [winStart, winEnd] = visibleWindow(all.length, srcIndex, listMaxRows);
+      const sourceFields = all.slice(winStart, winEnd).map((src, vi) => {
+        const i = winStart + vi;
+        return {
+          label: `${i === srcIndex ? "▸" : " "} ${src.name}`,
+          value: `${formatTokens(src.estimatedTokens)} tok${src.content ? "" : " (fixed)"}${src.hint ? ` — ${src.hint}` : ""}`,
+          color: i === srcIndex ? "cyan" : undefined,
+        };
+      });
+      const more = all.length > sourceFields.length
+        ? ` (${srcIndex + 1}/${all.length})`
+        : "";
       return (
         <DetailPanel
-          title={`${selectedRow.category} — ${selectedRow.tokens} (${selectedRow.pct})`}
+          title={`${selectedRow.category} — ${selectedRow.tokens} (${selectedRow.pct})${more}`}
           fields={sourceFields}
           shortcuts="j/k:navigate  enter:preview  e:edit  d:delete  esc:back"
         />
@@ -374,7 +389,10 @@ export function ContextTab({ onSubViewChange }: ContextTabProps) {
           { label: "Total tokens", value: selectedRow.tokens },
           { label: "Items", value: selectedRow.items },
           { label: "Percentage", value: selectedRow.pct },
-          ...(firstHint ? [{ label: "Hint", value: firstHint }] : []),
+          // Always render the Hint row (— when absent) so the panel height
+          // stays constant as you navigate categories. A per-row height change
+          // tips the pane over the terminal edge intermittently.
+          { label: "Hint", value: firstHint ?? "—" },
         ]}
         shortcuts="j/k:navigate  enter:expand  e:edit  r:refresh"
       />
@@ -459,6 +477,7 @@ export function ContextTab({ onSubViewChange }: ContextTabProps) {
         ]}
         rows={tableRows}
         selectedIndex={catIndex}
+        maxRows={listMaxRows}
       />
 
       {renderDetail()}

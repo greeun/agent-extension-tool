@@ -21,3 +21,21 @@ export function fitToWidth(str: string, width: number): string {
   const dw = stringWidth(truncated);
   return truncated + " ".repeat(Math.max(0, width - dw));
 }
+
+/**
+ * Compute the [start, end) slice of a list to render so it fits within
+ * `maxRows`, keeping the selected item roughly centered. Shared by the Table
+ * and any other scrollable list so a list never renders taller than the
+ * space allotted to it (prevents the whole pane overflowing the terminal).
+ */
+export function visibleWindow(
+  length: number,
+  selectedIndex: number,
+  maxRows: number,
+): [number, number] {
+  const cap = Math.max(1, Math.floor(maxRows));
+  if (length <= cap) return [0, length];
+  const half = Math.floor(cap / 2);
+  const start = Math.min(Math.max(0, selectedIndex - half), length - cap);
+  return [start, start + cap];
+}
