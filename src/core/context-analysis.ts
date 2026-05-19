@@ -1,4 +1,3 @@
-import { readFile, readdir, lstat } from "fs/promises";
 import { statSync, existsSync } from "fs";
 import { join, basename } from "path";
 import { spawnSync } from "child_process";
@@ -11,6 +10,7 @@ import { listInstalledPlugins } from "./plugin.js";
 import { readEnabledPlugins } from "./settings.js";
 import { getModelPricing, getContextWindowSize } from "../pricing/models.js";
 import { estimateTokens } from "@utils/tokens.js";
+import { safeRead, safeReaddir } from "@utils/safe-io.js";
 
 export { estimateTokens };
 
@@ -73,20 +73,6 @@ const MEMORY_LINE_LIMIT = 200;
 const MEMORY_BYTE_LIMIT = 25 * 1024;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-
-async function safeRead(path: string): Promise<string | null> {
-  try {
-    const stat = await lstat(path);
-    if (!stat.isFile()) return null;
-    return await readFile(path, "utf-8");
-  } catch {
-    return null;
-  }
-}
-
-async function safeReaddir(dir: string): Promise<string[]> {
-  try { return await readdir(dir); } catch { return []; }
-}
 
 function truncateMemory(content: string): string {
   const lines = content.split("\n");
