@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { filterByTimestampMs, filterByDateString } from "../../../src/core/usage/filter.js";
+import { filterByTimestampMs, filterByDateString } from "../../src/core/usage/filter.js";
 
 test("filterByTimestampMs uses millisecond comparison", () => {
   const e = [{ timestamp: "2026-05-01T12:00:00Z", v: 1 }];
