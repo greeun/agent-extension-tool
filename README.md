@@ -7,7 +7,8 @@ selected-row dropout issues observed under WezTerm + cmux.
 See `DESIGN.md` and `FEATURES.md` for the full inventory.
 
 > **Upgrading from v0.1.x (TypeScript)?** Read [MIGRATION.md](./MIGRATION.md)
-> first. CLI commands and user data (`~/.config/axt/`, `~/.claude/vault/`,
+> (English) or [MIGRATION.ko.md](./MIGRATION.ko.md) (Korean) first. CLI
+> commands and user data (`~/.config/axt/`, `~/.claude/vault/`,
 > `.axt-profile.json`) remain compatible across versions.
 
 ## Install (development)
