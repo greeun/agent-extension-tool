@@ -1,5 +1,7 @@
 # axt v0.1.x → v1.0.0 마이그레이션 가이드
 
+English version: [MIGRATION.md](./MIGRATION.md).
+
 기존 TypeScript+Ink axt(`v0.1.x`, `bun link` 기반)에서 새 Python+curses axt(`v1.0.0`, `pip install -e .` 기반)로 갈아타는 절차입니다.
 
 ## 한눈에 보기
