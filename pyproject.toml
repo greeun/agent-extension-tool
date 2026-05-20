@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "axt"
+version = "0.2.0"
+description = "Agent eXtension Tool — CLI + TUI for Claude/Codex/Gemini/Cursor extensions, plugins, skills, MCP servers, and usage tracking"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "uni4love" }]
+keywords = ["claude", "codex", "gemini", "cursor", "tui", "cli", "plugins"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Environment :: Console :: Curses",
+    "Topic :: Utilities",
+]
+# Stdlib only — no runtime deps.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov"]
+# Windows curses requires an external wheel.
+windows = ["windows-curses>=2.3; sys_platform == 'win32'"]
+
+[project.scripts]
+axt = "axt:main"
+
+[tool.setuptools]
+py-modules = ["axt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"

@@ -1,12 +1,30 @@
+# Python (root — primary implementation)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+
+# Node / TypeScript (legacy-ts/)
 node_modules
-dist
+bun.lock
+
+# Common
+dist/
 .DS_Store
 *.log
 .env*
 .claude/
 coverage/
-wp-blog-post/
-wp-blog-post-ccx-backup/
 .axt-profile.json
 .axt-profile.json.bak
+
+# Other workdirs
+wp-blog-post/
+wp-blog-post-ccx-backup/
+linkedin-post/
 docs/superpowers/
