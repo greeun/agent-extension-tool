@@ -19,33 +19,107 @@ Requires [Bun](https://bun.sh) runtime and [Git](https://git-scm.com).
 ### macOS / Linux
 
 ```bash
-# Clone and install
+# 1. Install Bun (skip if already installed)
+curl -fsSL https://bun.sh/install | bash
+
+# 2. Clone and install
 git clone https://github.com/greeun/agent-extension-tool.git
 cd agent-extension-tool
 bun install
 
-# Link globally
+# 3. Register the `axt` command globally
 bun link
+
+# 4. Verify
+axt --version
+which axt
 ```
+
+`bun link` registers this directory as the source for the `axt` bin defined in `package.json`. The global shim lives under Bun's bin directory (typically `~/.bun/bin/axt`) — make sure that directory is on your `PATH`.
 
 ### Windows
 
 Requires [Windows Terminal](https://aka.ms/terminal) (recommended) and Bun for Windows.
 
 ```powershell
-# Install Bun
+# 1. Install Bun
 powershell -c "irm bun.sh/install.ps1 | iex"
 
-# Clone and install
+# 2. Clone and install
 git clone https://github.com/greeun/agent-extension-tool.git
 cd agent-extension-tool
 bun install
 
-# Link globally
+# 3. Link globally
 bun link
+
+# 4. Verify
+axt --version
 ```
 
 > **Note:** On Windows, `axt skill link` / `unlink` commands are not available (symlinks require elevated privileges). All other features work normally.
+
+### Updating
+
+```bash
+cd agent-extension-tool
+git pull
+bun install
+# `bun link` does not need to be re-run — the global shim points at this directory.
+```
+
+## Uninstall
+
+`axt` itself is just a `bun link` shim plus a cloned repo, so removing it is two steps. User data created by `axt` (config, vault) lives in separate paths and is preserved unless you delete it explicitly.
+
+### macOS / Linux
+
+```bash
+# 1. Remove the global `axt` shim
+#    Run from inside the cloned repo so bun knows which package to unlink:
+cd agent-extension-tool
+bun unlink
+
+# 2. Delete the cloned source
+cd ..
+rm -rf agent-extension-tool
+
+# 3. Verify the command is gone
+command -v axt   # should print nothing
+```
+
+### Windows (PowerShell)
+
+```powershell
+cd agent-extension-tool
+bun unlink
+
+cd ..
+Remove-Item -Recurse -Force agent-extension-tool
+
+Get-Command axt -ErrorAction SilentlyContinue   # should return nothing
+```
+
+### Removing user data (optional)
+
+`axt` reads from each agent platform's own directories (`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.cursor/`) — **do not delete those**, they belong to those CLIs.
+
+The only paths `axt` writes to are its own:
+
+| Path | What it is | Safe to delete? |
+|------|-----------|-----------------|
+| `~/.config/axt/config.json` (macOS/Linux) | axt user config | Yes |
+| `%APPDATA%\axt\config.json` (Windows) | axt user config | Yes |
+| `~/.claude/vault/` | axt vault store (created by `axt vault`) | Only if you don't use vault |
+| `<project>/.axt-profile.json` | per-project vault profile | Only if you don't use vault |
+
+```bash
+# Wipe axt-only config (macOS/Linux)
+rm -rf ~/.config/axt
+
+# Wipe vault data — irreversible
+rm -rf ~/.claude/vault
+```
 
 ## Quick Start
 

@@ -1,6 +1,5 @@
 import { Box, Text, useStdout } from "ink";
-import stringWidth from "string-width";
-import { truncateToWidth, sanitize, fitToWidth, visibleWindow } from "../utils.js";
+import { fitToWidth, visibleWindow } from "../utils.js";
 
 interface Column {
   key: string;
@@ -37,8 +36,8 @@ export function Table({ columns, rows, selectedIndex, maxRows, checked, availabl
 
   return (
     <Box flexDirection="column">
-      <Text bold>{fitToWidth(checked ? "■" : "#", 4) + resolved.map((col) => fitToWidth(col.label, col.width)).join(gapStr)}</Text>
-      <Text>{"─".repeat(4 + resolved.reduce((s, c) => s + c.width, 0) + gapTotal)}</Text>
+      <Text bold wrap="truncate-end">{fitToWidth(checked ? "■" : "#", 4) + resolved.map((col) => fitToWidth(col.label, col.width)).join(gapStr)}</Text>
+      <Text wrap="truncate-end">{"─".repeat(4 + resolved.reduce((s, c) => s + c.width, 0) + gapTotal)}</Text>
       {visible.map((row, vi) => {
         const i = visibleStart + vi;
         const sel = i === selectedIndex;
@@ -47,9 +46,20 @@ export function Table({ columns, rows, selectedIndex, maxRows, checked, availabl
           : (sel ? `▸${String(i + 1).padStart(2)} ` : ` ${String(i + 1).padStart(2)} `);
         const pf = fitToWidth(prefix, 4);
         const line = resolved.map((col) => fitToWidth(row[col.key] ?? "", col.width)).join(gapStr);
-        return sel
-          ? <Text key={i} inverse>{pf + line}</Text>
-          : <Text key={i}><Text dimColor>{pf}</Text>{line}</Text>;
+        // Use foreground color (cyan + bold) instead of `inverse` for the
+        // selection highlight. `inverse` causes Ink to pad trailing spaces to
+        // the full row width to keep the background flip visible, while
+        // non-selected rows emit no trailing padding — under some terminal
+        // multiplexers (WezTerm via cmux, …) that asymmetry produces a row
+        // whose ▸/# column appear to vanish after a transition. Foreground
+        // styling avoids the trailing-padding asymmetry entirely; the row
+        // structure is now identical for selected and non-selected too.
+        return (
+          <Text key={i} wrap="truncate-end" {...(sel ? { bold: true } : {})}>
+            <Text {...(sel ? { color: "cyan" } : { dimColor: true })}>{pf}</Text>
+            <Text {...(sel ? { color: "cyan" } : {})}>{line}</Text>
+          </Text>
+        );
       })}
     </Box>
   );

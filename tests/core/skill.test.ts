@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { listSkills, linkSkill, unlinkSkill } from "../../src/core/skill.js";
+import { listSkills, listAllSkills, linkSkill, unlinkSkill } from "../../src/core/skill.js";
 import { mkdtemp, rm, mkdir, writeFile, symlink } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -54,5 +54,16 @@ describe("skill", () => {
 
   test("unlinkSkill refuses to remove non-symlink directory", async () => {
     expect(unlinkSkill(skillsDir, "seer")).rejects.toThrow();
+  });
+
+  test("listAllSkills scans <projectDir>/.agents/ as project source", async () => {
+    const projectDir = join(tmpDir, "proj");
+    const dotAgents = join(projectDir, ".agents");
+    await mkdir(join(dotAgents, "alpha"), { recursive: true });
+    await writeFile(join(dotAgents, "alpha", "SKILL.md"), "# Alpha");
+    const skills = await listAllSkills({ projectDir });
+    const found = skills.find((s) => s.name === "alpha" && s.source === "project");
+    expect(found).toBeDefined();
+    expect(found!.path).toBe(join(dotAgents, "alpha"));
   });
 });

@@ -164,7 +164,10 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
     { label: "Used in", value: selectedProjects.length > 0 ? selectedProjects.map((p) => p.name).join(", ") : "—" },
   ] : [];
 
-  const detailMaxHeight = useDetailMaxHeight(14);
+  // Cap at 14 so long descriptions (e.g. harness-design) force scroll mode
+  // instead of stretching the panel past the row budget and overlapping the
+  // shortcut/status lines rendered below.
+  const detailMaxHeight = Math.min(useDetailMaxHeight(14), 14);
   const flat = flattenDetailFields(detailFields, cols - 4);
   const viewport = Math.max(1, detailMaxHeight - 4);
   const detailScroll = useDetailScroll({
@@ -402,7 +405,7 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
           rows={rows}
           selectedIndex={index}
           checked={checkedSet}
-          maxRows={Math.max(3, (stdout?.rows ?? 24) - 31)}
+          maxRows={Math.max(3, (stdout?.rows ?? 24) - 24)}
           gap={colGap}
         />
       )}

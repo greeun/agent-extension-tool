@@ -19,33 +19,107 @@
 ### macOS / Linux
 
 ```bash
-# 클론 및 설치
+# 1. Bun 설치 (이미 설치되어 있으면 건너뜀)
+curl -fsSL https://bun.sh/install | bash
+
+# 2. 클론 및 의존성 설치
 git clone https://github.com/greeun/agent-extension-tool.git
 cd agent-extension-tool
 bun install
 
-# 전역 링크
+# 3. `axt` 명령을 전역에 등록
 bun link
+
+# 4. 확인
+axt --version
+which axt
 ```
+
+`bun link`는 이 디렉토리를 `package.json`의 `bin.axt` 소스로 등록합니다. 전역 심볼릭 링크는 Bun의 bin 디렉토리(보통 `~/.bun/bin/axt`)에 만들어지므로 해당 경로가 `PATH`에 포함되어 있어야 합니다.
 
 ### Windows
 
 [Windows Terminal](https://aka.ms/terminal) (권장) 과 Bun for Windows가 필요합니다.
 
 ```powershell
-# Bun 설치
+# 1. Bun 설치
 powershell -c "irm bun.sh/install.ps1 | iex"
 
-# 클론 및 설치
+# 2. 클론 및 의존성 설치
 git clone https://github.com/greeun/agent-extension-tool.git
 cd agent-extension-tool
 bun install
 
-# 전역 링크
+# 3. 전역 링크
 bun link
+
+# 4. 확인
+axt --version
 ```
 
 > **참고:** Windows에서는 `axt skill link` / `unlink` 명령을 사용할 수 없습니다 (symlink에 관리자 권한 필요). 그 외 모든 기능은 정상 동작합니다.
+
+### 업데이트
+
+```bash
+cd agent-extension-tool
+git pull
+bun install
+# 전역 링크는 이 디렉토리를 가리키고 있으므로 `bun link`를 다시 실행할 필요가 없습니다.
+```
+
+## 제거
+
+`axt`는 `bun link`로 만든 전역 shim과 클론된 소스 디렉토리로만 구성됩니다. 따라서 제거는 두 단계면 끝납니다. 사용자가 만든 데이터(설정·vault)는 별도 경로에 저장되며, 명시적으로 지우지 않는 한 그대로 유지됩니다.
+
+### macOS / Linux
+
+```bash
+# 1. 전역 `axt` shim 제거
+#    어떤 패키지를 unlink할지 Bun이 알 수 있도록 클론한 디렉토리 안에서 실행합니다.
+cd agent-extension-tool
+bun unlink
+
+# 2. 클론한 소스 삭제
+cd ..
+rm -rf agent-extension-tool
+
+# 3. 명령이 사라졌는지 확인
+command -v axt   # 아무것도 출력되지 않아야 정상
+```
+
+### Windows (PowerShell)
+
+```powershell
+cd agent-extension-tool
+bun unlink
+
+cd ..
+Remove-Item -Recurse -Force agent-extension-tool
+
+Get-Command axt -ErrorAction SilentlyContinue   # 결과가 없어야 정상
+```
+
+### 사용자 데이터 제거 (선택)
+
+`axt`는 각 에이전트 플랫폼의 디렉토리(`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.cursor/`)를 **읽기만** 합니다. 해당 디렉토리는 각 CLI가 직접 관리하는 데이터이므로 **절대 삭제하지 마세요**.
+
+`axt`가 직접 생성/기록하는 경로는 다음뿐입니다.
+
+| 경로 | 용도 | 삭제해도 되는가 |
+|------|------|----------------|
+| `~/.config/axt/config.json` (macOS/Linux) | axt 사용자 설정 | 가능 |
+| `%APPDATA%\axt\config.json` (Windows) | axt 사용자 설정 | 가능 |
+| `~/.claude/vault/` | axt vault 저장소 (`axt vault`로 생성됨) | vault 기능을 쓰지 않을 때만 |
+| `<project>/.axt-profile.json` | 프로젝트별 vault 프로필 | vault 기능을 쓰지 않을 때만 |
+
+```bash
+# axt 자체 설정만 정리 (macOS/Linux)
+rm -rf ~/.config/axt
+
+# vault 데이터 삭제 — 복구 불가
+rm -rf ~/.claude/vault
+```
 
 ## 빠른 시작
 

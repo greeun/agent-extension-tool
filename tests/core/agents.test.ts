@@ -86,4 +86,14 @@ describe("listAllAgents", () => {
     expect(names).toContain("a");
     expect(names).toContain("b");
   });
+
+  test("scans <projectDir>/.agents/ as project source", async () => {
+    const dotAgents = join(projectDir, ".agents");
+    await mkdir(dotAgents, { recursive: true });
+    await writeFile(join(dotAgents, "dotted.md"), AGENT_WITH_FRONTMATTER);
+    const agents = await listAllAgents({ projectDir });
+    const found = agents.find((a) => a.name === "dotted" && a.source === "project");
+    expect(found).toBeDefined();
+    expect(found!.sourcePath).toBe(join(dotAgents, "dotted.md"));
+  });
 });

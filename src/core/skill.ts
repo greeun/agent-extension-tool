@@ -1,5 +1,6 @@
 import { readdir, lstat, readlink, symlink, unlink } from "fs/promises";
 import { join, basename } from "path";
+import { homedir } from "os";
 import { PATHS } from "./paths.js";
 import { listInstalledPlugins } from "./plugin.js";
 import { readEnabledPlugins } from "./settings.js";
@@ -54,11 +55,15 @@ export async function listAllSkills(options: {
   const result: SkillInfo[] = [];
 
   result.push(...await scanSkillsDir(PATHS.skills, "user"));
+  result.push(...await scanSkillsDir(join(homedir(), ".agents"), "user"));
 
   if (options.projectDir) {
     const projSkillsDir = join(options.projectDir, ".claude", "skills");
     result.push(...await scanSkillsDir(projSkillsDir, "project"));
   }
+
+  const projectDotAgents = join(options.projectDir ?? process.cwd(), ".agents");
+  result.push(...await scanSkillsDir(projectDotAgents, "project"));
 
   const plugins = await listInstalledPlugins(PATHS.installedPlugins);
   const enabled = await readEnabledPlugins(PATHS.settings);

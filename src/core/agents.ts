@@ -1,5 +1,6 @@
 import { readdir, readFile, lstat } from "fs/promises";
 import { join, basename } from "path";
+import { homedir } from "os";
 import { PATHS } from "./paths.js";
 import { listInstalledPlugins } from "./plugin.js";
 import { readEnabledPlugins } from "./settings.js";
@@ -61,11 +62,15 @@ export async function listAllAgents(options: {
 
   const userAgentsDir = join(PATHS.claudeDir, "agents");
   result.push(...await scanAgentsDir(userAgentsDir, "user"));
+  result.push(...await scanAgentsDir(join(homedir(), ".agents"), "user"));
 
   if (options.projectDir) {
     const projAgentsDir = join(options.projectDir, ".claude", "agents");
     result.push(...await scanAgentsDir(projAgentsDir, "project"));
   }
+
+  const projectDotAgents = join(options.projectDir ?? process.cwd(), ".agents");
+  result.push(...await scanAgentsDir(projectDotAgents, "project"));
 
   const plugins = await listInstalledPlugins(PATHS.installedPlugins);
   const enabled = await readEnabledPlugins(PATHS.settings);
