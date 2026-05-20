@@ -4,6 +4,9 @@ import TextInput from "ink-text-input";
 import { Table } from "../components/Table.js";
 import { DetailPanel } from "../components/DetailPanel.js";
 import { Confirm } from "../components/Confirm.js";
+import { useDetailScroll } from "../components/useDetailScroll.js";
+import { useDetailMaxHeight } from "../components/useDetailMaxHeight.js";
+import { flattenDetailFields } from "../components/flattenDetailFields.js";
 import {
   listVaultItemsWithProjectState,
   linkToProject,
@@ -149,6 +152,27 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
     ? getProjects(usageIndex, selectedItem.type, selectedItem.name)
     : [];
 
+  const cols = stdout?.columns ?? 80;
+  const detailFields = selectedItem ? [
+    { label: "Description", value: selectedItem.description || "—" },
+    { label: "Extension path", value: selectedItem.path || "—" },
+    { label: "Added", value: selectedItem.createdAt ? selectedItem.createdAt.toLocaleString(TUI_LOCALE) : "—" },
+    { label: "Updated", value: selectedItem.updatedAt ? selectedItem.updatedAt.toLocaleString(TUI_LOCALE) : "—" },
+    { label: "Vault", value: selectedItem.inVault !== false ? "in vault" : "global only (press i to import)" },
+    { label: "Project", value: isProjectChecked(selectedItem) ? (selectedItem.type === "plugin" ? "enabled" : "linked") : "not linked" },
+    { label: "Global", value: isGlobalChecked(selectedItem) ? (selectedItem.type === "plugin" ? "enabled" : "linked") : "not linked" },
+    { label: "Used in", value: selectedProjects.length > 0 ? selectedProjects.map((p) => p.name).join(", ") : "—" },
+  ] : [];
+
+  const detailMaxHeight = useDetailMaxHeight(14);
+  const flat = flattenDetailFields(detailFields, cols - 4);
+  const viewport = Math.max(1, detailMaxHeight - 4);
+  const detailScroll = useDetailScroll({
+    totalLines: flat.length,
+    viewportLines: viewport,
+    resetKey: selectedItem?.name,
+  });
+
   const rows = filtered.map((item, i) => {
     const count = getProjects(usageIndex, item.type, item.name).length;
     return {
@@ -194,6 +218,18 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
       return;
     }
 
+    // When detail panel is focused, route all input through it (scroll, Esc to blur).
+    if (detailScroll.focused) {
+      if (detailScroll.handleInput(input, key)) return;
+    }
+
+    // Enter precedence: pending apply > detail focus.
+    if (key.return) {
+      if (pendingChanges.length > 0) { setMode("confirm"); return; }
+      if (detailScroll.handleInput(input, key)) return; // hand off Enter → focus detail
+      return;
+    }
+
     if (input === "j" || key.downArrow) {
       setIndex((i) => Math.min(i + 1, filtered.length - 1));
     }
@@ -226,9 +262,6 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
         next.set(k, !current);
         return next;
       });
-    }
-    if (key.return && pendingChanges.length > 0) {
-      setMode("confirm");
     }
     if (key.escape) {
       setPending(new Map());
@@ -376,19 +409,14 @@ export function VaultTab({ isFocused, onFocusUp, onSubViewChange }: Props) {
 
       <DetailPanel
         title={selectedItem ? `${selectedItem.name} (${selectedItem.type})` : "No item selected"}
-        fields={selectedItem ? [
-          { label: "Description", value: selectedItem.description || "—" },
-          { label: "Extension path", value: selectedItem.path || "—" },
-          { label: "Added", value: selectedItem.createdAt ? selectedItem.createdAt.toLocaleString(TUI_LOCALE) : "—" },
-          { label: "Updated", value: selectedItem.updatedAt ? selectedItem.updatedAt.toLocaleString(TUI_LOCALE) : "—" },
-          { label: "Vault", value: selectedItem.inVault !== false ? "in vault" : "global only (press i to import)" },
-          { label: "Project", value: isProjectChecked(selectedItem) ? (selectedItem.type === "plugin" ? "enabled" : "linked") : "not linked" },
-          { label: "Global", value: isGlobalChecked(selectedItem) ? (selectedItem.type === "plugin" ? "enabled" : "linked") : "not linked" },
-          { label: "Used in", value: selectedProjects.length > 0 ? selectedProjects.map((p) => p.name).join(", ") : "—" },
-        ] : []}
+        fields={detailFields}
+        focused={detailScroll.focused}
+        scroll={detailScroll.scroll}
+        maxHeight={detailMaxHeight}
+        contentWidth={cols - 4}
       />
 
-      <Text dimColor>{`j/k:navigate  PgUp/PgDn:page  Space:project  g:global  i:import  /:search  s:sort(${SORT_LABELS[sortKey]})  Enter:apply  Esc:discard  Tab:filter  f:scan  m:migrate  S:sync`}</Text>
+      <Text dimColor>{`j/k:navigate  PgUp/PgDn:page  Space:project  g:global  i:import  /:search  s:sort(${SORT_LABELS[sortKey]})  Enter:apply/detail  Esc:discard/back  Tab:filter  f:scan  m:migrate  S:sync`}</Text>
       {(status || pendingChanges.length > 0) && (
         <Text dimColor>
           {[
