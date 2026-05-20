@@ -91,6 +91,10 @@ interface DetailViewProps {
   showLineNumbers?: boolean;
   shortcuts?: string;
   previewShortcuts?: string;
+  detailFocused?: boolean;
+  detailScroll?: number;
+  detailMaxHeight?: number;
+  detailContentWidth?: number;
 }
 
 export function DetailView({
@@ -106,6 +110,10 @@ export function DetailView({
   showLineNumbers = true,
   shortcuts,
   previewShortcuts,
+  detailFocused,
+  detailScroll,
+  detailMaxHeight,
+  detailContentWidth,
 }: DetailViewProps) {
   if (mode === "preview" && previewLines) {
     return (
@@ -137,6 +145,10 @@ export function DetailView({
       title={title}
       fields={fields}
       shortcuts={shortcuts}
+      focused={detailFocused}
+      scroll={detailScroll}
+      maxHeight={detailMaxHeight}
+      contentWidth={detailContentWidth}
     />
   );
 }
