@@ -1,7 +1,10 @@
 import { useState, useEffect } from "react";
-import { Box, useInput } from "ink";
+import { Box, useInput, useStdout } from "ink";
 import { Table } from "../components/Table.js";
 import { DetailView, useDetailView, type DetailField } from "../components/DetailView.js";
+import { useDetailScroll } from "../components/useDetailScroll.js";
+import { useDetailMaxHeight } from "../components/useDetailMaxHeight.js";
+import { flattenDetailFields } from "../components/flattenDetailFields.js";
 import { SourceSummary } from "../components/SourceSummary.js";
 import { SOURCE_COLORS } from "../constants.js";
 import { PATHS } from "../../core/paths.js";
@@ -65,9 +68,22 @@ export function HooksTab({ isFocused = true, onFocusUp }: Props) {
     },
   });
 
+  const { stdout } = useStdout();
+  const cols = stdout?.columns ?? 80;
+  const detailFields = selected ? buildDetailFields(selected) : [];
+  const detailMaxHeight = useDetailMaxHeight(10);
+  const flat = flattenDetailFields(detailFields, cols - 4);
+  const viewport = Math.max(1, detailMaxHeight - 4);
+  const detailScroll = useDetailScroll({
+    totalLines: flat.length,
+    viewportLines: viewport,
+    resetKey: selected?.sourcePath,
+  });
+
   useInput((input, key) => {
     if (!isFocused) return;
     if (detail.handleInput(input, key)) return;
+    if (detailScroll.handleInput(input, key)) return;
     if (input === "p" && selected) { detail.openPreview(); return; }
     if (input === "j" || key.downArrow) {
       if (hooks.length > 0) setIndex((i) => Math.min(i + 1, hooks.length - 1));
@@ -102,14 +118,18 @@ export function HooksTab({ isFocused = true, onFocusUp }: Props) {
       <DetailView
         item={selected}
         title={selected ? `${selected.event} [${selected.source}]` : undefined}
-        fields={selected ? buildDetailFields(selected) : []}
+        fields={detailFields}
         emptyMessage="No hooks configured. Add hooks in settings.json → hooks"
         mode={detail.mode}
         previewLines={detail.previewLines}
         previewScroll={detail.previewScroll}
         previewTitle={previewTitle}
         showLineNumbers={false}
-        shortcuts="p:preview"
+        shortcuts="p:preview  Enter:detail  Esc:back  j/k:scroll"
+        detailFocused={detailScroll.focused}
+        detailScroll={detailScroll.scroll}
+        detailMaxHeight={detailMaxHeight}
+        detailContentWidth={cols - 4}
       />
       <SourceSummary items={hooks} label="hook" />
     </Box>
