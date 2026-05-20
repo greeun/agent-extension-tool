@@ -49,7 +49,7 @@ export function DetailPanel({
   const flat = flattenDetailFields(allFields, contentWidth ?? DEFAULT_CONTENT_WIDTH);
   const hasTitle = !!title;
   const hasShortcuts = !!shortcuts;
-  const { viewport, overflows, visible, indicator } = computeViewport(flat, maxHeight, hasTitle, hasShortcuts, scroll);
+  const { overflows, visible, indicator } = computeViewport(flat, maxHeight, hasTitle, hasShortcuts, scroll);
 
   // Rich render path: no overflow → preserve colors by rendering fields directly.
   if (!overflows) {
@@ -78,7 +78,6 @@ export function DetailPanel({
   }
 
   // Flat scroll path: content overflows, drop colors in favor of scroll.
-  void viewport;
   return (
     <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={borderColor} paddingX={1}>
       {title && (
