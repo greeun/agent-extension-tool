@@ -9,7 +9,8 @@ See `DESIGN.md` and `FEATURES.md` for the full inventory.
 ## Install (development)
 
 ```bash
-cd axt-new
+git clone https://github.com/greeun/agent-extension-tool.git
+cd agent-extension-tool
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .[dev]
 ```

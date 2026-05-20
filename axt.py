@@ -5,8 +5,8 @@ axt — Agent eXtension Tool (Python edition)
 Single-file rewrite of the TypeScript+Ink axt. CLI + curses TUI for
 Claude/Codex/Gemini/Cursor extension/plugin/skill/MCP/usage management.
 
-See axt-new/DESIGN.md (architecture) and axt-new/FEATURES.md (1:1 feature
-inventory) for the canonical specification.
+See DESIGN.md (architecture) and FEATURES.md (1:1 feature inventory)
+for the canonical specification.
 
 Sections (search by header):
   Section 1: Constants & Paths
@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, TypeVar
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
 T = TypeVar("T")
 

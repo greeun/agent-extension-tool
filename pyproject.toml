@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "axt"
-version = "0.2.0"
+version = "1.0.0"
 description = "Agent eXtension Tool — CLI + TUI for Claude/Codex/Gemini/Cursor extensions, plugins, skills, MCP servers, and usage tracking"
 readme = "README.md"
 requires-python = ">=3.9"

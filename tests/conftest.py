@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for axt-new.
+"""Shared pytest fixtures for axt.
 
 Importable as `axt` from anywhere in tests/ thanks to pyproject's
 `py-modules = ["axt"]` once `pip install -e .` runs; for local CI runs
