@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, useStdout } from "ink";
+import { useDetailScroll } from "../components/useDetailScroll.js";
+import { useDetailMaxHeight } from "../components/useDetailMaxHeight.js";
+import { flattenDetailFields } from "../components/flattenDetailFields.js";
 import TextInput from "ink-text-input";
 import { Table } from "../components/Table.js";
 import { DetailView } from "../components/DetailView.js";
@@ -86,6 +89,7 @@ export function MarketTab({ isFocused = true, onFocusUp }: Props) {
   useInput((input, key) => {
     if (mode !== "list") return;
     if (!isFocused) return;
+    if (detailScroll.handleInput(input, key)) return;
     if (input === "j" || key.downArrow) {
       if (markets.length > 0) setIndex((i) => Math.min(i + 1, markets.length - 1));
     }
@@ -129,6 +133,24 @@ export function MarketTab({ isFocused = true, onFocusUp }: Props) {
     ? (selRemote.error ? `error: ${selRemote.error}` : selRemote.remote)
     : (remoteChecking ? "checking…" : "—");
 
+  const { stdout } = useStdout();
+  const cols = stdout?.columns ?? 80;
+  const detailFields = selected ? [
+    { label: "Current", value: localVersions[selected.name] ?? "…" },
+    { label: "Latest", value: latestLabel },
+    { label: "Source", value: JSON.stringify(selected.source) },
+    { label: "Location", value: selected.installLocation },
+    { label: "Updated", value: selected.lastUpdated },
+  ] : [];
+  const detailMaxHeight = useDetailMaxHeight(12);
+  const flat = flattenDetailFields(detailFields, cols - 4);
+  const viewport = Math.max(1, detailMaxHeight - 4);
+  const detailScroll = useDetailScroll({
+    totalLines: flat.length,
+    viewportLines: viewport,
+    resetKey: selected?.name,
+  });
+
   return (
     <Box flexDirection="column">
       <Table
@@ -144,15 +166,13 @@ export function MarketTab({ isFocused = true, onFocusUp }: Props) {
       <DetailView
         item={selected}
         title={selected ? `${selected.name} ${localVersions[selected.name] ?? ""}` : undefined}
-        fields={selected ? [
-          { label: "Current", value: localVersions[selected.name] ?? "…" },
-          { label: "Latest", value: latestLabel },
-          { label: "Source", value: JSON.stringify(selected.source) },
-          { label: "Location", value: selected.installLocation },
-          { label: "Updated", value: selected.lastUpdated },
-        ] : []}
+        fields={detailFields}
         emptyMessage="No marketplace registered. Press 'a' to add one."
-        shortcuts="s:sync  r:remove  a:add new"
+        shortcuts="s:sync  r:remove  a:add new  Enter:detail  Esc:back  j/k:scroll"
+        detailFocused={detailScroll.focused}
+        detailScroll={detailScroll.scroll}
+        detailMaxHeight={detailMaxHeight}
+        detailContentWidth={cols - 4}
       />
 
       {mode === "confirm-remove" && selected && (
