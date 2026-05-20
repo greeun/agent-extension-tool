@@ -30,6 +30,12 @@ dev = ["pytest>=7.0", "pytest-cov"]
 # Windows curses requires an external wheel.
 windows = ["windows-curses>=2.3; sys_platform == 'win32'"]
 
+[project.urls]
+Homepage = "https://github.com/greeun/agent-extension-tool"
+Repository = "https://github.com/greeun/agent-extension-tool"
+Issues = "https://github.com/greeun/agent-extension-tool/issues"
+Changelog = "https://github.com/greeun/agent-extension-tool/releases"
+
 [project.scripts]
 axt = "axt:main"
 
