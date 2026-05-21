@@ -1716,3 +1716,10 @@ def test_handle_usage_input_r_kicks_reload_without_clearing(monkeypatch, tmp_pat
         state.usage_load_thread.join(timeout=2.0)
     assert state.usage_entries is fresh
     assert state.usage_loading is False
+
+
+def test_has_background_work_tracks_usage_loading():
+    state = axt.TuiState()
+    assert axt._has_background_work(state) is False
+    state.usage_loading = True
+    assert axt._has_background_work(state) is True

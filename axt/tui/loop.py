@@ -252,6 +252,18 @@ def _handle_layer_key(stdscr, state: TuiState, key: int, tab_key: str) -> bool:
     return _handle_content_layer_key(stdscr, state, key, tab_key)
 
 
+def _has_background_work(state: TuiState) -> bool:
+    """Return True iff a background task wants the main loop to poll.
+
+    Today: only the Usage tab's loader. Centralizing here lets future
+    background work plug in without touching `_tui_loop`'s structure.
+    """
+    return bool(state.usage_loading)
+
+
+_POLL_TIMEOUT_MS = 200
+
+
 def _tui_loop(stdscr) -> None:
     curses.curs_set(0)
     try:
@@ -259,7 +271,6 @@ def _tui_loop(stdscr) -> None:
     except (AttributeError, curses.error):
         pass
     stdscr.keypad(True)
-    stdscr.timeout(-1)  # blocking getch
     tui_init_colors()
 
     state = TuiState()
@@ -273,12 +284,20 @@ def _tui_loop(stdscr) -> None:
             _render_frame(stdscr, state)
             continue
 
+        # Dynamic timeout: poll while a background task is in flight,
+        # otherwise block forever. The wake-up redraws the frame so the
+        # worker's result becomes visible without user input.
+        stdscr.timeout(_POLL_TIMEOUT_MS if _has_background_work(state) else -1)
+
         try:
             key = stdscr.getch()
         except KeyboardInterrupt:
             return
 
         if key == -1:
+            # Timeout tick — just redraw and loop again. The worker
+            # may have finished between ticks.
+            _render_frame(stdscr, state)
             continue
 
         # Modal states that intercept input — pass key straight to the active
