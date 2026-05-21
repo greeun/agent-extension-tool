@@ -5500,7 +5500,7 @@ def open_in_editor(stdscr, path: os.PathLike[str] | str) -> bool:
 class TuiState:
     """Mutable per-session UI state. Each tab reads/writes its own bucket."""
     tab_idx: int = 0
-    focused_layer: str = "content"  # "mainTab" | "content"
+    focused_layer: str = "mainTab"  # "mainTab" | "subTab" | "content"
     refresh_token: int = 0          # bump to force data reload
     status: str = ""
     show_help: bool = False
@@ -7540,7 +7540,7 @@ def _tui_loop(stdscr) -> None:
             if ord("1") <= key <= ord("4"):
                 state.tab_idx = key - ord("1")
                 state.status = ""
-                state.focused_layer = "content"
+                state.focused_layer = "mainTab"
                 _render_frame(stdscr, state)
                 continue
 

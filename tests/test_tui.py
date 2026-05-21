@@ -236,6 +236,13 @@ def test_sync_usage_sub_tab_noop_when_platform_filter_is_all():
     assert state.usage_sub_tab == "codex"
 
 
+def test_tui_state_initial_focus_is_main_tab():
+    """Default focus on mainTab so arrow-key navigation is immediately
+    discoverable (the ▶ marker appears on the tab bar from frame 1)."""
+    s = axt.TuiState()
+    assert s.focused_layer == "mainTab"
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 
