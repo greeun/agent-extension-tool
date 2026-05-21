@@ -113,6 +113,28 @@ def test_render_usage_root_tab_active_sub_tab_is_highlighted():
     pytest.fail("Active Usage sub-tab 'Codex' was not bold")
 
 
+def test_render_frame_dispatches_usage_tab_to_root_renderer(monkeypatch):
+    """When tab_idx points at 'usage', _render_frame should call render_usage_root_tab."""
+    calls = []
+    monkeypatch.setattr(axt, "render_usage_root_tab",
+                        lambda *a, **kw: calls.append("root"))
+    scr = _make_stdscr()
+    state = axt.TuiState()
+    state.tab_idx = next(i for i, t in enumerate(axt.MAIN_TABS) if t[0] == "usage")
+    axt._render_frame(scr, state)
+    assert calls == ["root"]
+
+
+def test_cycle_sub_tab_dispatches_on_active_main_tab():
+    """_cycle_sub_tab on Usage tab rotates usage_sub_tab, not ext_sub_tab."""
+    state = axt.TuiState()
+    state.tab_idx = next(i for i, t in enumerate(axt.MAIN_TABS) if t[0] == "usage")
+    state.usage_sub_tab = "all"
+    axt._cycle_sub_tab(state, +1)
+    assert state.usage_sub_tab == "claude"
+    assert state.ext_sub_tab == "vault"  # unchanged
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 

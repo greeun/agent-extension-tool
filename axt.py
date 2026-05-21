@@ -7403,14 +7403,10 @@ def _render_frame(stdscr, state: TuiState) -> None:
         render_extensions_tab(stdscr, state, body_y, body_h, w)
     elif tab_key == "context":
         render_context_tab(stdscr, state, body_y, body_h, w)
-    elif tab_key == "project":
-        render_project_tab(stdscr, state, body_y, body_h, w)
     elif tab_key == "dashboard":
         render_dashboard_tab(stdscr, state, body_y, body_h, w)
-    elif tab_key in ("claude", "codex", "gemini"):
-        render_usage_tab(stdscr, state, body_y, body_h, w, tab_key)
-    elif tab_key == "cursor":
-        render_cursor_tab(stdscr, state, body_y, body_h, w)
+    elif tab_key == "usage":
+        render_usage_root_tab(stdscr, state, body_y, body_h, w)
     else:
         render_stub_tab(stdscr, state, body_y, body_h, w,
                         name=MAIN_TABS[state.tab_idx][2], hint="")
@@ -7423,13 +7419,15 @@ def _render_frame(stdscr, state: TuiState) -> None:
             shortcuts = "Enter:apply pending  Esc:discard  Space:project  g:global  j/k:nav"
         else:
             shortcuts = (
-                "1-8:tab  [/]:sub  j/k:nav  Space:project  g:global  Enter:apply  "
-                "Tab:filter  s:sort  /:search  i:import  f:scan  m:migrate  S:sync  r:refresh  ?:help  q:quit"
+                "1-4:tab  [/]:sub  p:platform  P:scope  j/k:nav  Space:project  g:global  "
+                "Enter:apply  Tab:filter  s:sort  /:search  i:import  f:scan  m:migrate  S:sync  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
-        shortcuts = "1-8:tab  [/]:sub  j/k:nav  r:refresh  ?:help  q:quit"
+        shortcuts = "1-4:tab  [/]:sub  p:platform  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
+    elif tab_key == "usage":
+        shortcuts = "1-4:tab  [/]:sub  p:platform  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
     else:
-        shortcuts = "1-8:tab  j/k:nav  r:refresh  ?:help  q:quit"
+        shortcuts = "1-4:tab  p:platform  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
     render_status_bar(stdscr, h - 1, w, shortcuts, state.status)
 
     stdscr.refresh()
@@ -7521,7 +7519,7 @@ def _tui_loop(stdscr) -> None:
                     _render_frame(stdscr, state)
                     continue
                 if key == curses.KEY_DOWN or is_enter(key):
-                    state.focused_layer = "subTab" if tab_key == "extensions" else "content"
+                    state.focused_layer = "subTab" if tab_key in ("extensions", "usage") else "content"
                     _render_frame(stdscr, state)
                     continue
                 if key == curses.KEY_UP:
@@ -7549,7 +7547,7 @@ def _tui_loop(stdscr) -> None:
             else:  # focused_layer == "content"
                 # Allow ↑ from the TOP of a list to climb back out.
                 if key == curses.KEY_UP and _at_top_of_content(state, tab_key):
-                    state.focused_layer = "subTab" if tab_key == "extensions" else "mainTab"
+                    state.focused_layer = "subTab" if tab_key in ("extensions", "usage") else "mainTab"
                     _render_frame(stdscr, state)
                     continue
                 # ← / → still cycle main tabs (legacy) so users without focus
