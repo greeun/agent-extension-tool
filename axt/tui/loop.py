@@ -60,7 +60,7 @@ Navigation
   Enter         Drop focus one layer down OR confirm an action
   [ / ]         Extensions: previous / next sub-tab
   Shift+Tab     Extensions: previous sub-tab (alt)
-  Tab           Extensions (non-Vault): next sub-tab (alt)
+  Tab           Extensions: next sub-tab (alt)
   j / ↓         Move selection down (within a list)
   k / ↑         Move selection up
   PgUp / PgDn   Page up / page down
@@ -71,7 +71,7 @@ Vault
   Enter         Apply pending toggles (confirm y/N) OR focus detail panel
   Esc           Discard pending OR blur detail panel
   /             Search input (type → Enter to apply, Esc to clear)
-  Tab           Cycle filter (all/skill/command/agent/plugin)
+  F             Cycle filter (all/skill/command/agent/plugin)
   s             Cycle sort key (incl. `used`, most-used first)
   i             Import a global-only item into the vault (selected row)
   f             Toggle scan mode AND scan ALL projects (cached to disk)
@@ -154,7 +154,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
         else:
             shortcuts = (
                 "1-3:tab  [/]:sub  j/k:nav  Space:project  g:global  "
-                "Enter:apply  Tab:filter  s:sort  /:search  i:import  f:scan  m:migrate  S:sync  r:refresh  ?:help  q:quit"
+                "Enter:apply  F:filter  s:sort  /:search  i:import  f:scan  m:migrate  S:sync  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
         shortcuts = "1-3:tab  [/]:sub  j/k:nav  r:refresh  ?:help  q:quit"
