@@ -52,6 +52,27 @@ def test_tui_state_initializes_usage_sub_tab():
     assert s.usage_sub_tab == "all"
 
 
+def test_render_filter_chips_shows_platform_and_scope_labels():
+    scr = _make_stdscr()
+    axt.render_filter_chips(scr, y=1, x=0, w=120, platform="all", scope="project")
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Platform:" in flat
+    assert "Scope:" in flat
+    assert "All" in flat
+    assert "Project" in flat
+
+
+def test_render_filter_chips_highlights_non_default_filter():
+    """When a filter is set to a non-default value, its chip should stand out."""
+    scr = _make_stdscr()
+    axt.render_filter_chips(scr, y=1, x=0, w=120, platform="claude", scope="project")
+    for call in scr.calls:
+        if len(call) >= 5 and isinstance(call[2], str) and "Claude" in call[2]:
+            assert call[4] & curses.A_BOLD
+            return
+    pytest.fail("Platform=claude chip was not drawn with BOLD")
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 

@@ -5063,6 +5063,45 @@ def render_tab_bar(stdscr, y: int, x: int, w: int, active_idx: int, focused: boo
         safe_addnstr(stdscr, y, cur, " " * (tab_limit - cur), tab_limit - cur, CP_DIM())
 
 
+_PLATFORM_CHIP_LABEL: dict[str, str] = {
+    "all": "All", "claude": "Claude", "codex": "Codex",
+    "gemini": "Gemini", "cursor": "Cursor",
+}
+_SCOPE_CHIP_LABEL: dict[str, str] = {"project": "Project", "all": "All"}
+
+
+def render_filter_chips(stdscr, y: int, x: int, w: int,
+                        platform: str, scope: str) -> None:
+    """Render the two global filter chips on the header line.
+
+    Layout:  `Platform: [All]  Scope: [Project]`  (left-aligned, single row)
+
+    A chip whose value is the *default* (`all` for platform, `project` for
+    scope) renders dim — it carries no information. A non-default chip
+    renders BOLD cyan so the user can see at a glance that the view is
+    filtered.
+    """
+    platform_label = _PLATFORM_CHIP_LABEL.get(platform, platform.title())
+    scope_label = _SCOPE_CHIP_LABEL.get(scope, scope.title())
+
+    platform_attr = CP_CYAN() | curses.A_BOLD if platform != "all" else CP_DIM()
+    scope_attr = CP_CYAN() | curses.A_BOLD if scope != "project" else CP_DIM()
+
+    cur = x
+    label = "Platform: "
+    safe_addnstr(stdscr, y, cur, label, w - (cur - x), CP_DIM())
+    cur += cell_width(label)
+    chip = f"[{platform_label}]"
+    safe_addnstr(stdscr, y, cur, chip, w - (cur - x), platform_attr)
+    cur += cell_width(chip) + 2
+
+    label = "Scope: "
+    safe_addnstr(stdscr, y, cur, label, w - (cur - x), CP_DIM())
+    cur += cell_width(label)
+    chip = f"[{scope_label}]"
+    safe_addnstr(stdscr, y, cur, chip, w - (cur - x), scope_attr)
+
+
 @dataclass
 class TableColumn:
     key: str
@@ -7262,10 +7301,20 @@ def _render_frame(stdscr, state: TuiState) -> None:
         return
     stdscr.erase()
 
-    # Header (tab bar + project path + divider).
+    # Header (tab bar + filter chips on left, cwd on right, divider).
     render_tab_bar(stdscr, 0, 0, w, state.tab_idx, focused=(state.focused_layer == "mainTab"))
-    project_line = f" cwd: {Path.cwd()}"
-    safe_addnstr(stdscr, 1, 0, fit_cells(project_line, w - 1), w - 1, CP_DIM())
+    cwd_text = f" cwd: {Path.cwd()}"
+    cwd_w = cell_width(cwd_text)
+    if cwd_w >= w - 2:
+        cwd_text = fit_cells(cwd_text, w - 2)
+        cwd_w = cell_width(cwd_text)
+    cwd_x = max(0, w - 1 - cwd_w)
+    if cwd_w > 0:
+        safe_addnstr(stdscr, 1, cwd_x, cwd_text, cwd_w, CP_DIM())
+    chip_max_w = max(0, cwd_x - 1)
+    if chip_max_w > 0:
+        render_filter_chips(stdscr, 1, 0, chip_max_w,
+                            platform=state.platform_filter, scope=state.scope_filter)
     safe_addnstr(stdscr, 2, 0, "─" * (w - 1), w - 1, CP_DIM())
 
     # Tab content.
