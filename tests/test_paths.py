@@ -89,6 +89,17 @@ def test_paths_object_is_frozen(clean_env):
         axt.PATHS.claude_dir = Path("/nope")  # type: ignore[misc]
 
 
+def test_project_settings_path_defaults_to_cwd(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    import axt
+    assert axt.project_settings_path() == tmp_path / ".claude" / "settings.json"
+
+
+def test_project_settings_path_explicit_cwd(tmp_path: Path):
+    import axt
+    assert axt.project_settings_path(tmp_path) == tmp_path / ".claude" / "settings.json"
+
+
 def test_vault_subdirs_under_axt_dir(clean_env, monkeypatch):
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: Path("/h")))
     axt = _reload_axt()

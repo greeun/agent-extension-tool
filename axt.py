@@ -125,6 +125,12 @@ AXT_CONFIG_DIR: Path = _axt_config_dir()
 AXT_CONFIG_PATH: Path = AXT_CONFIG_DIR / "config.json"
 
 
+def project_settings_path(cwd: os.PathLike[str] | str | None = None) -> Path:
+    """Return `<cwd>/.claude/settings.json` for project-scoped Claude settings."""
+    base = Path(cwd) if cwd is not None else Path.cwd()
+    return base / ".claude" / "settings.json"
+
+
 # ── Section 2: JSON I/O ──────────────────────────────────────────────────────
 #
 # Mirror of src/core/json-io.ts:
@@ -3839,6 +3845,32 @@ def get_projects(index: UsageIndex, type_: str, name: str) -> list[ProjectRef]:
     return list(entry.projects) if entry else []
 
 
+_SCAN_SUMMARY_TYPES: tuple[str, ...] = ("skill", "command", "agent", "plugin")
+_SCAN_TITLE_ABBREV: dict[str, str] = {"command": "cmd"}
+
+
+def scan_counts_by_type(index: UsageIndex) -> dict[str, int]:
+    """Tally an index by ExtensionUsage type in display order (skill/command/agent/plugin)."""
+    counts: dict[str, int] = {t: 0 for t in _SCAN_SUMMARY_TYPES}
+    for entry in index.values():
+        if entry.type in counts:
+            counts[entry.type] += 1
+        else:
+            counts[entry.type] = 1
+    return counts
+
+
+def format_scan_summary(index: UsageIndex, *, style: str) -> str:
+    """style='title' → 'skill:64 cmd:0 agent:4 plugin:5'
+    style='toast' → '64 skill · 0 command · 4 agent · 5 plugin'."""
+    counts = scan_counts_by_type(index)
+    if style == "title":
+        return " ".join(
+            f"{_SCAN_TITLE_ABBREV.get(t, t)}:{counts[t]}" for t in counts
+        )
+    return " · ".join(f"{counts[t]} {t}" for t in counts)
+
+
 # ── Section 10: CLI Commands (argparse) ──────────────────────────────────────
 #
 # Mirrors src/cli/* commander structure as argparse subparsers. ANSI color
@@ -4215,32 +4247,49 @@ def cli_plan_set(args) -> int:
 
 def cli_plugin_list(args) -> int:
     plugins = list_installed_plugins(PATHS.installed_plugins)
-    enabled = read_enabled_plugins(PATHS.settings)
+    enabled_g = read_enabled_plugins(PATHS.settings)
+    enabled_p = read_enabled_plugins(project_settings_path())
     if not plugins:
         print("No plugins installed.")
         return 0
-    print(_bold(f" {'Plugin'.ljust(30)} {'Version'.ljust(10)} {'Status'.ljust(10)} Marketplace"))
+    print(_bold(f" {'Plugin'.ljust(30)} {'Version'.ljust(10)} {'G/P'.ljust(7)} Marketplace"))
     print("─" * 75)
     active = 0
     for p in plugins:
-        is_active = enabled.get(p.id) is True
+        gv = enabled_g.get(p.id)
+        pv = enabled_p.get(p.id)
+        is_active = gv is True or pv is True
         if is_active:
             active += 1
-        status = _green("● active") if is_active else _dim("○ off")
-        print(f" {p.name.ljust(30)} {p.version.ljust(10)} {status.ljust(19)} {p.marketplace}")
+        g_mark = _green("●") if gv is True else (_dim("○") if gv is False else _dim("·"))
+        p_mark = _green("●") if pv is True else (_dim("○") if pv is False else _dim("·"))
+        status = f"{g_mark} / {p_mark}"
+        print(f" {p.name.ljust(30)} {p.version.ljust(10)} {status.ljust(16)} {p.marketplace}")
     print(f"\n {len(plugins)} installed ({active} active, {len(plugins) - active} disabled)")
+    print(_dim(" Legend: G/P = global / project   ● enabled  ○ disabled  · unset"))
     return 0
 
 
+def _plugin_settings_path_for_scope(scope: str) -> Path:
+    """Resolve the settings.json target for `--scope global|project`."""
+    if scope == "project":
+        return project_settings_path()
+    return Path(PATHS.settings)
+
+
 def cli_plugin_enable(args) -> int:
-    set_plugin_enabled(PATHS.settings, args.plugin_id, True)
-    print(_green(f'✓ "{args.plugin_id}" enabled. Restart Claude Code to apply.'))
+    scope = getattr(args, "scope", "global")
+    target = _plugin_settings_path_for_scope(scope)
+    set_plugin_enabled(target, args.plugin_id, True)
+    print(_green(f'✓ "{args.plugin_id}" enabled ({scope}). Restart Claude Code to apply.'))
     return 0
 
 
 def cli_plugin_disable(args) -> int:
-    set_plugin_enabled(PATHS.settings, args.plugin_id, False)
-    print(_yellow(f'○ "{args.plugin_id}" disabled. Restart Claude Code to apply.'))
+    scope = getattr(args, "scope", "global")
+    target = _plugin_settings_path_for_scope(scope)
+    set_plugin_enabled(target, args.plugin_id, False)
+    print(_yellow(f'○ "{args.plugin_id}" disabled ({scope}). Restart Claude Code to apply.'))
     return 0
 
 
@@ -4249,10 +4298,19 @@ def cli_plugin_info(args) -> int:
     if not info:
         print(_red(f'Plugin "{args.plugin_id}" not found.'))
         return 1
-    enabled = read_enabled_plugins(PATHS.settings)
+    gv = read_enabled_plugins(PATHS.settings).get(info.id)
+    pv = read_enabled_plugins(project_settings_path()).get(info.id)
+
+    def _fmt(v: Optional[bool]) -> str:
+        if v is True:
+            return _green("enabled")
+        if v is False:
+            return _dim("disabled")
+        return _dim("unset")
+
     print(_bold(info.name) + f" {info.version}")
     print(f"Marketplace: {info.marketplace}")
-    print(f"Status: {_green('active') if enabled.get(info.id) else _dim('disabled')}")
+    print(f"Status: global={_fmt(gv)}  project={_fmt(pv)}")
     print(f"Path: {info.install_path}")
     print(f"Installed: {info.installed_at[:10]}")
     print(f"Updated: {info.last_updated[:10]}")
@@ -4749,8 +4807,8 @@ def build_parser() -> argparse.ArgumentParser:
     # plugin
     sp_plg = sub.add_parser("plugin", help="Manage plugins").add_subparsers(dest="action", required=True)
     p = sp_plg.add_parser("list", help="List installed plugins with status"); p.set_defaults(func=cli_plugin_list)
-    p = sp_plg.add_parser("enable", help="Enable a plugin"); p.add_argument("plugin_id"); p.set_defaults(func=cli_plugin_enable)
-    p = sp_plg.add_parser("disable", help="Disable a plugin"); p.add_argument("plugin_id"); p.set_defaults(func=cli_plugin_disable)
+    p = sp_plg.add_parser("enable", help="Enable a plugin"); p.add_argument("plugin_id"); p.add_argument("--scope", choices=("global", "project"), default="global", help="Write target settings.json (default: global)"); p.set_defaults(func=cli_plugin_enable)
+    p = sp_plg.add_parser("disable", help="Disable a plugin"); p.add_argument("plugin_id"); p.add_argument("--scope", choices=("global", "project"), default="global", help="Write target settings.json (default: global)"); p.set_defaults(func=cli_plugin_disable)
     p = sp_plg.add_parser("info", help="Show plugin details"); p.add_argument("plugin_id"); p.set_defaults(func=cli_plugin_info)
     p = sp_plg.add_parser("remove", help="Remove a plugin"); p.add_argument("plugin_id"); p.set_defaults(func=cli_plugin_remove)
     p = sp_plg.add_parser("search", help="Search plugins across all marketplaces"); p.add_argument("query"); p.set_defaults(func=cli_plugin_search)
@@ -4952,13 +5010,15 @@ MAIN_TABS: tuple[tuple[str, str, str], ...] = (
 
 
 def render_tab_bar(stdscr, y: int, x: int, w: int, active_idx: int, focused: bool) -> None:
-    """Top tab bar: ` 1·Ext  2·Ctx  3·Prj  …` on the left, ` axt v0.2.0 ` on
+    """Top tab bar: `▶ 1·Ext  2·Ctx  3·Prj  …` on the left, ` axt v0.2.0 ` on
     the right.
 
     Highlight tiers:
-      - Active + focused (mainTab focus layer): REVERSE + BOLD (strongest)
-      - Active + unfocused (most of the time):  cyan background (always visible)
-      - Inactive:                                dim
+      - Bar focused:    leading `▶ ` marker + active tab is a solid cyan chip
+                        (black-on-cyan, BOLD)
+      - Bar unfocused:  leading `  ` (no marker) + active tab is bold cyan text
+                        with underline (no fill) — clearly secondary
+      - Inactive cells: dim
     """
     version_label = f" axt v{__version__} "
     version_w = cell_width(version_label)
@@ -4967,14 +5027,17 @@ def render_tab_bar(stdscr, y: int, x: int, w: int, active_idx: int, focused: boo
         safe_addnstr(stdscr, y, right_x, version_label, version_w, CP_CYAN() | curses.A_BOLD)
 
     cur = x
-    safe_addnstr(stdscr, y, cur, " ", w - (cur - x), CP_DIM())
-    cur += 1
+    marker = "▶ " if focused else "  "
+    marker_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
+    safe_addnstr(stdscr, y, cur, marker, w - (cur - x), marker_attr)
+    cur += cell_width(marker)
     tab_limit = right_x if w > version_w + 4 else x + w
-    # Active-but-unfocused tab uses a colored-background attr (color_pair(1)
-    # is black-on-cyan) AND BOLD so it's still visible even on terminals (or
-    # tests) where color pairs aren't initialized. Focused tab adds REVERSE.
-    active_unfocused = _safe_pair(1, curses.A_BOLD)
-    active_focused = CP_SEL()  # CP_SEL already includes A_REVERSE | A_BOLD
+    # Active+focused = solid cyan chip (pair 1 = black-on-cyan + BOLD) — the
+    # strongest cell on screen. Active+unfocused = bold cyan text with
+    # underline (no fill) so it's clearly weaker than the focused chip but
+    # still visibly different from inactive (dim) cells.
+    active_focused = _safe_pair(1, curses.A_BOLD)
+    active_unfocused = _safe_pair(8, curses.A_BOLD | curses.A_UNDERLINE)
     # Compute total cell width with full names; if it doesn't fit, fall back
     # to the short labels so a narrow terminal still shows every tab.
     full_widths = [cell_width(f" {i + 1}·{long} ") for i, (_, _short, long) in enumerate(MAIN_TABS)]
@@ -5644,7 +5707,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # Title row with all the live mode bits.
     pending = len(state.vault_pending_project) + len(state.vault_pending_global)
     scan_label = (
-        f"scan={state.vault_scan_mode}({len(state.vault_usage_index)})"
+        f"scan={state.vault_scan_mode}({format_scan_summary(state.vault_usage_index, style='title')})"
         if state.vault_usage_index else f"scan={state.vault_scan_mode}(empty)"
     )
     title_parts = [
@@ -5862,7 +5925,11 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         state.vault_scan_mode = "full" if state.vault_scan_mode == "default" else "default"
         try:
             _vault_scan(state)
-            return f"Scan ({state.vault_scan_mode}): {len(state.vault_usage_index)} extensions in projects"
+            return (
+                f"Scan ({state.vault_scan_mode}): "
+                f"{format_scan_summary(state.vault_usage_index, style='toast')}  "
+                f"(total {len(state.vault_usage_index)})"
+            )
         except OSError as e:
             return f"Scan failed: {e}"
     elif key == ord("m"):
@@ -6655,16 +6722,21 @@ EXTENSION_SUB_TABS: tuple[tuple[str, str], ...] = (
 def _render_subtab_bar(stdscr, y: int, w: int, active_key: str, *, focused: bool = False) -> None:
     """Render the Extensions sub-tab bar with a clear focus indicator.
 
-    Layered focus:
-      - subTab focused: active sub-tab REVERSE+BOLD, others get cyan
-                        background to signal "this row is navigable now"
-      - unfocused:      active sub-tab still bracketed but dim
+    Layered focus (matches `render_tab_bar` so focus is unambiguous when
+    switching between main-tab and sub-tab layers):
+      - Bar focused:    `▶ Sub:` marker + active sub-tab is solid cyan chip
+                        (pair 1 + BOLD), brackets retained for color-blind safety
+      - Bar unfocused:  `  Sub:` (no marker) + active sub-tab is bold cyan text
+                        with underline (no fill), brackets retained
     """
     label_attr = CP_HDR() if focused else CP_DIM()
-    safe_addnstr(stdscr, y, 0, " Sub: ", w, label_attr)
-    cur = 6
+    marker = "▶ " if focused else "  "
+    marker_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
+    safe_addnstr(stdscr, y, 0, marker, w, marker_attr)
+    safe_addnstr(stdscr, y, cell_width(marker), "Sub: ", w - cell_width(marker), label_attr)
+    cur = cell_width(marker) + 5  # "Sub: " is 5 cells
     inactive_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
-    active_attr = CP_SEL() if focused else _safe_pair(1, curses.A_BOLD)
+    active_attr = _safe_pair(1, curses.A_BOLD) if focused else _safe_pair(8, curses.A_BOLD | curses.A_UNDERLINE)
     for i, (key, label) in enumerate(EXTENSION_SUB_TABS):
         if key == active_key:
             cell = f"[ {label} ]"
@@ -6739,14 +6811,23 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         cols = [
             TableColumn("name", "Plugin", max(20, w - 60)),
             TableColumn("version", "Version", 10),
-            TableColumn("status", "Status", 10),
+            TableColumn("status", "G/P", 10),
             TableColumn("market", "Marketplace", 24),
         ]
-        enabled = read_enabled_plugins(PATHS.settings)
+        enabled_g = read_enabled_plugins(PATHS.settings)
+        enabled_p = read_enabled_plugins(project_settings_path())
+
+        def _glyph(v):
+            if v is True:
+                return "●"
+            if v is False:
+                return "○"
+            return "·"
+
         rows = [{
             "name": p.name,
             "version": p.version or "—",
-            "status": "● active" if enabled.get(p.id) else "○ off",
+            "status": f"{_glyph(enabled_g.get(p.id))} / {_glyph(enabled_p.get(p.id))}",
             "market": p.marketplace or "—",
         } for p in data]
 
@@ -6927,7 +7008,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
         return None  # No interactive context available (e.g. tests)
     stdscr = cb.get("stdscr")
 
-    # ── Plugins: e=enable d=disable x=uninstall i=info ─────────────────────
+    # ── Plugins: e/d=global, E/D=project, x=uninstall i=info ───────────────
     if sub == "plugins":
         plugin = _selected_item(state, "plugins")
         if plugin is None:
@@ -6936,14 +7017,28 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
             try:
                 set_plugin_enabled(PATHS.settings, plugin.id, True)
                 state.ext_cache.pop("plugins", None)
-                return f"Enabled {plugin.id}"
+                return f"Enabled {plugin.id} (global)"
             except OSError as exc:
                 return f"Enable failed: {exc}"
         if key == ord("d"):
             try:
                 set_plugin_enabled(PATHS.settings, plugin.id, False)
                 state.ext_cache.pop("plugins", None)
-                return f"Disabled {plugin.id}"
+                return f"Disabled {plugin.id} (global)"
+            except OSError as exc:
+                return f"Disable failed: {exc}"
+        if key == ord("E"):
+            try:
+                set_plugin_enabled(project_settings_path(), plugin.id, True)
+                state.ext_cache.pop("plugins", None)
+                return f"Enabled {plugin.id} (project)"
+            except OSError as exc:
+                return f"Enable failed: {exc}"
+        if key == ord("D"):
+            try:
+                set_plugin_enabled(project_settings_path(), plugin.id, False)
+                state.ext_cache.pop("plugins", None)
+                return f"Disabled {plugin.id} (project)"
             except OSError as exc:
                 return f"Disable failed: {exc}"
         if key == ord("x") and stdscr:
@@ -7111,7 +7206,10 @@ Vault
   r             Refresh (cheap, no cross-project walk)
 
 Extensions sub-tab actions
-  Plugins:      e=enable  d=disable  x=uninstall (confirm)
+  Plugins:      e=enable (global)  d=disable (global)
+                E=enable (project) D=disable (project)
+                x=uninstall (confirm)
+                Status column shows G/P: ● enabled  ○ disabled  · unset
   Skills:       l=link new path (input)  u=unlink (confirm)
   Marketplace:  a=add (source+name input)  s=sync (selected)  r=remove (confirm)
   Commands/Agents: e=open source file in $EDITOR

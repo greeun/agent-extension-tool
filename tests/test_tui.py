@@ -199,10 +199,14 @@ def test_render_tab_bar_falls_back_to_short_names_in_narrow_terminal():
 def test_render_tab_bar_highlights_active_when_focused():
     scr = _make_stdscr()
     axt.render_tab_bar(scr, 0, 0, 120, active_idx=2, focused=True)
-    # Active+focused tab uses CP_SEL → A_REVERSE.
+    # Active+focused tab uses a solid cyan chip (pair 1 + BOLD, no REVERSE).
+    # Unfocused-active uses A_UNDERLINE instead — focused state must NOT have
+    # underline so the two states are unambiguously different.
     for call in scr.calls:
         if len(call) >= 5 and isinstance(call[2], str) and "Prj" in call[2]:
-            assert call[4] & curses.A_REVERSE
+            attr = call[4]
+            assert attr & curses.A_BOLD
+            assert not (attr & curses.A_UNDERLINE)
 
 
 def test_render_tab_bar_shows_version_badge():
@@ -234,6 +238,29 @@ def test_render_tab_bar_narrow_terminal_skips_version_gracefully():
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     # Version not present, but at least one tab label is.
     assert f"axt v{axt.__version__}" not in flat
+
+
+def test_render_tab_bar_shows_focus_marker_only_when_focused():
+    """A `▶` marker on the bar's left edge signals which layer owns the keys."""
+    scr_focused = _make_stdscr()
+    axt.render_tab_bar(scr_focused, 0, 0, 120, active_idx=0, focused=True)
+    scr_unfocused = _make_stdscr()
+    axt.render_tab_bar(scr_unfocused, 0, 0, 120, active_idx=0, focused=False)
+    flat_focused = "".join(c[2] for c in scr_focused.calls if len(c) >= 3 and isinstance(c[2], str))
+    flat_unfocused = "".join(c[2] for c in scr_unfocused.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "▶" in flat_focused
+    assert "▶" not in flat_unfocused
+
+
+def test_render_subtab_bar_shows_focus_marker_only_when_focused():
+    scr_focused = _make_stdscr()
+    axt._render_subtab_bar(scr_focused, 0, 120, active_key="vault", focused=True)
+    scr_unfocused = _make_stdscr()
+    axt._render_subtab_bar(scr_unfocused, 0, 120, active_key="vault", focused=False)
+    flat_focused = "".join(c[2] for c in scr_focused.calls if len(c) >= 3 and isinstance(c[2], str))
+    flat_unfocused = "".join(c[2] for c in scr_unfocused.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "▶" in flat_focused
+    assert "▶" not in flat_unfocused
 
 
 # ─── TuiState + Vault input ──────────────────────────────────────────────────
@@ -837,7 +864,8 @@ def test_at_top_of_content_dashboard_always_true():
 
 
 def test_subtab_bar_focus_attr_differs_from_unfocused(tmp_path):
-    """subTab focused → REVERSE on active sub-tab; unfocused → plain bold."""
+    """subTab focused → solid cyan chip (BOLD, no UNDERLINE);
+    unfocused → bold cyan text with UNDERLINE (no fill)."""
     scr_focused = _make_stdscr()
     axt._render_subtab_bar(scr_focused, 0, 120, active_key="plugins", focused=True)
     scr_unfocused = _make_stdscr()
@@ -851,9 +879,12 @@ def test_subtab_bar_focus_attr_differs_from_unfocused(tmp_path):
     a_focused = attr_of_plugins(scr_focused)
     a_unfocused = attr_of_plugins(scr_unfocused)
     assert a_focused is not None and a_unfocused is not None
-    # Focused must have A_REVERSE; unfocused must NOT.
-    assert a_focused & curses.A_REVERSE
-    assert not (a_unfocused & curses.A_REVERSE)
+    # The two states must differ. Focused = bold without underline (solid
+    # chip); unfocused = bold WITH underline (just decorated text).
+    assert a_focused != a_unfocused
+    assert a_focused & curses.A_BOLD
+    assert not (a_focused & curses.A_UNDERLINE)
+    assert a_unfocused & curses.A_UNDERLINE
 
 
 # ─── Current project path display ────────────────────────────────────────────

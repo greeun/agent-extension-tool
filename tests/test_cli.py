@@ -144,6 +144,77 @@ def test_plugin_enable_writes_settings(tmp_path: Path, monkeypatch):
     assert data["enabledPlugins"]["myplugin@m"] is True
 
 
+def test_plugin_enable_scope_global_default(tmp_path: Path, monkeypatch):
+    """Default --scope is global; writes to PATHS.settings, not project."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.setattr("axt.PATHS", axt.Paths(settings=tmp_path / "settings.json"))
+    monkeypatch.chdir(project)
+    code, out, _ = _run(["plugin", "enable", "myplugin@m"])
+    assert code == 0
+    assert "(global)" in out
+    g = json.loads((tmp_path / "settings.json").read_text())
+    assert g["enabledPlugins"]["myplugin@m"] is True
+    assert not (project / ".claude" / "settings.json").exists()
+
+
+def test_plugin_enable_scope_project_writes_cwd(tmp_path: Path, monkeypatch):
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.setattr("axt.PATHS", axt.Paths(settings=tmp_path / "settings.json"))
+    monkeypatch.chdir(project)
+    code, out, _ = _run(["plugin", "enable", "myplugin@m", "--scope", "project"])
+    assert code == 0
+    assert "(project)" in out
+    p = json.loads((project / ".claude" / "settings.json").read_text())
+    assert p["enabledPlugins"]["myplugin@m"] is True
+    # Global must remain untouched.
+    assert not (tmp_path / "settings.json").exists()
+
+
+def test_plugin_disable_scope_project_writes_cwd(tmp_path: Path, monkeypatch):
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.setattr("axt.PATHS", axt.Paths(settings=tmp_path / "settings.json"))
+    monkeypatch.chdir(project)
+    code, out, _ = _run(["plugin", "disable", "myplugin@m", "--scope", "project"])
+    assert code == 0
+    assert "(project)" in out
+    p = json.loads((project / ".claude" / "settings.json").read_text())
+    assert p["enabledPlugins"]["myplugin@m"] is False
+
+
+def test_plugin_list_shows_split_status(tmp_path: Path, monkeypatch):
+    """List shows separate global/project marks; '·' for unset entries."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    install = tmp_path / "p"
+    (install / ".claude-plugin").mkdir(parents=True)
+    (install / ".claude-plugin" / "plugin.json").write_text('{"name":"p","version":"1"}')
+    (tmp_path / "installed_plugins.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {
+            "p@m": [{
+                "scope": "global", "installPath": str(install), "version": "1",
+                "installedAt": "", "lastUpdated": "",
+            }]
+        },
+    }))
+    # Global enables it; project disables it (override).
+    (tmp_path / "settings.json").write_text(json.dumps({"enabledPlugins": {"p@m": True}}))
+    (project / ".claude").mkdir()
+    (project / ".claude" / "settings.json").write_text(json.dumps({"enabledPlugins": {"p@m": False}}))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "installed_plugins.json",
+        settings=tmp_path / "settings.json",
+    ))
+    monkeypatch.chdir(project)
+    code, out, _ = _run(["plugin", "list"])
+    assert code == 0
+    assert "G/P" in out
+    assert "● / ○" in out  # global enabled, project disabled (override)
+
+
 def test_plugin_search_prints_hint():
     code, out, _ = _run(["plugin", "search", "foo"])
     assert code == 0
