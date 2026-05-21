@@ -4998,14 +4998,20 @@ def is_quit(k: int) -> bool:
 # Main tabs in display order. Index is also their 1-based keyboard shortcut.
 MAIN_TABS: tuple[tuple[str, str, str], ...] = (
     # (key, short label, long label)
-    ("extensions", "Ext", "Extensions"),
-    ("context",    "Ctx", "Context"),
-    ("project",    "Prj", "Project"),
     ("dashboard",  "Dash", "Dashboard"),
-    ("claude",     "Cla", "Claude"),
-    ("codex",      "Cdx", "Codex"),
-    ("gemini",     "Gem", "Gemini"),
-    ("cursor",     "Cur", "Cursor"),
+    ("extensions", "Ext",  "Extensions"),
+    ("context",    "Ctx",  "Context"),
+    ("usage",      "Use",  "Usage"),
+)
+
+
+# Usage sub-tabs — platform axis, paralleling EXTENSION_SUB_TABS.
+USAGE_SUB_TABS: tuple[tuple[str, str], ...] = (
+    ("all",    "All"),
+    ("claude", "Claude"),
+    ("codex",  "Codex"),
+    ("gemini", "Gemini"),
+    ("cursor", "Cursor"),
 )
 
 

@@ -27,6 +27,18 @@ def _make_stdscr(rows: int = 30, cols: int = 120):
     return scr
 
 
+def test_main_tabs_collapsed_to_four_resource_types():
+    """After reorganization, top-level tabs are resource-axis only."""
+    keys = [t[0] for t in axt.MAIN_TABS]
+    assert keys == ["dashboard", "extensions", "context", "usage"]
+
+
+def test_usage_sub_tabs_include_all_four_platforms():
+    """Platform views move into Usage sub-tabs (plus an 'all' rollup)."""
+    keys = [t[0] for t in axt.USAGE_SUB_TABS]
+    assert keys == ["all", "claude", "codex", "gemini", "cursor"]
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 
