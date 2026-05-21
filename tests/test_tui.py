@@ -1623,16 +1623,24 @@ def test_kick_usage_reload_spawns_and_populates(monkeypatch, tmp_path):
     populates state when it completes."""
     _setup_isolated_paths(tmp_path, monkeypatch)
 
+    # Gate the stubbed loader so we can observe the in-flight state
+    # deterministically — otherwise the worker may finish before the
+    # `usage_loading is True` assertion when the runtime is hot.
+    import threading as _threading
+    gate = _threading.Event()
     stub_entries = []
-    monkeypatch.setattr("axt.tui.tabs.load_unified_usage",
-                        lambda **kw: stub_entries)
+    def gated_load(**kw):
+        gate.wait(timeout=2.0)
+        return stub_entries
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", gated_load)
 
     state = axt.TuiState()
     axt._kick_usage_reload(state)
     assert state.usage_loading is True
     assert state.status == "Loading Claude usage…"
 
-    # Wait for the worker.
+    # Release the worker and wait for it.
+    gate.set()
     if state.usage_load_thread is not None:
         state.usage_load_thread.join(timeout=2.0)
 
@@ -1751,10 +1759,3 @@ def test_tab_has_focusable_content_usage_without_data():
     state.usage_entries = [object()]
     state.usage_loading = True
     assert axt.tab_has_focusable_content(state, "usage") is False
-
-
-def test_at_top_of_content_usage_respects_scroll_new():
-    state = axt.TuiState()
-    assert axt._at_top_of_content(state, "usage") is True
-    state.usage_scroll = 1
-    assert axt._at_top_of_content(state, "usage") is False
