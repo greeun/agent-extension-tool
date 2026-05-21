@@ -68,9 +68,9 @@ def test_cycle_scope_filter_toggles_between_project_and_all():
 
 
 def test_render_frame_dispatches_usage_tab(monkeypatch):
-    """When tab_idx points at 'usage', _render_frame should call render_usage_tab."""
+    """When tab_idx points at 'usage', _render_frame should call the usage renderer."""
     calls = []
-    monkeypatch.setattr(axt, "render_usage_tab",
+    monkeypatch.setitem(axt.TAB_RENDERERS, "usage",
                         lambda *a, **kw: calls.append("usage"))
     scr = _make_stdscr()
     state = axt.TuiState()
@@ -1264,3 +1264,18 @@ def test_vault_columns_use_short_labels(tmp_path, monkeypatch):
     assert "Proj " in flat or "Proj  " in flat
     assert "Glob " in flat or "Glob  " in flat
     assert "Used " in flat or "Used  " in flat
+
+
+def test_tab_renderers_dispatch_covers_all_main_tabs():
+    import axt
+    keys = {key for key, _icon, _label in axt.MAIN_TABS}
+    assert set(axt.TAB_RENDERERS.keys()) == keys
+    assert set(axt.TAB_HANDLERS.keys()) == keys
+
+
+def test_tab_renderers_are_callable():
+    import axt
+    for fn in axt.TAB_RENDERERS.values():
+        assert callable(fn)
+    for fn in axt.TAB_HANDLERS.values():
+        assert callable(fn)

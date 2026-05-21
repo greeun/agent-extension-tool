@@ -39,7 +39,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar
 
 __version__ = "2.0.0"
 
@@ -6752,6 +6752,22 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
     return None
 
 
+# Dispatch tables: tab key → renderer / handler. Keep in sync with MAIN_TABS.
+TAB_RENDERERS: dict[str, Callable[..., None]] = {
+    "dashboard":  render_dashboard_tab,
+    "extensions": render_extensions_tab,
+    "context":    render_context_tab,
+    "usage":      render_usage_tab,
+}
+
+TAB_HANDLERS: dict[str, Callable[..., Optional[str]]] = {
+    "dashboard":  handle_dashboard_input,
+    "extensions": handle_extensions_input,
+    "context":    handle_context_input,
+    "usage":      handle_usage_input,
+}
+
+
 # ── Section 14: TUI — Main loop ──────────────────────────────────────────────
 
 
@@ -6854,17 +6870,12 @@ def _render_frame(stdscr, state: TuiState) -> None:
     body_h = h - body_y - 1  # leave one line for status
 
     tab_key = MAIN_TABS[state.tab_idx][0]
-    if tab_key == "extensions":
-        render_extensions_tab(stdscr, state, body_y, body_h, w)
-    elif tab_key == "context":
-        render_context_tab(stdscr, state, body_y, body_h, w)
-    elif tab_key == "dashboard":
-        render_dashboard_tab(stdscr, state, body_y, body_h, w)
-    elif tab_key == "usage":
-        render_usage_tab(stdscr, state, body_y, body_h, w)
-    else:
+    renderer = TAB_RENDERERS.get(tab_key)
+    if renderer is None:
         render_stub_tab(stdscr, state, body_y, body_h, w,
                         name=MAIN_TABS[state.tab_idx][2], hint="")
+    else:
+        renderer(stdscr, state, body_y, body_h, w)
 
     # Status / shortcuts line — adjust per active tab + sub-tab.
     if tab_key == "extensions" and state.ext_sub_tab == "vault":
@@ -7023,14 +7034,9 @@ def _tui_loop(stdscr) -> None:
         # Tab-specific input.
         tab_key = MAIN_TABS[state.tab_idx][0]
         status: Optional[str] = None
-        if tab_key == "extensions":
-            status = handle_extensions_input(state, key)
-        elif tab_key == "context":
-            status = handle_context_input(state, key)
-        elif tab_key == "dashboard":
-            status = handle_dashboard_input(state, key)
-        elif tab_key == "usage":
-            status = handle_usage_input(state, key)
+        handler = TAB_HANDLERS.get(tab_key)
+        if handler is not None:
+            status = handler(state, key)
         else:
             handle_stub_input(state, key)
 
