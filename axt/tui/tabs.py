@@ -695,6 +695,30 @@ def render_bar_chart(
     return len(data)
 
 
+def _bar_chart_lines(
+    data: list[tuple[str, float]],
+    w: int,
+    *,
+    label_w: int = 10,
+    value_fmt=lambda v: f"${v:.2f}",
+) -> list[tuple[int, str, int, int]]:
+    """Same horizontal bar chart as `render_bar_chart` but returns line
+    tuples (x=0 here; caller can nudge by setting its own x when
+    extending the parent list)."""
+    if not data:
+        return []
+    max_value = max((v for _, v in data), default=1.0) or 1.0
+    value_w = max(len(value_fmt(v)) for _, v in data)
+    bar_w = max(4, w - label_w - value_w - 4)
+    out: list[tuple[int, str, int, int]] = []
+    for label, value in data:
+        filled = round((value / max_value) * bar_w) if max_value > 0 else 0
+        bar = render_bar(filled, bar_w)
+        line = f"{fit_cells(label, label_w)} {bar} {value_fmt(value)}"
+        out.append((0, fit_cells(line, w), w, CP_INFO()))
+    return out
+
+
 def _date_iter(now: datetime, days: int) -> list[datetime]:
     """Last `days` days, oldest first, including today."""
     out = []
@@ -807,6 +831,50 @@ def _gauge_attr(pct: float) -> int:
     return CP_OK()
 
 
+def _usage_gauge_lines(state: TuiState, w: int) -> list[tuple[int, str, int, int]]:
+    """Build the gauge rows (Context window, 5h, 7d) as line tuples
+    without drawing. Mirror of `_render_usage_gauges`.
+
+    Returns ``[(x, text, max_w, attr), ...]``. Empty list if there's
+    nothing to show.
+    """
+    analysis = state.context_analysis
+    rl = read_rate_limits(PATHS.usage_snapshot)
+    bar_w = min(30, max(10, w - 40))
+    label_w = 10
+    out: list[tuple[int, str, int, int]] = []
+
+    if analysis is not None and analysis.context_window_size > 0:
+        pct = analysis.used_percent
+        filled = round(min(pct, 100) / 100 * bar_w)
+        bar = render_bar(filled, bar_w)
+        used_tok = format_tokens(analysis.total_tokens)
+        win_tok = format_tokens(analysis.context_window_size)
+        out.append((2, fit_cells(
+            f"{'Context:':<{label_w}}{bar} {pct:5.1f}%  {used_tok}/{win_tok} tokens",
+            w - 4), w - 4, _gauge_attr(pct)))
+
+    if rl is None:
+        out.append((2, "Rate limits: snapshot missing or stale", w - 4, CP_DIM()))
+        return out
+
+    if rl.five_hour is not None:
+        pct = float(rl.five_hour)
+        filled = round(pct / 100 * bar_w)
+        bar = render_bar(filled, bar_w)
+        out.append((2, fit_cells(
+            f"{'5h:':<{label_w}}{bar} {rl.five_hour:3d}%    reset in {_fmt_quota_eta(rl.five_hour_reset_at)}",
+            w - 4), w - 4, _gauge_attr(pct)))
+    if rl.seven_day is not None:
+        pct = float(rl.seven_day)
+        filled = round(pct / 100 * bar_w)
+        bar = render_bar(filled, bar_w)
+        out.append((2, fit_cells(
+            f"{'7d:':<{label_w}}{bar} {rl.seven_day:3d}%    reset in {_fmt_quota_eta(rl.seven_day_reset_at)}",
+            w - 4), w - 4, _gauge_attr(pct)))
+    return out
+
+
 def _render_usage_gauges(stdscr, state: TuiState, y: int, w: int) -> int:
     """Three gauge bars on the usage tab: context window, 5h, 7d.
 
@@ -874,31 +942,23 @@ def _usage_period_card(entries: list[UnifiedUsageEntry], label: str) -> list[str
     ]
 
 
-def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
-    # Snapshot entries *before* potentially kicking a reload so that the
-    # first-paint path always sees None and renders the loading line, even
-    # if the daemon thread completes between the kick and the read.
-    entries = state.usage_entries
-    # Kick the first-time background load. Idempotent — a second call
-    # while loading is a no-op.
-    if entries is None and not state.usage_loading:
-        _kick_usage_reload(state)
-    config = state.usage_config or load_config(AXT_CONFIG_PATH)
-    # `entries` can be None while the first load is in flight. The
-    # loading-vs-empty branches further down discriminate on that;
-    # everything that needs to iterate uses `entries_or_empty`.
-    entries_or_empty: list = entries if entries is not None else []
+def _usage_summary_lines(
+    state: TuiState,
+    config: Any,
+    entries: list,
+    w: int,
+) -> list[tuple[int, str, int, int]]:
+    """Build the full loaded-state line buffer for the Usage tab body
+    (plan, budget bar, gauges, period cards, chart, active block,
+    insights). The header is added by the caller, not here.
+    """
+    lines: list[tuple[int, str, int, int]] = []
 
-    safe_addnstr(stdscr, y0, 0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_HDR())
-
-    # Plan label + monthly-budget progress bar. Always shown — plan info
-    # is meaningful even with zero usage so far.
-    row = y0 + 2
-    total_cost = sum(_entry_cost(e) for e in entries_or_empty)
+    total_cost = sum(_entry_cost(e) for e in entries)
     plan = config.plans.get("claude")
     plan_label = f"{plan.plan} (${plan.monthly_cost}/mo)" if plan else "—"
-    safe_addnstr(stdscr, row, 2, fit_cells(f"Plan: {plan_label}", w - 4), w - 4, CP_HDR())
-    row += 1
+    lines.append((2, fit_cells(f"Plan: {plan_label}", w - 4), w - 4, CP_HDR()))
+
     if config.monthly_budget > 0:
         bar_w = min(40, max(10, w - 30))
         pct = min(total_cost / config.monthly_budget, 1.5)
@@ -911,71 +971,93 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
             text, attr = f"{bar} {label} ⚠", CP_HDR()
         else:
             text, attr = f"{bar} {label}", CP_OK()
-        safe_addnstr(stdscr, row, 2, fit_cells(text, w - 4), w - 4, attr)
-        row += 1
-    row += 1  # gap before gauges
+        lines.append((2, fit_cells(text, w - 4), w - 4, attr))
+    lines.append((0, "", w, 0))  # gap before gauges
 
-    # Context window + 5h/7d plan-limit gauges. Always shown (rate-limit
-    # snapshot missing → single dim row) so users see the meters even before
-    # the first message of the month.
-    row += _render_usage_gauges(stdscr, state, row, w)
-    row += 1  # gap before period cards / "no data" message
+    lines.extend(_usage_gauge_lines(state, w))
+    lines.append((0, "", w, 0))  # gap after gauges
 
-    if entries is None:
-        safe_addnstr(stdscr, row, 2, "Loading Claude usage…", w - 4, CP_DIM())
-        return
     if not entries:
-        safe_addnstr(stdscr, row, 2, "No Claude usage data this month yet.", w - 4, CP_DIM())
-        return
+        lines.append((2, "No Claude usage data this month yet.", w - 4, CP_DIM()))
+        return lines
 
     tz = config.timezone
     today = _today_in_tz(tz)
     week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
-
     today_entries = [e for e in entries if _date_in_tz(e.timestamp, tz) == today]
     week_entries = [e for e in entries if _date_in_tz(e.timestamp, tz) >= week_ago]
     month_entries = entries
 
     for label, eps in (("Today", today_entries), ("Week", week_entries), ("Month", month_entries)):
         for line in _usage_period_card(eps, label):
-            safe_addnstr(stdscr, row, 2, fit_cells(line, w - 4), w - 4, 0)
-            row += 1
-        row += 1
+            lines.append((2, fit_cells(line, w - 4), w - 4, 0))
+        lines.append((0, "", w, 0))  # gap between cards
 
-    # 14-day BarChart of daily cost.
-    safe_addnstr(stdscr, row, 2, "Last 14 days (daily cost):", w - 4, CP_HDR())
-    row += 1
+    lines.append((2, "Last 14 days (daily cost):", w - 4, CP_HDR()))
     chart_data = _daily_costs(entries, 14, tz)
-    rows_used = render_bar_chart(stdscr, row, 4, w - 8, chart_data)
-    row += rows_used + 1
+    # Bar-chart helper returns x=0 lines; nudge them to x=4 so they
+    # align with the original `render_bar_chart(... x=4, w=w-8)` layout.
+    for (_x, text, _max_w, attr) in _bar_chart_lines(chart_data, w - 8):
+        lines.append((4, text, w - 8, attr))
+    lines.append((0, "", w, 0))
 
-    # Active block + simple insights summary.
     claude_entries = [_unified_to_claude(e) for e in entries]
     blocks = compute_blocks(claude_entries, tz)
     active = next((b for b in blocks if b.is_active), None)
     if active:
         burn = format_tokens(active.burn_rate_per_min) if active.burn_rate_per_min else "—"
-        safe_addnstr(stdscr, row, 2, fit_cells(
+        lines.append((2, fit_cells(
             f"Active block: {active.start_time[11:16]}–{active.end_time[11:16]}  "
             f"tokens={format_tokens(active.total_tokens)}  burn={burn}/min",
-            w - 4), w - 4, CP_OK())
-        row += 2
+            w - 4), w - 4, CP_OK()))
+        lines.append((0, "", w, 0))
 
     insights = _compute_simple_insights(claude_entries)
-    safe_addnstr(stdscr, row, 2, "Insights (this month):", w - 4, CP_HDR())
-    row += 1
-    safe_addnstr(stdscr, row, 2, fit_cells(
+    lines.append((2, "Insights (this month):", w - 4, CP_HDR()))
+    lines.append((2, fit_cells(
         f"  large-context sessions (>150k input tokens):  {insights['large_pct']:.1f}%",
-        w - 4), w - 4, 0)
-    row += 1
-    safe_addnstr(stdscr, row, 2, fit_cells(
+        w - 4), w - 4, 0))
+    lines.append((2, fit_cells(
         f"  parallel sessions (3+ overlapping at once):   {insights['parallel_pct']:.1f}%",
-        w - 4), w - 4, 0)
-    row += 1
-    safe_addnstr(stdscr, row, 2, fit_cells(
+        w - 4), w - 4, 0))
+    lines.append((2, fit_cells(
         f"  top model by tokens:                          "
         f"{insights['top_model'] or '—'}",
-        w - 4), w - 4, 0)
+        w - 4), w - 4, 0))
+    return lines
+
+
+def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
+    # Snapshot before kick — keeps the three render branches consistent.
+    entries = state.usage_entries
+    if entries is None and not state.usage_loading:
+        _kick_usage_reload(state)
+    config = state.usage_config or load_config(AXT_CONFIG_PATH)
+
+    lines: list[tuple[int, str, int, int]] = []
+    lines.append((0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_HDR()))
+    lines.append((0, "", w, 0))  # gap
+
+    if entries is None:
+        # Show gauges even while the first load is in flight so the
+        # context / rate-limit meters appear immediately.
+        lines.extend(_usage_gauge_lines(state, w))
+        lines.append((0, "", w, 0))
+        lines.append((2, "Loading Claude usage…", w - 4, CP_DIM()))
+    else:
+        lines.extend(_usage_summary_lines(state, config, entries, w))
+
+    body_h = h
+    max_scroll = max(0, len(lines) - body_h)
+    if state.usage_scroll > max_scroll:
+        state.usage_scroll = max_scroll
+    if state.usage_scroll < 0:
+        state.usage_scroll = 0
+
+    visible = lines[state.usage_scroll : state.usage_scroll + body_h]
+    for i, (x, text, max_w, attr) in enumerate(visible):
+        if text:
+            safe_addnstr(stdscr, y0 + i, x, text, max_w, attr)
 
 
 def _compute_simple_insights(entries: list[ClaudeUsageEntry]) -> dict[str, Any]:

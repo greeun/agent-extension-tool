@@ -1801,3 +1801,41 @@ def test_kick_usage_reload_skips_context_if_already_loaded(monkeypatch, tmp_path
     if state.usage_load_thread is not None:
         state.usage_load_thread.join(timeout=2.0)
     assert calls == []
+
+
+def test_render_usage_tab_loading_skips_summary(tmp_path, monkeypatch):
+    """During first-paint loading, the tab body must NOT include the plan
+    label or insights — those depend on data that isn't loaded yet."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", lambda **kw: [])
+    monkeypatch.setattr("axt.tui.tabs.analyze_context", lambda **kw: object())
+
+    state = axt.TuiState()
+    assert state.usage_entries is None
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Loading Claude usage" in flat
+    assert "Plan:" not in flat
+    assert "Insights" not in flat
+
+    if state.usage_load_thread is not None:
+        state.usage_load_thread.join(timeout=2.0)
+
+
+def test_render_usage_tab_scroll_clips_header(tmp_path, monkeypatch):
+    """With a non-zero scroll offset, the header (which lives at line 0
+    of the buffer) must NOT appear in the drawn output."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    # Pre-seed loaded state so we render the full summary lines.
+    state.usage_entries = []        # loaded, no entries
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+    # Use a small body_h (4) so even a short buffer has lines beyond row 0,
+    # making scroll=3 a valid non-zero offset that clips the header.
+    state.usage_scroll = 3
+    scr = _make_stdscr(rows=10, cols=120)
+    axt.render_usage_tab(scr, state, 0, 4, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    # Header was at buffer-row 0; scroll==3 should clip it out.
+    assert "Claude usage — this month" not in flat
