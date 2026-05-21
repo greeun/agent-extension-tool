@@ -6026,8 +6026,18 @@ def render_dashboard_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> No
     safe_addnstr(stdscr, row, 2, fit_cells(f"Total: {format_cost(total_cost, config.exchange_rate)}", w - 4), w - 4, CP_HDR())
     row += 1
     if config.monthly_budget > 0:
-        bar = budget_bar(total_cost, config.monthly_budget, width=min(40, w - 30))
-        safe_addnstr(stdscr, row, 2, fit_cells(bar, w - 4), w - 4, 0)
+        bar_w = min(40, w - 30)
+        pct = min(total_cost / config.monthly_budget, 1.5)
+        filled = round(min(pct, 1) * bar_w)
+        bar = render_bar(filled, bar_w)
+        label = f"${total_cost:.2f}/${config.monthly_budget} ({pct * 100:.0f}%)"
+        if pct >= 1:
+            text, attr = f"{bar} {label} ⛔", CP_ERR()
+        elif pct >= 0.8:
+            text, attr = f"{bar} {label} ⚠", CP_HDR()
+        else:
+            text, attr = f"{bar} {label}", CP_OK()
+        safe_addnstr(stdscr, row, 2, fit_cells(text, w - 4), w - 4, attr)
         row += 1
 
     # 14-day BarChart.
