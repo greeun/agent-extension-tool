@@ -1,24 +1,23 @@
 # axt — Agent eXtension Tool
 
-A unified CLI & TUI dashboard for managing extensions, plugins, skills, MCP servers, hooks, commands, and agents — and for tracking usage costs — across multiple AI agent platforms (Claude Code, Codex, Gemini CLI, Cursor).
+A unified CLI & TUI dashboard for managing extensions, plugins, skills, MCP servers, hooks, commands, and agents — and for tracking usage costs — for **Claude Code**.
 
-Single-file Python + curses (v1.0.0+). The earlier TypeScript+Ink line is preserved frozen under [`legacy-ts/`](./legacy-ts/).
+> **v2.0.0: Claude-only.** Earlier v1.x versions also supported Codex / Gemini CLI / Cursor; v2 dropped them to focus on Claude depth. See [MIGRATION.md](./MIGRATION.md) (English) or [MIGRATION.ko.md](./MIGRATION.ko.md) (Korean) for upgrade notes.
 
-> **Upgrading from v0.1.x (TypeScript)?** Read [MIGRATION.md](./MIGRATION.md)
-> (English) or [MIGRATION.ko.md](./MIGRATION.ko.md) (Korean) first. CLI
-> commands and user data (`~/.config/axt/`, `~/.claude/vault/`,
-> `.axt-profile.json`) remain compatible across versions.
+Single-file Python + curses. The older TypeScript+Ink line (v0.1.x) is preserved frozen under [`legacy-ts/`](./legacy-ts/).
 
 ## Features
 
-- **Multi-platform usage tracking** — token usage and cost for Claude Code, Codex, Gemini CLI, and Cursor IDE in one view, with per-model pricing.
-- **Plugin management** — list, enable/disable, inspect, and remove plugins from Claude marketplace registries.
-- **Skill / agent / MCP / hook / command discovery** — across user, project, and plugin scopes.
-- **Marketplace system** — register GitHub repos, git URLs, or local directories as plugin marketplaces and sync them.
 - **Vault** — per-project `.axt-profile.json` + global `~/.claude/vault/`, with link/unlink/sync/migrate/import.
-- **Context analysis** — token estimate per context source at session start.
-- **Cost projections** — daily / weekly / monthly summaries, 5-hour billing block analysis, plan-aware budgeting.
-- **Interactive TUI** — 8 main tabs with keyboard-driven navigation. Renders via curses absolute-cell drawing, so it stays correct under terminal multiplexers (WezTerm + cmux verified).
+- **Plugin management** — list, enable/disable, inspect, search, and remove plugins from Claude marketplace registries.
+- **Skills** — list standalone skills, link/unlink directories into `~/.claude/skills/`.
+- **MCP servers** — view servers declared by active plugins or settings.
+- **Hooks / Commands / Agents** — discover across user, project, and plugin scopes.
+- **Marketplace system** — register GitHub repos, git URLs, or local directories as plugin marketplaces and sync them.
+- **Usage tracking** — Claude token usage and cost with per-model pricing; today / week / month / 5-hour billing blocks / session views.
+- **Plan budget** — plan overview with daily / weekly / monthly projections and budget bars.
+- **Context analysis** — token estimate per context source at session start (CLAUDE.md, skills, MCP tools, hooks, etc.).
+- **Interactive TUI** — 4 main tabs (Dashboard / Extensions / Context / Usage) with keyboard-driven navigation. Renders via curses absolute-cell drawing, so it stays correct under terminal multiplexers (WezTerm + cmux verified).
 - **Claude Skill** — `SKILL.md` at the repo root exposes `axt` as a Claude Code skill (EN + KO triggers).
 
 Pure standard library at runtime — no external Python dependencies. Windows users additionally need `windows-curses`.
@@ -34,7 +33,7 @@ git clone https://github.com/greeun/agent-extension-tool.git
 cd agent-extension-tool
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .[dev]
-axt --version          # axt 1.0.0
+axt --version          # axt 2.0.0
 ```
 
 For global use without manual `source`:
@@ -76,7 +75,7 @@ axt plugin list
 axt skill list
 axt mcp list
 axt market list
-axt usage today --platform all
+axt usage today
 axt vault list
 axt context analyze
 
@@ -87,7 +86,7 @@ axt plugin enable <plugin-id>
 axt vault link-global <type> <name>
 ```
 
-Full CLI inventory: [`FEATURES.md`](./FEATURES.md) (44 subcommands across 10 groups, 4 main TUI tabs + global Platform/Scope filters).
+Full CLI inventory: [`FEATURES.md`](./FEATURES.md).
 
 ## Updating
 
@@ -101,7 +100,7 @@ pip install -e .[dev]
 
 ## Uninstall
 
-`axt` writes only to its own paths. Removing the install does not touch your AI agent platform directories (`~/.claude/`, `~/.codex/`, …).
+`axt` writes only to its own paths. Removing the install does not touch your `~/.claude/` directory.
 
 ```bash
 # 1) If installed via pipx
@@ -119,7 +118,7 @@ rm -rf ~/.claude/vault        # vault store (irreversible)
 rm -f .axt-profile.json
 ```
 
-> **Do not delete** `~/.claude/`, `~/.codex/`, `~/.gemini/`, or `~/.cursor/` themselves — those belong to the respective CLIs, not to axt.
+> **Do not delete** `~/.claude/` itself — that belongs to Claude Code, not to axt.
 
 ## Test
 
@@ -137,9 +136,9 @@ pricing.json      model pricing table (edit to add new models — no code change
 pyproject.toml    package metadata, entry point: axt:main
 tests/            pytest suite, one test_*.py per domain
 DESIGN.md         cst-style single-file rewrite rationale
-FEATURES.md       1:1 feature inventory
-SKILL.md         Claude Code skill manifest
-MIGRATION.md     v0.1.x → v1.0.0 upgrade guide (EN; KO in MIGRATION.ko.md)
+FEATURES.md       feature inventory
+SKILL.md          Claude Code skill manifest
+MIGRATION.md      v0.1.x → v1.0.0 upgrade guide (EN; KO in MIGRATION.ko.md)
 legacy-ts/        frozen TypeScript+Ink implementation (v0.1.x line)
 ```
 

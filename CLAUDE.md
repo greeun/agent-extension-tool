@@ -8,9 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is this project?
 
-**axt** (Agent eXtension Tool) is a CLI + TUI dashboard that manages extensions, plugins, skills, MCP servers, hooks, commands, agents, and usage-cost tracking across multiple AI agent platforms (Claude Code, Codex, Gemini CLI, Cursor). It reads data from each platform's local files (`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.cursor/`) and presents a unified view.
+**axt** (Agent eXtension Tool) is a CLI + TUI dashboard that manages extensions, plugins, skills, MCP servers, hooks, commands, agents, and usage-cost tracking for Claude Code. It reads data from `~/.claude/` and presents a unified view. **v2.0.0 onwards is Claude-only** (v1.x also supported Codex / Gemini CLI / Cursor; that surface area was removed to focus on Claude depth).
 
-**Primary implementation (v1.0.0+)**: Python + curses, single file `axt.py`. Pure stdlib runtime.
+**Primary implementation**: Python + curses, single file `axt.py`. Pure stdlib runtime.
 
 **Frozen legacy**: TypeScript + Ink implementation lives under `legacy-ts/` (v0.1.x line). Read-only — no new development.
 
@@ -48,7 +48,7 @@ axt.py                  → All code (CLI + TUI + domain + parsers)
   Section 3             → Settings (single-scope read/write)
   Section 4             → Plugin / MCP / Skill / Commands / Agents / Hooks
   Section 5             → Vault + Marketplace
-  Section 6             → Usage parsers (claude/codex/gemini/cursor)
+  Section 6             → Usage parsers (Claude)
   Section 7             → Pricing, Plans & Config
   Section 8             → Context Analysis
   Section 9             → Project Usage Index
@@ -63,20 +63,20 @@ pricing.json            → Model pricing table (kept out of code for easy updat
 pyproject.toml          → Package metadata; entry = axt:main
 README.md               → User-facing install/usage doc
 DESIGN.md               → Rationale for the cst-style single-file rewrite
-FEATURES.md             → 1:1 feature inventory (44 subcommands, 4 main TUI tabs + Platform/Scope filters)
+FEATURES.md             → Feature inventory (35 subcommands, 4 main TUI tabs + Scope filter)
 SKILL.md                → Claude Skill manifest exposing axt to Claude Code
 tests/                  → pytest suite, one test_*.py per domain (paths, json_io,
                           settings, vault, marketplace, plugin, skill, mcp,
-                          hooks, commands_agents, usage_claude, usage_codex_gemini,
-                          usage_cursor, pricing, context, project_usage, tui, cli)
+                          hooks, commands_agents, usage_claude, pricing,
+                          context, project_usage, tui, cli)
 legacy-ts/              → Frozen TypeScript+Ink implementation (v0.1.x, no new work)
 ```
 
 ### Key design patterns
 
-- **Path constants** centralized in Section 1 (`Paths` dataclass). Supports `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME` env overrides and Windows `%APPDATA%`.
+- **Path constants** centralized in Section 1 (`Paths` dataclass). Supports `CLAUDE_CONFIG_DIR` env override and Windows `%APPDATA%`.
 - **JSON I/O** (Section 2): `read_json(path, fallback=...)` and `write_json_atomic(path, data)`. All file mutations go through atomic writes (`tempfile` + `os.replace`).
-- **Usage data flow**: per-platform parsers (Section 6) → `UnifiedUsageEntry` adapter → pricing applied. Caching is mtime-based (`load_cached_usage` / `save_cached_usage`).
+- **Usage data flow**: Claude JSONL parser (Section 6) → `UnifiedUsageEntry` adapter → pricing applied. Caching is mtime-based (`load_cached_usage` / `save_cached_usage`). `PLATFORMS = ("claude",)`.
 - **Pricing** (Section 7): static lookup table loaded from `pricing.json`. Cost = tokens × per-million rate. To add a model, edit `pricing.json` — no code change.
 - **Plugin system**: tracks installs in `~/.claude/plugins/installed_plugins.json` and marketplaces in `~/.claude/plugins/known_marketplaces.json`. Sources: `github:user/repo`, `git:<url>`, `dir:/path`.
 - **Vault system** (Section 5): manages `.axt-profile.json` per project and `~/.claude/vault/` globally. Supports link/unlink/sync/migrate/import.
@@ -93,8 +93,8 @@ legacy-ts/              → Frozen TypeScript+Ink implementation (v0.1.x, no new
 | `axt plugin` | Plugin list / enable / disable / info / remove / search |
 | `axt skill` | Skill list / link / unlink |
 | `axt mcp` | MCP server list / info |
-| `axt usage` | Usage summary per platform (today/week/month/blocks/session) |
-| `axt plan` | Subscription plan overview / set |
+| `axt usage` | Claude usage summary (today/week/month/blocks/session) |
+| `axt plan` | Claude plan overview / set |
 | `axt project` | Project context init/add/remove/sync/status |
 | `axt context` | Context source analysis (analyze / list) |
 | `axt vault` | Vault list / migrate / add / install / link-global / unlink-global |

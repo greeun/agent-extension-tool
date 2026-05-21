@@ -2,10 +2,11 @@
 """
 axt — Agent eXtension Tool (Python edition)
 
-Single-file rewrite of the TypeScript+Ink axt. CLI + curses TUI for
-Claude/Codex/Gemini/Cursor extension/plugin/skill/MCP/usage management.
+Single-file CLI + curses TUI for Claude Code extension / plugin / skill /
+MCP / hook / command / agent / usage management. v2.0.0 onwards is
+Claude-only (Codex / Gemini / Cursor support was dropped after v1.x).
 
-See DESIGN.md (architecture) and FEATURES.md (1:1 feature inventory)
+See DESIGN.md (architecture) and FEATURES.md (feature inventory)
 for the canonical specification.
 
 Sections (search by header):
@@ -14,7 +15,7 @@ Sections (search by header):
   Section 3: Settings (single-scope read/write)
   Section 4: Plugin / Marketplace / Skill / MCP / Hooks / Commands / Agents
   Section 5: Vault
-  Section 6: Usage Parsers (claude/codex/gemini/cursor)
+  Section 6: Usage Parsers (Claude)
   Section 7: Pricing & Cost
   Section 8: Context Analysis
   Section 9: Project Usage Index
@@ -123,7 +124,7 @@ def project_settings_path(cwd: os.PathLike[str] | str | None = None) -> Path:
 #     up any existing file to `<path>.bak`, auto-creates parent dirs.
 #
 # Atomic write semantics matter: usage and settings files are concurrently
-# read by Claude Code, Codex, etc.; a partial write must never be observable.
+# read by Claude Code; a partial write must never be observable.
 
 
 _MISSING = object()
