@@ -6131,9 +6131,14 @@ def _ensure_dashboard_loaded(state: TuiState) -> None:
 def render_dashboard_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     _ensure_dashboard_loaded(state)
     config = state.dashboard_config or load_config(AXT_CONFIG_PATH)
-    entries = state.dashboard_entries or []
+    entries = filter_entries_by_platform(
+        state.dashboard_entries or [], state.platform_filter,
+    )
 
-    safe_addnstr(stdscr, y0, 0, fit_cells(" Dashboard — this month so far", w - 1), w - 1, CP_HDR())
+    header = " Dashboard — this month so far"
+    if state.platform_filter != "all":
+        header += f"  [{state.platform_filter}]"
+    safe_addnstr(stdscr, y0, 0, fit_cells(header, w - 1), w - 1, CP_HDR())
     if not entries:
         safe_addnstr(stdscr, y0 + 2, 2, "No usage data this month yet.", w - 4, CP_DIM())
         return
@@ -7087,12 +7092,14 @@ _SCOPE_FILTER_ORDER: tuple[str, ...] = ("project", "all")
 
 
 def cycle_platform_filter(state: TuiState, direction: int) -> None:
-    """Rotate `state.platform_filter` through `_PLATFORM_FILTER_ORDER`."""
+    """Rotate `state.platform_filter` through `_PLATFORM_FILTER_ORDER`.
+    Side effect: snap the Usage sub-tab to match the new filter."""
     try:
         i = _PLATFORM_FILTER_ORDER.index(state.platform_filter)
     except ValueError:
         i = 0
     state.platform_filter = _PLATFORM_FILTER_ORDER[(i + direction) % len(_PLATFORM_FILTER_ORDER)]
+    sync_usage_sub_tab_to_platform_filter(state)
 
 
 def cycle_scope_filter(state: TuiState, direction: int) -> None:
@@ -7102,6 +7109,20 @@ def cycle_scope_filter(state: TuiState, direction: int) -> None:
     except ValueError:
         i = 0
     state.scope_filter = _SCOPE_FILTER_ORDER[(i + direction) % len(_SCOPE_FILTER_ORDER)]
+
+
+def sync_usage_sub_tab_to_platform_filter(state: TuiState) -> None:
+    """If the Platform filter is non-default, snap the Usage sub-tab to match
+    so opening Usage takes the user straight to the relevant view."""
+    if state.platform_filter != "all":
+        state.usage_sub_tab = state.platform_filter
+
+
+def filter_entries_by_platform(entries: list, platform: str) -> list:
+    """Keep only usage entries for the requested platform. 'all' is a no-op."""
+    if platform == "all":
+        return list(entries)
+    return [e for e in entries if getattr(e, "platform", None) == platform]
 
 
 def _at_top_of_content(state: TuiState, tab_key: str) -> bool:

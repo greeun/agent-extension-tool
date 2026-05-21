@@ -199,6 +199,43 @@ def test_filter_vault_items_by_scope_all_returns_everything():
     assert {i.name for i in visible} == {"p1", "g1", "idle"}
 
 
+def _ue(platform: str):
+    return axt.UnifiedUsageEntry(
+        platform=platform, model="m", timestamp="2026-05-21T00:00:00Z",
+        session_id="s", project_path="/p",
+        input_tokens=1, output_tokens=1,
+        cache_write_tokens=0, cache_read_tokens=0,
+    )
+
+
+def test_filter_entries_by_platform_keeps_only_matching():
+    entries = [_ue("claude"), _ue("codex"), _ue("gemini")]
+    filtered = axt.filter_entries_by_platform(entries, "codex")
+    assert [e.platform for e in filtered] == ["codex"]
+
+
+def test_filter_entries_by_platform_all_returns_everything():
+    entries = [_ue("claude"), _ue("codex")]
+    filtered = axt.filter_entries_by_platform(entries, "all")
+    assert len(filtered) == 2
+
+
+def test_sync_usage_sub_tab_snaps_to_platform_filter():
+    state = axt.TuiState()
+    state.usage_sub_tab = "all"
+    state.platform_filter = "gemini"
+    axt.sync_usage_sub_tab_to_platform_filter(state)
+    assert state.usage_sub_tab == "gemini"
+
+
+def test_sync_usage_sub_tab_noop_when_platform_filter_is_all():
+    state = axt.TuiState()
+    state.usage_sub_tab = "codex"
+    state.platform_filter = "all"
+    axt.sync_usage_sub_tab_to_platform_filter(state)
+    assert state.usage_sub_tab == "codex"
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 
