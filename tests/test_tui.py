@@ -1680,3 +1680,39 @@ def test_render_usage_tab_shows_loading_when_entries_none(tmp_path, monkeypatch)
     # assertion — either way usage_load_thread is set.
     assert state.usage_load_thread is not None
     state.usage_load_thread.join(timeout=2.0)
+
+
+def test_handle_usage_input_r_kicks_reload_without_clearing(monkeypatch, tmp_path):
+    """Pressing `r` should kick a background reload while keeping any
+    previously loaded entries visible (stale-while-revalidate)."""
+    import threading as _threading
+    _setup_isolated_paths(tmp_path, monkeypatch)
+
+    # Pre-populate with stale data the user can still see.
+    stale = [object()]
+    state = axt.TuiState()
+    state.usage_entries = stale
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+
+    # Gate keeps the worker blocked so we can check the in-flight state
+    # before it completes (avoids race on usage_loading and usage_entries).
+    gate = _threading.Event()
+    fresh = []
+
+    def _gated_load(**kw):
+        gate.wait(timeout=2.0)
+        return fresh
+
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", _gated_load)
+
+    axt.handle_usage_input(state, ord("r"))
+    assert state.usage_loading is True
+    # Stale data is still visible until the worker swaps it in.
+    assert state.usage_entries is stale
+
+    # Release the gate and wait for completion.
+    gate.set()
+    if state.usage_load_thread is not None:
+        state.usage_load_thread.join(timeout=2.0)
+    assert state.usage_entries is fresh
+    assert state.usage_loading is False

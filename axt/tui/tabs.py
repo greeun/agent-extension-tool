@@ -1016,8 +1016,12 @@ def _compute_simple_insights(entries: list[ClaudeUsageEntry]) -> dict[str, Any]:
 
 def handle_usage_input(state: TuiState, key: int) -> Optional[str]:
     if key == ord("r"):
-        state.usage_entries = None
-        return "Refreshed"
+        _kick_usage_reload(state)
+        # _kick_usage_reload already set state.status to the loading
+        # message; returning None keeps that message in place (the main
+        # loop only overwrites state.status when the handler returns a
+        # non-None string).
+        return None
     return None
 
 
