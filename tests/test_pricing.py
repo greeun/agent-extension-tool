@@ -39,7 +39,7 @@ def test_get_context_window_claude_models():
 
 
 def test_get_context_window_unknown_model():
-    assert axt.get_context_window_size("gpt-5") is None  # gpt-5 has no contextWindow
+    assert axt.get_context_window_size("totally-unknown-model") is None
 
 
 def test_calculate_cost_claude_opus():

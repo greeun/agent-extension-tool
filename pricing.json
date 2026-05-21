@@ -1,18 +1,9 @@
 {
-  "_comment": "Per-million-token rates in USD. Mirror of src/pricing/models.ts.",
+  "_comment": "Per-million-token rates in USD for Claude models.",
   "models": {
-    "claude-opus-4-7":          { "input": 15.00, "output": 75.00, "cacheWrite": 18.75, "cacheRead": 1.50,  "contextWindow": 1000000 },
-    "claude-opus-4-6":          { "input": 15.00, "output": 75.00, "cacheWrite": 18.75, "cacheRead": 1.50,  "contextWindow": 1000000 },
-    "claude-sonnet-4-6":        { "input":  3.00, "output": 15.00, "cacheWrite":  3.75, "cacheRead": 0.30, "contextWindow": 1000000 },
-    "claude-haiku-4-5":         { "input":  0.80, "output":  4.00, "cacheWrite":  1.00, "cacheRead": 0.08, "contextWindow":  200000 },
-    "gpt-5":                    { "input":  1.25, "output": 10.00, "cacheWrite":  0.00, "cacheRead": 0.125 },
-    "gpt-5.2-codex":            { "input":  1.75, "output": 14.00, "cacheWrite":  0.00, "cacheRead": 0.175 },
-    "gpt-5.3-codex":            { "input":  1.75, "output": 14.00, "cacheWrite":  0.00, "cacheRead": 0.175 },
-    "gpt-5.4":                  { "input":  1.75, "output": 14.00, "cacheWrite":  0.00, "cacheRead": 0.175 },
-    "gemini-2.5-pro":           { "input":  1.25, "output": 10.00, "cacheWrite":  0.00, "cacheRead": 0.125 },
-    "gemini-2.5-flash":         { "input":  0.30, "output":  2.50, "cacheWrite":  0.00, "cacheRead": 0.03 },
-    "gemini-2.5-flash-lite":    { "input":  0.10, "output":  0.40, "cacheWrite":  0.00, "cacheRead": 0.01 },
-    "gemini-3.1-pro-preview":   { "input":  2.00, "output": 12.00, "cacheWrite":  0.00, "cacheRead": 0.20 },
-    "gemini-3-flash-preview":   { "input":  0.50, "output":  3.00, "cacheWrite":  0.00, "cacheRead": 0.05 }
+    "claude-opus-4-7":   { "input": 15.00, "output": 75.00, "cacheWrite": 18.75, "cacheRead": 1.50, "contextWindow": 1000000 },
+    "claude-opus-4-6":   { "input": 15.00, "output": 75.00, "cacheWrite": 18.75, "cacheRead": 1.50, "contextWindow": 1000000 },
+    "claude-sonnet-4-6": { "input":  3.00, "output": 15.00, "cacheWrite":  3.75, "cacheRead": 0.30, "contextWindow": 1000000 },
+    "claude-haiku-4-5":  { "input":  0.80, "output":  4.00, "cacheWrite":  1.00, "cacheRead": 0.08, "contextWindow":  200000 }
   }
 }
