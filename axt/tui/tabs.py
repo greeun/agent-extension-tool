@@ -100,6 +100,12 @@ class TuiState:
     # in `handle_usage_input` and clamped by `render_usage_tab` against
     # the actual line-buffer length.
     usage_scroll: int = 0
+    # Cached line buffer for the body. Signature includes the identities
+    # of `usage_entries` / `usage_config` plus the terminal width — when
+    # any of those changes, the worker / resize triggers a fresh build.
+    # Scroll keys do NOT bust this cache; they only clip the visible slice.
+    usage_lines: Optional[list] = None
+    usage_lines_sig: Optional[tuple] = None
 
     # Context tab.
     context_analysis: Optional[Any] = None
@@ -1034,18 +1040,27 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         _kick_usage_reload(state)
     config = state.usage_config or load_config(AXT_CONFIG_PATH)
 
-    lines: list[tuple[int, str, int, int]] = []
-    lines.append((0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_HDR()))
-    lines.append((0, "", w, 0))  # gap
+    # Build (or reuse) the line buffer. Scroll keys hit this path every
+    # tick, so skipping the rebuild is what keeps scrolling responsive
+    # on large transcripts.
+    sig = (id(entries), id(config), w)
+    if state.usage_lines is None or state.usage_lines_sig != sig:
+        lines: list[tuple[int, str, int, int]] = []
+        lines.append((0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_HDR()))
+        lines.append((0, "", w, 0))  # gap
 
-    if entries is None:
-        # Show gauges even while the first load is in flight so the
-        # context / rate-limit meters appear immediately.
-        lines.extend(_usage_gauge_lines(state, w))
-        lines.append((0, "", w, 0))
-        lines.append((2, "Loading Claude usage…", w - 4, CP_DIM()))
+        if entries is None:
+            # Show gauges even while the first load is in flight so the
+            # context / rate-limit meters appear immediately.
+            lines.extend(_usage_gauge_lines(state, w))
+            lines.append((0, "", w, 0))
+            lines.append((2, "Loading Claude usage…", w - 4, CP_DIM()))
+        else:
+            lines.extend(_usage_summary_lines(state, config, entries, w))
+        state.usage_lines = lines
+        state.usage_lines_sig = sig
     else:
-        lines.extend(_usage_summary_lines(state, config, entries, w))
+        lines = state.usage_lines
 
     body_h = h
     max_scroll = max(0, len(lines) - body_h)

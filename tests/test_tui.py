@@ -1883,3 +1883,77 @@ def test_handle_usage_input_pgdn_pgup():
     assert state.usage_scroll == 0
     axt.handle_usage_input(state, curses.KEY_PPAGE)
     assert state.usage_scroll == 0  # clamped at 0
+
+
+def test_render_usage_tab_caches_lines_across_scroll(monkeypatch, tmp_path):
+    """Scrolling must not re-invoke _usage_summary_lines — same inputs
+    (same entries, config, width) → cache hit on second render."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    state.usage_entries = [object()]   # any non-empty list with stable id
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+    # Pre-seed context_analysis so _usage_gauge_lines doesn't crash on
+    # bare object access (and so we never trigger the loading branch).
+    state.context_analysis = _make_empty_context_analysis()
+
+    call_count = [0]
+    def counting(state_, config_, entries_, w_):
+        call_count[0] += 1
+        return []   # stub — we only care about call count, not output lines
+    monkeypatch.setattr("axt.tui.tabs._usage_summary_lines", counting)
+
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+    assert call_count[0] == 1
+    # Second render with the same state inputs — cache hit.
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+    assert call_count[0] == 1
+    # Third render after scroll bump — still a cache hit (scroll is not
+    # part of the signature).
+    state.usage_scroll = 2
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+    assert call_count[0] == 1
+
+
+def test_render_usage_tab_cache_invalidates_on_new_entries(monkeypatch, tmp_path):
+    """Replacing state.usage_entries with a new list (new id) invalidates
+    the cache."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    state.usage_entries = [object()]
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+    state.context_analysis = _make_empty_context_analysis()
+
+    call_count = [0]
+    def counting(state_, config_, entries_, w_):
+        call_count[0] += 1
+        return []
+    monkeypatch.setattr("axt.tui.tabs._usage_summary_lines", counting)
+
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+    assert call_count[0] == 1
+    state.usage_entries = [object()]  # new list object, new id
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+    assert call_count[0] == 2
+
+
+def test_render_usage_tab_cache_invalidates_on_width_change(monkeypatch, tmp_path):
+    """Different terminal width → different layout → cache miss."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    state.usage_entries = [object()]
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+    state.context_analysis = _make_empty_context_analysis()
+
+    call_count = [0]
+    def counting(state_, config_, entries_, w_):
+        call_count[0] += 1
+        return []
+    monkeypatch.setattr("axt.tui.tabs._usage_summary_lines", counting)
+
+    scr80 = _make_stdscr(rows=30, cols=80)
+    scr120 = _make_stdscr(rows=30, cols=120)
+    axt.render_usage_tab(scr80, state, 0, 28, 80)
+    axt.render_usage_tab(scr120, state, 0, 28, 120)
+    assert call_count[0] == 2
