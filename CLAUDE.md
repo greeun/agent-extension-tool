@@ -63,7 +63,7 @@ pricing.json            → Model pricing table (kept out of code for easy updat
 pyproject.toml          → Package metadata; entry = axt:main
 README.md               → User-facing install/usage doc
 DESIGN.md               → Rationale for the cst-style single-file rewrite
-FEATURES.md             → 1:1 feature inventory (44 subcommands, 8 TUI tabs)
+FEATURES.md             → 1:1 feature inventory (44 subcommands, 4 main TUI tabs + Platform/Scope filters)
 SKILL.md                → Claude Skill manifest exposing axt to Claude Code
 tests/                  → pytest suite, one test_*.py per domain (paths, json_io,
                           settings, vault, marketplace, plugin, skill, mcp,

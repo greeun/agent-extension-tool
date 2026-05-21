@@ -94,20 +94,25 @@ TUI 대시보드 실행. (`launchTui()` → ink render)
 
 ---
 
-## 2. TUI (8 메인 탭 + 9 서브탭)
+## 2. TUI (4 메인 탭 + 8 Extensions 서브탭 + 5 Usage 서브탭 + 2개 전역 필터)
 
-### 2.1 메인 탭 순서 (TabBar.tsx)
-1. Extensions (Ext) — 1
-2. Context (Ctx) — 2
-3. Project (Prj) — 3
-4. Dashboard (Dash) — 4
-5. Claude (Cla) — 5
-6. Codex (Cdx) — 6
-7. Gemini (Gem) — 7
-8. Cursor (Cur) — 8
+### 2.1 메인 탭 순서 (자원 축)
+1. Dashboard (Dash) — 1
+2. Extensions (Ext) — 2
+3. Context (Ctx) — 3
+4. Usage (Use) — 4
 
-### 2.2 Focus Layer (3단계)
-`mainTab` ↔ `subTab` ↔ `content`. 메인탭은 `← →` 또는 숫자 1~8, 포커스 이동은 `↑ ↓ Return`.
+플랫폼별 뷰(Claude/Codex/Gemini/Cursor)와 프로젝트 컨텍스트 파일 보기는
+플랫폼 축(Usage 서브탭)과 스코프 축(Scope 필터)으로 이동됨.
+
+### 2.2 전역 필터 (헤더 칩)
+- **Platform**: `All` / `Claude` / `Codex` / `Gemini` / `Cursor` — 키 `p`
+  - non-All 일 때 Usage 서브탭이 자동으로 해당 플랫폼으로 스냅됨.
+- **Scope**: `Project` / `All` — 키 `P`
+  - `Project` 일 때 Context 탭에 프로젝트 파일 패널이 함께 표시됨.
+
+### 2.3 Focus Layer (3단계)
+`mainTab` ↔ `subTab` ↔ `content`. 메인탭은 `← →` 또는 숫자 1~4, 포커스 이동은 `↑ ↓ Return`.
 
 ### 2.3 Extensions 탭 (7개 서브탭)
 - **Vault** (기본) — 표 컬럼: `# Name Type Vault Added Updated Project Global Used in`
@@ -136,25 +141,24 @@ Esc         폐기/뒤로        f           scan mode toggle (default/full)
 - **Marketplace**: `s` sync, `r` remove, `a` add (2-step name→source)
 
 ### 2.6 Context 탭 모드
-`categories → sources → preview → (confirm)`. 키: `j/k`, `Enter` (확대), `Esc/Backspace/Delete` (뒤로), `e` (에디터), `d` (skills unlink / memory delete), `r` (새로고침), preview 모드의 `j/k/PgUp/PgDn`, `y/Y/n/N/q` (confirm).
+컨텍스트 윈도우 분석 (`categories → sources → preview`) + 5h/7d 쿼터 바 + cost impact 라인.
+키: `j/k`, `Enter` (카테고리 소스 모달), `e` (첫 소스를 에디터로), `r` (새로고침).
+**Scope=Project** 일 때 하단에 "Project files" 패널이 함께 표시됨 (CLAUDE.md / settings.json /
+memory 등 cwd 기준 컨텍스트 파일 목록).
 
-### 2.7 Project 탭
-파일 표 (`File Source Lines Path`). Source 아이콘: `●` global / `◆` user / `■` project / `◇` memory / `○` unknown. 키: `j/k`, `p` (preview), `Enter/Esc`. index 0에서 `↑` → `onFocusUp` (mainTab 복귀).
-
-### 2.8 Dashboard 탭
+### 2.7 Dashboard 탭
 플랫폼별 카드 (Cost/Input/Output/Cache) + 14일 BarChart + 월간 예산 바. 키: `r` 새로고침.
+Platform 필터가 non-All 이면 해당 플랫폼만 집계.
 
-### 2.9 Claude 탭 (2 서브탭)
-- **Overview**: Today/Week/Month 카드 + 14일 BarChart + Active Block + 예산 라인
-- **Review** (insights): plan limits, subagent-heavy %, large context %, parallel sessions %, skill/agent/plugin breakdown
-- 서브탭 키: `← → Tab Shift+Tab` (Overview ↔ Review)
-- Review 내부 키: `o`(overview) `s`(skills) `a`(agents) `p`(plugins) `d`(1일) `w`(7일)
+### 2.8 Usage 탭 (5 서브탭)
+- **All** — Claude/Codex/Gemini 사용량 + Cursor 패널을 세로로 쌓아 비교
+- **Claude** — Today/Week/Month 카드 + 14일 BarChart + Active Block + 예산 라인
+- **Codex / Gemini** — Claude Overview와 동일 구조 (서브탭 없음)
+- **Cursor** — 요약 카드 3개 (Summary / AI vs Human / AI Ratio bar) + 최대 50 커밋 표
+  (`Hash Message AI% Lines`). 키: `j/k`, `r`.
 
-### 2.10 Codex / Gemini 탭
-Claude Overview와 동일 구조 (sub-tab 없음). 키: `r`.
-
-### 2.11 Cursor 탭
-요약 카드 3개 (Summary / AI vs Human / AI Ratio bar) + 최대 50 커밋 표 (`Hash Message AI% Lines`). 키: `j/k`, `r`. `loadCursorMetrics`, `summarizeCursorMetrics`.
+서브탭 키: `[ / ]` 또는 `← →` (subTab 포커스 상태). Platform 필터(`p`)가
+non-All 이면 서브탭이 해당 플랫폼으로 자동 스냅.
 
 ### 2.12 공통 위젯
 - **Table**: prefix 4셀(`▸/space + ■/□` 또는 `▸/space + 번호`), 마지막 컬럼 자동 확장, selected는 cyan+bold (inverse 회피)
@@ -166,7 +170,8 @@ Claude Overview와 동일 구조 (sub-tab 없음). 키: `r`.
 - **BarChart**: 8셀 label + `█` cyan bar + dim value
 - **SearchInput**: `ink-text-input` 래핑
 - **HelpPopup**: `?/q/Esc/Return`으로 닫기, 네비/탭/단축키 안내
-- **TabBar**: 8 메인 탭 가로 배치, active inverse + focus 표시
+- **TabBar**: 4 메인 탭 가로 배치, active inverse + focus 표시 (`▶` 마커)
+- **FilterChips**: `Platform: [...]  Scope: [...]` 헤더 라인 좌측, 디폴트 외 값은 BOLD
 - **useDetailScroll**: focus 시 j/k/PgUp/PgDn 처리, Esc로 blur, resetKey로 0 리셋
 - **useDetailMaxHeight**: termHeight - reservedRows (min 6)
 - **flattenDetailFields**: widthNarrow vs widthWide 이중 측정, chunkByWidth, padToWidth

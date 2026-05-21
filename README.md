@@ -87,7 +87,7 @@ axt plugin enable <plugin-id>
 axt vault link-global <type> <name>
 ```
 
-Full CLI inventory: [`FEATURES.md`](./FEATURES.md) (44 subcommands across 10 groups, 8 TUI tabs).
+Full CLI inventory: [`FEATURES.md`](./FEATURES.md) (44 subcommands across 10 groups, 4 main TUI tabs + global Platform/Scope filters).
 
 ## Updating
 
