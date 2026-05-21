@@ -140,8 +140,6 @@ def test_load_config_merges_user_overrides(tmp_path: Path):
     assert config.monthly_budget == 200
     assert config.plans["claude"].plan == "max-20x"
     assert config.plans["claude"].monthly_cost == 200
-    # Untouched plans keep defaults.
-    assert config.plans["codex"].plan == "pro"
 
 
 def test_save_then_load_config_roundtrip(tmp_path: Path):

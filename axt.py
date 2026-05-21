@@ -2812,8 +2812,6 @@ class AxtConfig:
     budget_warning_threshold: float = 0.8
     plans: dict[str, PlanConfig] = field(default_factory=lambda: {
         "claude": PlanConfig(plan="max-5x", monthly_cost=100, billing_cycle_start=1),
-        "codex": PlanConfig(plan="pro", monthly_cost=200, billing_cycle_start=1),
-        "gemini": PlanConfig(plan="free", monthly_cost=0, billing_cycle_start=1, daily_request_limit=1000),
     })
 
 
@@ -2848,10 +2846,9 @@ def load_config(config_path: os.PathLike[str] | str) -> AxtConfig:
     plans = dict(default.plans)
     saved_plans = saved.get("plans")
     if isinstance(saved_plans, dict):
-        for platform_name in ("claude", "codex", "gemini"):
-            p = _plan_from_json(saved_plans.get(platform_name))
-            if p is not None:
-                plans[platform_name] = p
+        p = _plan_from_json(saved_plans.get("claude"))
+        if p is not None:
+            plans["claude"] = p
     return AxtConfig(
         currency=tuple(saved.get("currency", default.currency)),
         exchange_rate=float(saved.get("exchangeRate", default.exchange_rate)),
@@ -3829,11 +3826,20 @@ def cli_mcp_info(args) -> int:
 
 # plan
 
-def _platform_cost(entries: list[UnifiedUsageEntry], platform: str) -> float:
+def cli_plan_overview(args) -> int:
+    config = load_config(AXT_CONFIG_PATH)
+    now = datetime.now()
+    month_start = f"{now.year}-{now.month:02d}-01"
+    entries = load_unified_usage(
+        claude_projects_dir=PATHS.projects,
+        since=month_start,
+    )
+    plan_cfg = config.plans.get("claude")
+    if not plan_cfg:
+        print("No plan configured for Claude.")
+        return 0
     cost = 0.0
     for e in entries:
-        if e.platform != platform:
-            continue
         cost += calculate_cost(
             TokenUsage(
                 input_tokens=e.input_tokens,
@@ -3843,57 +3849,37 @@ def _platform_cost(entries: list[UnifiedUsageEntry], platform: str) -> float:
             ),
             e.model,
         )
-    return cost
-
-
-def cli_plan_overview(args) -> int:
-    config = load_config(AXT_CONFIG_PATH)
-    now = datetime.now()
-    month_start = f"{now.year}-{now.month:02d}-01"
-    entries = load_unified_usage(
-        claude_projects_dir=PATHS.projects,
-        codex_sessions_dir=PATHS.codex_sessions,
-        gemini_tmp_dir=PATHS.gemini_tmp,
-        since=month_start,
-    )
-    total = 0.0
-    for p in ("claude", "codex", "gemini"):
-        plan_cfg = config.plans.get(p)
-        if not plan_cfg:
-            continue
-        cost = _platform_cost(entries, p)
-        elapsed, total_days = get_days_in_billing_period(plan_cfg.billing_cycle_start, now.replace(tzinfo=timezone.utc))
-        usage = compute_plan_usage(plan_cfg, cost, elapsed, total_days)
-        total += cost
-        label = f"{p.capitalize()} ({plan_cfg.plan} — ${plan_cfg.monthly_cost}/mo)"
-        print(_bold(label))
-        print(f"  사용량:    {format_cost(cost, config.exchange_rate)}  ({elapsed}일 경과)")
-        print(f"  일평균:    ${usage.daily_avg_cost:.2f}")
-        if usage.projected_monthly_cost > plan_cfg.monthly_cost and plan_cfg.monthly_cost > 0:
-            est = _red(f"${usage.projected_monthly_cost:.0f} ⚠ 초과 예상")
-        else:
-            est = f"${usage.projected_monthly_cost:.0f}"
-        print(f"  월말 예측: {est}")
-        if plan_cfg.monthly_cost > 0:
-            print(f"  {budget_bar(cost, plan_cfg.monthly_cost)}")
-        print()
-    print(_bold(f"Total: {format_cost(total, config.exchange_rate)}"))
+    elapsed, total_days = get_days_in_billing_period(plan_cfg.billing_cycle_start, now.replace(tzinfo=timezone.utc))
+    usage = compute_plan_usage(plan_cfg, cost, elapsed, total_days)
+    label = f"Claude ({plan_cfg.plan} — ${plan_cfg.monthly_cost}/mo)"
+    print(_bold(label))
+    print(f"  사용량:    {format_cost(cost, config.exchange_rate)}  ({elapsed}일 경과)")
+    print(f"  일평균:    ${usage.daily_avg_cost:.2f}")
+    if usage.projected_monthly_cost > plan_cfg.monthly_cost and plan_cfg.monthly_cost > 0:
+        est = _red(f"${usage.projected_monthly_cost:.0f} ⚠ 초과 예상")
+    else:
+        est = f"${usage.projected_monthly_cost:.0f}"
+    print(f"  월말 예측: {est}")
+    if plan_cfg.monthly_cost > 0:
+        print(f"  {budget_bar(cost, plan_cfg.monthly_cost)}")
+    print()
+    print(_bold(f"Total: {format_cost(cost, config.exchange_rate)}"))
     return 0
 
 
 def cli_plan_set(args) -> int:
     config = load_config(AXT_CONFIG_PATH)
     plans = dict(config.plans)
-    existing = plans.get(args.platform)
+    existing = plans.get("claude")
     if existing:
-        plans[args.platform] = PlanConfig(
+        plans["claude"] = PlanConfig(
             plan=args.plan_name,
             monthly_cost=existing.monthly_cost,
             billing_cycle_start=existing.billing_cycle_start,
             daily_request_limit=existing.daily_request_limit,
         )
     else:
-        plans[args.platform] = PlanConfig(plan=args.plan_name, monthly_cost=0, billing_cycle_start=1)
+        plans["claude"] = PlanConfig(plan=args.plan_name, monthly_cost=0, billing_cycle_start=1)
     save_config(
         AXT_CONFIG_PATH,
         AxtConfig(
@@ -3907,7 +3893,7 @@ def cli_plan_set(args) -> int:
             plans=plans,
         ),
     )
-    print(_green(f'✓ {args.platform} plan set to "{args.plan_name}".'))
+    print(_green(f'✓ Claude plan set to "{args.plan_name}".'))
     return 0
 
 
@@ -4129,16 +4115,11 @@ def _today_in_tz(tz: str) -> str:
 
 
 def _shared_usage_load(args, *, since: Optional[str] = None, until: Optional[str] = None) -> list[UnifiedUsageEntry]:
-    """Apply usage-group filter flags (model/project/platform/timezone)."""
-    config = load_config(AXT_CONFIG_PATH)
-    tz = args.timezone or config.timezone
+    """Apply usage-group filter flags (model/project/timezone)."""
     entries = load_unified_usage(
         claude_projects_dir=PATHS.projects,
-        codex_sessions_dir=PATHS.codex_sessions,
-        gemini_tmp_dir=PATHS.gemini_tmp,
         since=since,
         until=until,
-        platform=args.platform or "all",
         project=args.project,
     )
     if args.model:
@@ -4429,7 +4410,6 @@ def _add_usage_filter_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--breakdown", action="store_true", help="Show per-model breakdown")
     p.add_argument("--timezone", help="Timezone for grouping")
     p.add_argument("--locale", help="Date locale")
-    p.add_argument("--platform", help="Filter by platform (claude/codex/gemini/all)", default="all")
     p.add_argument("--json", action="store_true", help="Output JSON")
     p.add_argument("--csv", action="store_true", help="Output CSV")
     p.add_argument("--export", help="Export to file")
@@ -4468,8 +4448,8 @@ def build_parser() -> argparse.ArgumentParser:
     # plan
     sp_plan = sub.add_parser("plan", help="View plan usage and cost projections")
     plan_sub = sp_plan.add_subparsers(dest="action")
-    p = plan_sub.add_parser("overview", help="All platforms plan summary"); p.set_defaults(func=cli_plan_overview)
-    p = plan_sub.add_parser("set", help="Set plan for a platform"); p.add_argument("platform"); p.add_argument("plan_name"); p.set_defaults(func=cli_plan_set)
+    p = plan_sub.add_parser("overview", help="Claude plan summary"); p.set_defaults(func=cli_plan_overview)
+    p = plan_sub.add_parser("set", help="Set Claude plan"); p.add_argument("plan_name"); p.set_defaults(func=cli_plan_set)
     sp_plan.set_defaults(func=cli_plan_overview)  # default action
 
     # plugin
