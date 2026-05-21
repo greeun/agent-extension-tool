@@ -1839,3 +1839,38 @@ def test_render_usage_tab_scroll_clips_header(tmp_path, monkeypatch):
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     # Header was at buffer-row 0; scroll==3 should clip it out.
     assert "Claude usage — this month" not in flat
+
+
+def test_handle_usage_input_j_increments_scroll():
+    state = axt.TuiState()
+    axt.handle_usage_input(state, ord("j"))
+    assert state.usage_scroll == 1
+    axt.handle_usage_input(state, ord("j"))
+    assert state.usage_scroll == 2
+
+
+def test_handle_usage_input_k_decrements_scroll_floored_at_zero():
+    state = axt.TuiState()
+    state.usage_scroll = 1
+    axt.handle_usage_input(state, ord("k"))
+    assert state.usage_scroll == 0
+    axt.handle_usage_input(state, ord("k"))
+    assert state.usage_scroll == 0  # clamped
+
+
+def test_handle_usage_input_arrow_keys_scroll():
+    state = axt.TuiState()
+    axt.handle_usage_input(state, curses.KEY_DOWN)
+    assert state.usage_scroll == 1
+    axt.handle_usage_input(state, curses.KEY_UP)
+    assert state.usage_scroll == 0
+
+
+def test_handle_usage_input_pgdn_pgup():
+    state = axt.TuiState()
+    axt.handle_usage_input(state, curses.KEY_NPAGE)
+    assert state.usage_scroll == 10
+    axt.handle_usage_input(state, curses.KEY_PPAGE)
+    assert state.usage_scroll == 0
+    axt.handle_usage_input(state, curses.KEY_PPAGE)
+    assert state.usage_scroll == 0  # clamped at 0

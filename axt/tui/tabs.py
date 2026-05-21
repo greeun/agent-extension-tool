@@ -1119,6 +1119,18 @@ def handle_usage_input(state: TuiState, key: int) -> Optional[str]:
         # loop only overwrites state.status when the handler returns a
         # non-None string).
         return None
+    if key in (curses.KEY_DOWN, ord("j")):
+        state.usage_scroll += 1
+        return None
+    if key in (curses.KEY_UP, ord("k")):
+        state.usage_scroll = max(0, state.usage_scroll - 1)
+        return None
+    if key == curses.KEY_NPAGE:
+        state.usage_scroll += 10
+        return None
+    if key == curses.KEY_PPAGE:
+        state.usage_scroll = max(0, state.usage_scroll - 10)
+        return None
     return None
 
 
