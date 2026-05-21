@@ -206,6 +206,39 @@ Python: 3.9+
 | curses의 색상 표현 한계 | `curses.init_pair`로 8색 + bold/dim/reverse 조합 |
 | Windows curses | `windows-curses` 패키지 필요. 별도 install 안내. macOS/Linux 우선 |
 
+## Vault Scan Cache Policy
+
+Vault 탭의 "Used" 컬럼은 모든 프로젝트의 `.claude/skills`, `commands`, `agents`
+심볼릭 링크와 `.axt-profile.json`을 순회하는 cross-project scan 결과를 반영한다.
+이 스캔은 비싸므로(프로젝트 수에 선형), TUI 응답성을 유지하기 위해 결과를 디스크에
+캐싱한다.
+
+**캐시 위치**: `<AXT_CONFIG_DIR>/cache/vault-scan-index.json`
+  - POSIX: `~/.config/axt/cache/vault-scan-index.json`
+    (`$XDG_CONFIG_HOME`가 설정되어 있으면 `$XDG_CONFIG_HOME/axt/cache/...`)
+  - Windows: `%APPDATA%/axt/cache/vault-scan-index.json`
+
+**갱신 트리거**: Vault 탭에서 `f` 키를 눌렀을 때만 캐시가 채워지거나 갱신된다.
+같은 키가 스캔 모드를 `"default"` ↔ `"full"`로 토글한다. 타이머·시작 시 자동
+스캔·자동 무효화는 없다.
+
+**스테일니스**: 스캔 진행 중에는 상태 바에 `scan=<mode>(<count>/<total>)`이 표시된다.
+스캔이 완료된 뒤에는 캐시 파일의 mtime만이 staleness의 유일한 단서이며, 갱신 시점은
+사용자가 결정한다.
+
+**쓰기**: `write_json_atomic`을 통과한다 — partial 파일은 절대 외부에 노출되지 않으며,
+원자적 rename 직전의 `.bak` sibling이 한 사이클 동안 보존된다.
+
+**동시성**: 단일 사용자 도구로 가정. 파일 락이 없다. 동시에 두 스캔이 일어나면 atomic
+rename의 last-writer-wins 시맨틱에 의존하며, 이는 허용 가능한 동작이다.
+
+**스키마 진화**: payload에 `"mode": "default" | "full"` 태그가 박혀 있다. 현재는
+`"version"` 필드가 없으며, 향후 스키마 변경 시 `"version": N`을 추가하고 없는 경우를
+version 0으로 취급해야 한다.
+
+(상기 정책의 canonical reference는 `axt/tui/tabs.py`의 `_scan_cache_path` 위 인라인
+주석 블록이다. 본 섹션은 이를 아키텍처 레벨에서 미러링한다.)
+
 ## 비고
 
 - 본 문서는 단일 spec. 변경 사항이 생기면 본 문서를 업데이트하고 git commit.

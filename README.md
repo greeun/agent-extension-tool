@@ -4,7 +4,7 @@ A unified CLI & TUI dashboard for managing extensions, plugins, skills, MCP serv
 
 > **v2.0.0: Claude-only.** Earlier v1.x versions also supported Codex / Gemini CLI / Cursor; v2 dropped them to focus on Claude depth. See [MIGRATION.md](./MIGRATION.md) (English) or [MIGRATION.ko.md](./MIGRATION.ko.md) (Korean) for upgrade notes.
 
-Single-file Python + curses. The older TypeScript+Ink line (v0.1.x) is preserved frozen under [`legacy-ts/`](./legacy-ts/).
+Python + curses package, pure stdlib runtime. The older TypeScript+Ink line (v0.1.x) is preserved frozen under [`legacy-ts/`](./legacy-ts/).
 
 ## Features
 
