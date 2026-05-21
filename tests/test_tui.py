@@ -1599,3 +1599,10 @@ def test_sub_tab_down_arrow_descends_when_populated():
     consumed = axt._handle_layer_key(scr, state, curses.KEY_DOWN, "extensions")
     assert consumed is True
     assert state.focused_layer == "content"
+
+
+def test_tui_state_has_usage_loading_fields():
+    """TuiState exposes async-loading flags for the Usage tab."""
+    s = axt.TuiState()
+    assert s.usage_loading is False
+    assert s.usage_load_thread is None

@@ -90,6 +90,11 @@ class TuiState:
     # Usage data caches (None = not loaded yet).
     usage_entries: Optional[list] = None
     usage_config: Optional[Any] = None
+    # Async-load state for the Usage tab. A background thread fills
+    # `usage_entries` / `usage_config`; the main loop polls while
+    # `usage_loading` is True so the next frame picks up the result.
+    usage_loading: bool = False
+    usage_load_thread: Optional[Any] = None  # threading.Thread, kept generic
 
     # Context tab.
     context_analysis: Optional[Any] = None
