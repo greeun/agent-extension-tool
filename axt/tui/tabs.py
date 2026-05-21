@@ -23,6 +23,7 @@ from __future__ import annotations
 import curses
 import os
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -734,6 +735,39 @@ def _daily_costs(entries: list[UnifiedUsageEntry], days: int, tz: str) -> list[t
 
 
 # ─── Usage tab (Claude-only) ─────────────────────────────────────────────────
+
+
+def _kick_usage_reload(state: TuiState) -> None:
+    """Start a background reload of Claude usage data.
+
+    Idempotent: if a load is already in flight, this is a no-op. The
+    worker thread is a daemon so it dies with the process. Previously
+    loaded data in ``state.usage_entries`` stays visible while the
+    refresh runs.
+    """
+    if state.usage_loading:
+        return
+    state.usage_loading = True
+    state.status = "Loading Claude usage…"
+
+    def _worker() -> None:
+        try:
+            config = load_config(AXT_CONFIG_PATH)
+            now = datetime.now(timezone.utc)
+            month_start = f"{now.year}-{now.month:02d}-01"
+            entries = load_unified_usage(
+                claude_projects_dir=PATHS.projects,
+                since=month_start,
+            )
+            state.usage_config = config
+            state.usage_entries = entries
+            state.status = ""
+        finally:
+            state.usage_loading = False
+
+    t = threading.Thread(target=_worker, name="axt-usage-load", daemon=True)
+    state.usage_load_thread = t
+    t.start()
 
 
 def _ensure_usage_loaded(state: TuiState) -> None:

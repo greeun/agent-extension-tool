@@ -1606,3 +1606,52 @@ def test_tui_state_has_usage_loading_fields():
     s = axt.TuiState()
     assert s.usage_loading is False
     assert s.usage_load_thread is None
+
+
+def test_kick_usage_reload_spawns_and_populates(monkeypatch, tmp_path):
+    """_kick_usage_reload runs load_unified_usage in a background thread and
+    populates state when it completes."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+
+    stub_entries = []
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage",
+                        lambda **kw: stub_entries)
+
+    state = axt.TuiState()
+    axt._kick_usage_reload(state)
+    assert state.usage_loading is True
+    assert state.status == "Loading Claude usage…"
+
+    # Wait for the worker.
+    if state.usage_load_thread is not None:
+        state.usage_load_thread.join(timeout=2.0)
+
+    assert state.usage_loading is False
+    assert state.usage_entries is stub_entries
+    assert state.usage_config is not None
+    assert state.status == ""
+
+
+def test_kick_usage_reload_idempotent_while_loading(monkeypatch, tmp_path):
+    """A second _kick_usage_reload call while a load is in flight is a no-op
+    (does not spawn another thread)."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+
+    # Block the worker so we can observe the in-flight state.
+    gate = __import__("threading").Event()
+    def slow_load(**kw):
+        gate.wait(timeout=2.0)
+        return []
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", slow_load)
+
+    state = axt.TuiState()
+    axt._kick_usage_reload(state)
+    first_thread = state.usage_load_thread
+    assert first_thread is not None and first_thread.is_alive()
+
+    axt._kick_usage_reload(state)  # should be a no-op
+    assert state.usage_load_thread is first_thread
+
+    gate.set()
+    first_thread.join(timeout=2.0)
+    assert state.usage_loading is False
