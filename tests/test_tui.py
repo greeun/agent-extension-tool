@@ -193,19 +193,22 @@ def test_render_tab_bar_lists_all_tabs_full_names():
     scr = _make_stdscr()
     axt.render_tab_bar(scr, 0, 0, 160, active_idx=0, focused=True)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    for full in ("Extensions", "Context", "Project", "Dashboard", "Claude", "Codex", "Gemini", "Cursor"):
+    for full in ("Dashboard", "Extensions", "Context", "Usage"):
         assert full in flat, f"Expected full name {full!r} in tab bar"
+    # Platform names no longer appear at the top level (they moved into
+    # Usage sub-tabs).
+    for moved in ("Claude", "Codex", "Gemini", "Cursor", "Project"):
+        assert moved not in flat, f"{moved!r} should not be a top-level tab anymore"
 
 
 def test_render_tab_bar_falls_back_to_short_names_in_narrow_terminal():
     """A narrow terminal where the full names won't fit must use the short labels."""
     scr = _make_stdscr()
-    axt.render_tab_bar(scr, 0, 0, 60, active_idx=0, focused=True)
+    axt.render_tab_bar(scr, 0, 0, 50, active_idx=0, focused=True)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    # In narrow mode we expect short labels and NOT the full ones (at least
-    # for the longer names — `Codex`/`Cursor` are identical in both lists).
     assert "Extensions" not in flat
-    assert "Ext" in flat or "Cdx" in flat
+    # At least one of the 4-tab short labels must render.
+    assert any(short in flat for short in ("Dash", "Ext", "Ctx", "Use"))
 
 
 def test_render_tab_bar_highlights_active_when_focused():
