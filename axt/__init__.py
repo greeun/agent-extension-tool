@@ -18,10 +18,16 @@ monkeypatches reach the place the function actually reads from.
 import importlib as _importlib
 import sys as _sys
 
-# Per-section submodules. C2 added ``cli``. C3-C5 will append the
-# ``tui.*`` modules. Order matters: later entries override earlier
-# entries when names collide.
-_SUBMODULES: list[str] = ["_core", "cli"]
+# Per-section submodules. C2 added ``cli``. C3 added ``tui.widgets``.
+# C4-C5 will append the remaining ``tui.*`` modules. Order matters:
+# later entries override earlier entries when names collide.
+#
+# ``tui.widgets`` is loaded BEFORE ``_core`` because ``_core``'s
+# Section 13 re-imports from ``axt.tui.widgets`` at module-execution
+# time — the dotted name must already be resolvable in ``sys.modules``.
+# ``cli`` is last so its names win over any same-named helpers (the
+# CLI module owns the user-facing ``main`` and console-output formatters).
+_SUBMODULES: list[str] = ["tui.widgets", "_core", "cli"]
 
 # Imported submodule objects, in the same order as _SUBMODULES. Populated
 # by _load_submodules() / _reload_submodules() below.

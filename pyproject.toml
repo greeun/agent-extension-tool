@@ -40,7 +40,7 @@ Changelog = "https://github.com/greeun/agent-extension-tool/releases"
 axt = "axt:main"
 
 [tool.setuptools]
-packages = ["axt"]
+packages = ["axt", "axt.tui"]
 package-data = { axt = ["pricing.json"] }
 include-package-data = true
 
