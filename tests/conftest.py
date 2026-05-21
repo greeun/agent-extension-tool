@@ -52,8 +52,6 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip env vars that influence path resolution so tests aren't host-coupled."""
     for var in (
         "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
-        "GEMINI_CLI_HOME",
         "XDG_CONFIG_HOME",
         "APPDATA",
     ):

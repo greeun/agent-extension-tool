@@ -2004,30 +2004,18 @@ def pooled_map(
 
 # ── Section 6: Usage Parsers ─────────────────────────────────────────────────
 #
-# Four data sources normalized into `UnifiedUsageEntry`:
-#   Claude  — JSONL per session under ~/.claude/projects/<proj>/<session>.jsonl
-#             with mtime-based per-file cache at ~/.config/axt/cache/claude-usage.json
-#   Codex   — JSONL with `session_meta` + `event_msg(token_count)` records
-#   Gemini  — JSON or JSONL session files at <gemini_tmp>/<proj>/chats/session-*.{json,jsonl}
-#   Cursor  — SQLite (stdlib `sqlite3`) at ~/.cursor/ai-tracking/ai-code-tracking.db
-#
-# Filter semantics differ between platforms (matches TS):
-#   Claude: ms-precision since/until via Date.getTime()
-#   Codex/Gemini: YYYY-MM-DD string prefix comparison
+# Claude usage normalized into `UnifiedUsageEntry`:
+#   Claude — JSONL per session under ~/.claude/projects/<proj>/<session>.jsonl
+#            with mtime-based per-file cache at ~/.config/axt/cache/claude-usage.json
 #
 # Cache:
-#   Claude per-file mtime cache (5-min validity). Codex/Gemini intentionally
-#   uncached — small datasets that benefit more from freshness than from
-#   serialization.
-
-import sqlite3
-from glob import iglob
+#   Claude per-file mtime cache (5-min validity).
 
 
 # ─── Unified usage entry & rate limit ────────────────────────────────────────
 
 
-PLATFORMS: tuple[str, ...] = ("claude", "codex", "gemini")
+PLATFORMS: tuple[str, ...] = ("claude",)
 
 
 @dataclass(frozen=True)
@@ -2164,7 +2152,7 @@ def filter_by_date_string(
     *,
     key=lambda e: e.timestamp,
 ) -> list:
-    """Codex/Gemini semantics: 10-char YYYY-MM-DD prefix compare."""
+    """YYYY-MM-DD prefix compare (10-char string slice)."""
     if not since and not until:
         return entries
     out = []
@@ -2326,294 +2314,6 @@ def _claude_filter(
     return filter_by_timestamp_ms(entries, since_ms, until_ms)
 
 
-# ─── Codex usage parser ──────────────────────────────────────────────────────
-
-
-def parse_codex_file(file_path: os.PathLike[str] | str) -> list[UnifiedUsageEntry]:
-    """Codex JSONL: session_meta announces model+session, event_msg/token_count records token usage."""
-    p = Path(file_path)
-    session_id = p.stem
-    project_path = p.parent.name
-    current_model = "unknown"
-    out: list[UnifiedUsageEntry] = []
-    try:
-        with p.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(rec, dict):
-                    continue
-                if rec.get("type") == "session_meta":
-                    payload = rec.get("payload") or {}
-                    if isinstance(payload, dict):
-                        if payload.get("model"):
-                            current_model = str(payload["model"])
-                        if payload.get("session_id"):
-                            session_id = str(payload["session_id"])
-                    continue
-                if rec.get("type") == "event_msg":
-                    payload = rec.get("payload") or {}
-                    if not isinstance(payload, dict) or payload.get("type") != "token_count":
-                        continue
-                    info = payload.get("info") or {}
-                    usage = info.get("last_token_usage") if isinstance(info, dict) else None
-                    if not isinstance(usage, dict):
-                        continue
-                    out.append(
-                        UnifiedUsageEntry(
-                            platform="codex",
-                            model=current_model,
-                            timestamp=str(rec.get("timestamp") or ""),
-                            session_id=session_id,
-                            project_path=project_path,
-                            input_tokens=int(usage.get("input_tokens") or 0),
-                            output_tokens=int(usage.get("output_tokens") or 0),
-                            cache_write_tokens=0,
-                            cache_read_tokens=int(usage.get("cached_input_tokens") or 0),
-                            reasoning_tokens=int(usage.get("reasoning_output_tokens") or 0),
-                            tool_tokens=0,
-                        )
-                    )
-    except OSError:
-        pass
-    return out
-
-
-def extract_codex_rate_limit(file_path: os.PathLike[str] | str) -> Optional[RateLimitInfo]:
-    """Find the most recent `event_msg(token_count)` with rate_limits.primary."""
-    p = Path(file_path)
-    try:
-        lines = [l for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
-    except OSError:
-        return None
-    for line in reversed(lines):
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict) or rec.get("type") != "event_msg":
-            continue
-        payload = rec.get("payload") or {}
-        if not isinstance(payload, dict) or payload.get("type") != "token_count":
-            continue
-        rl = payload.get("rate_limits") or {}
-        primary = rl.get("primary") if isinstance(rl, dict) else None
-        if not isinstance(primary, dict):
-            continue
-        return RateLimitInfo(
-            platform="codex",
-            used_percent=float(primary.get("used_percent") or 0),
-            window_minutes=int(primary.get("window_minutes") or 300),
-            resets_at=primary.get("resets_at"),
-        )
-    return None
-
-
-def load_codex_usage(
-    sessions_dir: os.PathLike[str] | str,
-    *,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-) -> list[UnifiedUsageEntry]:
-    sd = Path(sessions_dir)
-    if not sd.exists() or not sd.is_dir():
-        return []
-    out: list[UnifiedUsageEntry] = []
-    # Recursive `**/*.jsonl`.
-    for f in sorted(str(x) for x in sd.rglob("*.jsonl")):
-        out.extend(parse_codex_file(f))
-    return filter_by_date_string(out, since, until)
-
-
-# ─── Gemini usage parser ─────────────────────────────────────────────────────
-
-
-def parse_gemini_file(file_path: os.PathLike[str] | str) -> list[UnifiedUsageEntry]:
-    p = Path(file_path)
-    try:
-        if p.suffix == ".jsonl":
-            # First record contains the session shape (TS reads only [0]).
-            with p.open("r", encoding="utf-8") as f:
-                first_line = next((l for l in f if l.strip()), None)
-            if not first_line:
-                return []
-            session = json.loads(first_line)
-        else:
-            session = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, StopIteration):
-        return []
-
-    if not isinstance(session, dict):
-        return []
-
-    session_id = str(session.get("sessionId") or p.stem)
-    chats_dir = p.parent
-    project_slug = chats_dir.parent.name
-
-    out: list[UnifiedUsageEntry] = []
-    for msg in session.get("messages") or []:
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("role") != "gemini":
-            continue
-        tokens = msg.get("tokens")
-        if not isinstance(tokens, dict):
-            continue
-        out.append(
-            UnifiedUsageEntry(
-                platform="gemini",
-                model=str(msg.get("model") or "unknown"),
-                timestamp=str(msg.get("timestamp") or ""),
-                session_id=session_id,
-                project_path=project_slug,
-                input_tokens=int(tokens.get("input") or 0),
-                output_tokens=int(tokens.get("output") or 0),
-                cache_write_tokens=0,
-                cache_read_tokens=int(tokens.get("cached") or 0),
-                reasoning_tokens=int(tokens.get("thoughts") or 0),
-                tool_tokens=int(tokens.get("tool") or 0),
-            )
-        )
-    return out
-
-
-def load_gemini_usage(
-    gemini_tmp_dir: os.PathLike[str] | str,
-    *,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-) -> list[UnifiedUsageEntry]:
-    base = Path(gemini_tmp_dir)
-    if not base.exists() or not base.is_dir():
-        return []
-    out: list[UnifiedUsageEntry] = []
-    # Glob `<proj>/chats/session-*.{json,jsonl}`.
-    for ext in ("json", "jsonl"):
-        for f in sorted(str(x) for x in base.glob(f"*/chats/session-*.{ext}")):
-            out.extend(parse_gemini_file(f))
-    return filter_by_date_string(out, since, until)
-
-
-# ─── Cursor metrics (SQLite) ─────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class CursorCommitMetrics:
-    commit_hash: str
-    branch_name: str
-    scored_at: int  # unix ms
-    lines_added: int
-    lines_deleted: int
-    human_lines_added: int
-    human_lines_deleted: int
-    composer_lines_added: int
-    composer_lines_deleted: int
-    ai_percentage: float
-    commit_message: str
-    commit_date: str  # YYYY-MM-DD
-
-
-@dataclass(frozen=True)
-class CursorSummary:
-    total_commits: int
-    total_lines_added: int
-    total_lines_deleted: int
-    human_lines_added: int
-    human_lines_deleted: int
-    ai_lines_added: int
-    ai_lines_deleted: int
-    avg_ai_percentage: float
-
-
-def load_cursor_metrics(
-    db_path: os.PathLike[str] | str,
-    *,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-) -> list[CursorCommitMetrics]:
-    p = Path(db_path)
-    if not p.exists():
-        return []
-
-    # Open read-only via URI mode so concurrent access from Cursor itself
-    # doesn't trip the lock.
-    uri = f"file:{p}?mode=ro"
-    try:
-        conn = sqlite3.connect(uri, uri=True, timeout=5)
-    except sqlite3.Error:
-        return []
-
-    try:
-        conn.row_factory = sqlite3.Row
-        sql = "SELECT * FROM scored_commits"
-        clauses: list[str] = []
-        params: list[Any] = []
-        if since:
-            clauses.append("commitDate >= ?")
-            params.append(since)
-        if until:
-            clauses.append("commitDate <= ?")
-            params.append(until)
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY scoredAt DESC"
-
-        out: list[CursorCommitMetrics] = []
-        for row in conn.execute(sql, params):
-            ai_pct_raw = row["v2AiPercentage"] if "v2AiPercentage" in row.keys() else None
-            if ai_pct_raw is None:
-                ai_pct_raw = row["v1AiPercentage"] if "v1AiPercentage" in row.keys() else None
-            try:
-                ai_pct = float(ai_pct_raw) if ai_pct_raw is not None else 0.0
-            except (TypeError, ValueError):
-                ai_pct = 0.0
-            out.append(
-                CursorCommitMetrics(
-                    commit_hash=str(row["commitHash"] or ""),
-                    branch_name=str(row["branchName"] or ""),
-                    scored_at=int(row["scoredAt"] or 0),
-                    lines_added=int(row["linesAdded"] or 0),
-                    lines_deleted=int(row["linesDeleted"] or 0),
-                    human_lines_added=int(row["humanLinesAdded"] or 0),
-                    human_lines_deleted=int(row["humanLinesDeleted"] or 0),
-                    composer_lines_added=int(row["composerLinesAdded"] or 0),
-                    composer_lines_deleted=int(row["composerLinesDeleted"] or 0),
-                    ai_percentage=ai_pct,
-                    commit_message=str(row["commitMessage"] or ""),
-                    commit_date=str(row["commitDate"] or ""),
-                )
-            )
-        return out
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-
-
-def summarize_cursor_metrics(metrics: list[CursorCommitMetrics]) -> CursorSummary:
-    if not metrics:
-        return CursorSummary(0, 0, 0, 0, 0, 0, 0, 0.0)
-    total_added = sum(m.lines_added for m in metrics)
-    total_deleted = sum(m.lines_deleted for m in metrics)
-    human_added = sum(m.human_lines_added for m in metrics)
-    human_deleted = sum(m.human_lines_deleted for m in metrics)
-    return CursorSummary(
-        total_commits=len(metrics),
-        total_lines_added=total_added,
-        total_lines_deleted=total_deleted,
-        human_lines_added=human_added,
-        human_lines_deleted=human_deleted,
-        ai_lines_added=total_added - human_added,
-        ai_lines_deleted=total_deleted - human_deleted,
-        avg_ai_percentage=sum(m.ai_percentage for m in metrics) / len(metrics),
-    )
-
-
 # ─── Rate-limit snapshot ─────────────────────────────────────────────────────
 
 
@@ -2707,38 +2407,24 @@ def claude_to_unified(e: ClaudeUsageEntry) -> UnifiedUsageEntry:
 def load_unified_usage(
     *,
     claude_projects_dir: os.PathLike[str] | str,
-    codex_sessions_dir: os.PathLike[str] | str,
-    gemini_tmp_dir: os.PathLike[str] | str,
     since: Optional[str] = None,
     until: Optional[str] = None,
-    platform: str = "all",
     project: Optional[str] = None,
     force_refresh: bool = False,
 ) -> list[UnifiedUsageEntry]:
-    """Run all (or one) platform loaders in series, normalize, sort by ts."""
+    """Load Claude usage, normalize to UnifiedUsageEntry, and sort by ts."""
     entries: list[UnifiedUsageEntry] = []
-    if platform in ("all", "claude"):
-        try:
-            claude_entries = load_all_claude_usage(
-                claude_projects_dir,
-                since=since,
-                until=until,
-                project=project,
-                force_refresh=force_refresh,
-            )
-            entries += [claude_to_unified(e) for e in claude_entries]
-        except OSError:
-            pass
-    if platform in ("all", "codex"):
-        try:
-            entries += load_codex_usage(codex_sessions_dir, since=since, until=until)
-        except OSError:
-            pass
-    if platform in ("all", "gemini"):
-        try:
-            entries += load_gemini_usage(gemini_tmp_dir, since=since, until=until)
-        except OSError:
-            pass
+    try:
+        claude_entries = load_all_claude_usage(
+            claude_projects_dir,
+            since=since,
+            until=until,
+            project=project,
+            force_refresh=force_refresh,
+        )
+        entries += [claude_to_unified(e) for e in claude_entries]
+    except OSError:
+        pass
     return sorted(entries, key=lambda e: e.timestamp)
 
 
