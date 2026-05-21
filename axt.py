@@ -7087,13 +7087,14 @@ def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
         if state.ext_sub_tab == "vault":
             return state.vault_selected == 0
         return state.ext_selected.get(state.ext_sub_tab, 0) == 0
-    if tab_key == "cursor":
-        return state.cursor_selected == 0
+    if tab_key == "usage":
+        # Cursor sub-tab is the only Usage view with a row selection.
+        if state.usage_sub_tab == "cursor":
+            return state.cursor_selected == 0
+        return True
     if tab_key == "context":
         return state.context_selected == 0
-    if tab_key == "project":
-        return state.project_selected == 0
-    # Tabs without a selection (dashboard, usage) always count as "top".
+    # Tabs without a selection (dashboard) always count as "top".
     return True
 
 

@@ -1055,19 +1055,22 @@ def test_at_top_of_content_vault_at_zero():
     assert axt._at_top_of_content(state, "extensions") is False
 
 
-def test_at_top_of_content_cursor():
+def test_at_top_of_content_usage_cursor_sub_tab():
+    """Usage tab with cursor sub-tab: selection 0 → at top, >0 → not."""
     state = axt.TuiState()
+    state.usage_sub_tab = "cursor"
     state.cursor_selected = 0
-    assert axt._at_top_of_content(state, "cursor") is True
+    assert axt._at_top_of_content(state, "usage") is True
     state.cursor_selected = 2
-    assert axt._at_top_of_content(state, "cursor") is False
+    assert axt._at_top_of_content(state, "usage") is False
 
 
 def test_at_top_of_content_dashboard_always_true():
-    """Dashboard/usage tabs have no selectable list — always 'at top'."""
+    """Dashboard and non-Cursor usage sub-tabs have no selectable list."""
     state = axt.TuiState()
     assert axt._at_top_of_content(state, "dashboard") is True
-    assert axt._at_top_of_content(state, "claude") is True
+    state.usage_sub_tab = "claude"
+    assert axt._at_top_of_content(state, "usage") is True
 
 
 def test_subtab_bar_focus_attr_differs_from_unfocused(tmp_path):
