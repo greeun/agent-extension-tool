@@ -1807,8 +1807,16 @@ def test_render_usage_tab_loading_skips_summary(tmp_path, monkeypatch):
     """During first-paint loading, the tab body must NOT include the plan
     label or insights — those depend on data that isn't loaded yet."""
     _setup_isolated_paths(tmp_path, monkeypatch)
-    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", lambda **kw: [])
-    monkeypatch.setattr("axt.tui.tabs.analyze_context", lambda **kw: object())
+    # Gate the worker so it cannot finish mid-render and feed back a
+    # half-initialised context_analysis to _usage_gauge_lines.
+    import threading as _threading
+    gate = _threading.Event()
+    def gated_load(**kw):
+        gate.wait(timeout=2.0)
+        return []
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", gated_load)
+    monkeypatch.setattr("axt.tui.tabs.analyze_context",
+                        lambda **kw: _make_empty_context_analysis())
 
     state = axt.TuiState()
     assert state.usage_entries is None
@@ -1819,6 +1827,7 @@ def test_render_usage_tab_loading_skips_summary(tmp_path, monkeypatch):
     assert "Plan:" not in flat
     assert "Insights" not in flat
 
+    gate.set()
     if state.usage_load_thread is not None:
         state.usage_load_thread.join(timeout=2.0)
 
