@@ -2627,9 +2627,10 @@ def compute_blocks(entries: list[ClaudeUsageEntry], timezone_name: str) -> list[
 
 # ── Section 7: Pricing, Plans & Config ───────────────────────────────────────
 #
-# Pricing lives in `pricing.json` (sibling of axt.py) so updates don't
-# require source edits. Looked up by exact model id with a `startswith`
-# fallback for versioned model strings ("gpt-5-2026-01-01" → "gpt-5").
+# Pricing lives in `pricing.json` (shipped as package data next to this
+# module) so updates don't require source edits. Looked up by exact model
+# id with a `startswith` fallback for versioned model strings
+# ("gpt-5-2026-01-01" → "gpt-5").
 
 
 @dataclass(frozen=True)
@@ -2650,16 +2651,16 @@ class TokenUsage:
     cache_read_tokens: int = 0
 
 
+_PRICING_FILE = Path(__file__).resolve().parent / "pricing.json"
 _PRICING_CACHE: Optional[dict[str, ModelPricing]] = None
 
 
 def _pricing_table() -> dict[str, ModelPricing]:
-    """Lazy-load pricing.json (looked for next to axt.py)."""
+    """Lazy-load pricing.json (shipped as package data next to this module)."""
     global _PRICING_CACHE
     if _PRICING_CACHE is not None:
         return _PRICING_CACHE
-    pricing_path = Path(__file__).resolve().parent / "pricing.json"
-    data = read_json(pricing_path, fallback={"models": {}})
+    data = read_json(_PRICING_FILE, fallback={"models": {}})
     table: dict[str, ModelPricing] = {}
     for model_id, fields in (data.get("models") or {}).items():
         if not isinstance(fields, dict):

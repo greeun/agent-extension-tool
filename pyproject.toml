@@ -40,7 +40,9 @@ Changelog = "https://github.com/greeun/agent-extension-tool/releases"
 axt = "axt:main"
 
 [tool.setuptools]
-py-modules = ["axt"]
+packages = ["axt"]
+package-data = { axt = ["pricing.json"] }
+include-package-data = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
