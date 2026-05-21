@@ -6969,8 +6969,36 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
 
 
 def _cycle_sub_tab(state: TuiState, direction: int) -> None:
+    tab_key = MAIN_TABS[state.tab_idx][0]
+    if tab_key == "usage":
+        i = next((idx for idx, (k, _) in enumerate(USAGE_SUB_TABS) if k == state.usage_sub_tab), 0)
+        state.usage_sub_tab = USAGE_SUB_TABS[(i + direction) % len(USAGE_SUB_TABS)][0]
+        return
+    # Default: Extensions sub-tabs.
     i = next((idx for idx, (k, _) in enumerate(EXTENSION_SUB_TABS) if k == state.ext_sub_tab), 0)
     state.ext_sub_tab = EXTENSION_SUB_TABS[(i + direction) % len(EXTENSION_SUB_TABS)][0]
+
+
+_PLATFORM_FILTER_ORDER: tuple[str, ...] = ("all", "claude", "codex", "gemini", "cursor")
+_SCOPE_FILTER_ORDER: tuple[str, ...] = ("project", "all")
+
+
+def cycle_platform_filter(state: TuiState, direction: int) -> None:
+    """Rotate `state.platform_filter` through `_PLATFORM_FILTER_ORDER`."""
+    try:
+        i = _PLATFORM_FILTER_ORDER.index(state.platform_filter)
+    except ValueError:
+        i = 0
+    state.platform_filter = _PLATFORM_FILTER_ORDER[(i + direction) % len(_PLATFORM_FILTER_ORDER)]
+
+
+def cycle_scope_filter(state: TuiState, direction: int) -> None:
+    """Toggle `state.scope_filter` between project and all."""
+    try:
+        i = _SCOPE_FILTER_ORDER.index(state.scope_filter)
+    except ValueError:
+        i = 0
+    state.scope_filter = _SCOPE_FILTER_ORDER[(i + direction) % len(_SCOPE_FILTER_ORDER)]
 
 
 def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
@@ -7410,7 +7438,17 @@ def _tui_loop(stdscr) -> None:
             if key == curses.KEY_RESIZE:
                 _render_frame(stdscr, state)
                 continue
-            if ord("1") <= key <= ord("8"):
+            if key == ord("p"):
+                cycle_platform_filter(state, +1)
+                state.status = f"Platform: {state.platform_filter}"
+                _render_frame(stdscr, state)
+                continue
+            if key == ord("P"):
+                cycle_scope_filter(state, +1)
+                state.status = f"Scope: {state.scope_filter}"
+                _render_frame(stdscr, state)
+                continue
+            if ord("1") <= key <= ord("4"):
                 state.tab_idx = key - ord("1")
                 state.status = ""
                 state.focused_layer = "content"

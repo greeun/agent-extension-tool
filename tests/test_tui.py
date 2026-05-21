@@ -73,6 +73,23 @@ def test_render_filter_chips_highlights_non_default_filter():
     pytest.fail("Platform=claude chip was not drawn with BOLD")
 
 
+def test_cycle_platform_filter_rotates_through_options():
+    state = axt.TuiState()
+    options = ["all", "claude", "codex", "gemini", "cursor"]
+    for expected in options[1:] + [options[0]]:
+        axt.cycle_platform_filter(state, +1)
+        assert state.platform_filter == expected
+
+
+def test_cycle_scope_filter_toggles_between_project_and_all():
+    state = axt.TuiState()
+    assert state.scope_filter == "project"
+    axt.cycle_scope_filter(state, +1)
+    assert state.scope_filter == "all"
+    axt.cycle_scope_filter(state, +1)
+    assert state.scope_filter == "project"
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 
