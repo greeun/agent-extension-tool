@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "axt"
-version = "1.0.0"
-description = "Agent eXtension Tool — CLI + TUI for Claude/Codex/Gemini/Cursor extensions, plugins, skills, MCP servers, and usage tracking"
+version = "2.0.0"
+description = "Agent eXtension Tool — CLI + TUI for Claude Code extensions, plugins, skills, MCP servers, hooks, agents, and usage tracking"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "uni4love" }]
-keywords = ["claude", "codex", "gemini", "cursor", "tui", "cli", "plugins"]
+keywords = ["claude", "claude-code", "tui", "cli", "plugins", "skills", "mcp"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
