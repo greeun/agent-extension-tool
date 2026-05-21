@@ -535,8 +535,13 @@ def test_help_text_documents_quit_key():
 
 
 def test_help_text_documents_tab_navigation():
-    assert "1–8" in axt.HELP_TEXT
+    assert "1–4" in axt.HELP_TEXT
     assert "main tab" in axt.HELP_TEXT
+
+
+def test_help_text_documents_global_filter_keys():
+    assert "Platform filter" in axt.HELP_TEXT
+    assert "Scope filter" in axt.HELP_TEXT
 
 
 # ─── # column regression (the bug the user reported) ─────────────────────────
@@ -652,16 +657,6 @@ def test_render_context_basic(tmp_path, monkeypatch):
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Context" in flat
     assert "Category" in flat  # Table header label
-
-
-def test_render_project_tab_with_claude_md(tmp_path, monkeypatch):
-    _setup_isolated_paths(tmp_path, monkeypatch)
-    (tmp_path / "CLAUDE.md").write_text("# Hello\n\nProject context.\n")
-    state = axt.TuiState()
-    scr = _make_stdscr(rows=20, cols=140)
-    axt.render_project_tab(scr, state, 0, 18, 140)
-    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "CLAUDE.md (project)" in flat
 
 
 # ─── Bar chart widget ────────────────────────────────────────────────────────

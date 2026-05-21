@@ -6795,51 +6795,6 @@ def _ensure_project_loaded(state: TuiState) -> None:
     state.project_items = load_project_context(Path.cwd())
 
 
-def render_project_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
-    _ensure_project_loaded(state)
-    items = state.project_items or []
-
-    safe_addnstr(stdscr, y0, 0, fit_cells(
-        f" Project context — {Path.cwd().name}  ({len(items)} files)",
-        w - 1), w - 1, CP_HDR())
-
-    if not items:
-        safe_addnstr(stdscr, y0 + 2, 2, "No project context files found.", w - 4, CP_DIM())
-        return
-
-    # Layout: table on left (50%), preview on right (50%).
-    table_w = int(w * 0.45)
-    preview_x = table_w
-    preview_w = w - table_w
-
-    state.project_selected = max(0, min(state.project_selected, len(items) - 1))
-
-    columns = [
-        TableColumn("name", "Name", max(20, table_w - 22)),
-        TableColumn("source", "Source", 8),
-        TableColumn("lines", "Lines", 6),
-    ]
-    rows = [{"name": i.name, "source": i.source, "lines": str(i.lines)} for i in items]
-    render_table(stdscr, y0 + 1, 0, h - 2, table_w, columns, rows,
-                 selected=state.project_selected, show_header=True)
-
-    # Preview: render the file content in the detail panel.
-    current = items[state.project_selected]
-    # Show first ~40 lines of content as detail rows (label/value pairs aren't ideal,
-    # but the panel is also OK with lines-mode).
-    fields: list[tuple[str, str]] = [
-        ("Source", current.source),
-        ("Path", current.path),
-        ("Lines", str(current.lines)),
-        ("─" * 10, ""),
-    ]
-    preview_lines = current.content.split("\n")[:40]
-    for i, ln in enumerate(preview_lines):
-        fields.append((f"{i + 1:3d}", ln))
-    render_detail_panel(stdscr, y0 + 1, preview_x, h - 2, preview_w,
-                        title=current.name, fields=fields, scroll=state.project_scroll)
-
-
 def handle_project_input(state: TuiState, key: int) -> Optional[str]:
     items = state.project_items or []
     n = len(items)
@@ -7385,12 +7340,24 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
 HELP_TEXT = """\
 axt TUI — keyboard reference
 
+Main tabs (resource axis)
+  1  Dashboard     Aggregate overview (this month so far)
+  2  Extensions    vault / plugins / skills / commands / agents / mcp / hooks / market
+  3  Context       Session context window analysis + Project files (scope=project)
+  4  Usage         Per-platform usage & cost — sub-tabs: All / Claude / Codex / Gemini / Cursor
+
+Global filters (apply to every tab)
+  p             Cycle Platform filter: All → Claude → Codex → Gemini → Cursor
+                (When non-All, the Usage sub-tab snaps to match.)
+  P             Toggle Scope filter:   Project ↔ All
+                (Scope=Project hides the per-project pane in Context tab when off.)
+
 Navigation
-  1–8           Jump to main tab (active tab has cyan background)
+  1–4           Jump to main tab (active tab has cyan background)
   ← / →         Previous / next within the focused layer
   ↑ / ↓         Move focus between layers (mainTab ↔ subTab ↔ content)
   Enter         Drop focus one layer down OR confirm an action
-  [ / ]         Extensions: previous / next sub-tab
+  [ / ]         Extensions / Usage: previous / next sub-tab
   Shift+Tab     Extensions: previous sub-tab (alt)
   Tab           Extensions (non-Vault): next sub-tab (alt)
   j / ↓         Move selection down (within a list)
@@ -7421,11 +7388,10 @@ Extensions sub-tab actions
   Commands/Agents: e=open source file in $EDITOR
   Hooks:        p=preview hook execution (scrollable modal)
 
-Cursor / Context / Project
-  Enter         Cursor: full commit preview. Project: file content preview.
-                Context: category source list preview.
-  e             Context: open first source file in $EDITOR.
-                Project: open selected file in $EDITOR.
+Context / Usage (Cursor sub-tab)
+  Enter         Context: category source list preview
+                Usage→Cursor: full commit preview
+  e             Context: open first source file in $EDITOR
 
 linked vs enabled (activation mechanism)
   skill / command / agent → "linked"   = SYMLINK at .claude/<type>s/<name>
@@ -7654,14 +7620,15 @@ def _tui_loop(stdscr) -> None:
             status = handle_extensions_input(state, key)
         elif tab_key == "context":
             status = handle_context_input(state, key)
-        elif tab_key == "project":
-            status = handle_project_input(state, key)
         elif tab_key == "dashboard":
             status = handle_dashboard_input(state, key)
-        elif tab_key in ("claude", "codex", "gemini"):
-            status = handle_usage_input(state, key, tab_key)
-        elif tab_key == "cursor":
-            status = handle_cursor_input(state, key)
+        elif tab_key == "usage":
+            sub = state.usage_sub_tab
+            if sub in ("claude", "codex", "gemini"):
+                status = handle_usage_input(state, key, sub)
+            elif sub == "cursor":
+                status = handle_cursor_input(state, key)
+            # sub == "all": no row selection on the aggregate view.
         else:
             handle_stub_input(state, key)
 
