@@ -770,18 +770,6 @@ def _kick_usage_reload(state: TuiState) -> None:
     t.start()
 
 
-def _ensure_usage_loaded(state: TuiState) -> None:
-    if state.usage_entries is not None:
-        return
-    config = load_config(AXT_CONFIG_PATH)
-    state.usage_config = config
-    now = datetime.now(timezone.utc)
-    month_start = f"{now.year}-{now.month:02d}-01"
-    state.usage_entries = load_unified_usage(
-        claude_projects_dir=PATHS.projects,
-        since=month_start,
-    )
-
 
 def _fmt_quota_eta(reset_at: Optional[datetime]) -> str:
     if not reset_at:
@@ -872,16 +860,26 @@ def _usage_period_card(entries: list[UnifiedUsageEntry], label: str) -> list[str
 
 
 def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
-    _ensure_usage_loaded(state)
+    # Snapshot entries *before* potentially kicking a reload so that the
+    # first-paint path always sees None and renders the loading line, even
+    # if the daemon thread completes between the kick and the read.
+    entries = state.usage_entries
+    # Kick the first-time background load. Idempotent — a second call
+    # while loading is a no-op.
+    if entries is None and not state.usage_loading:
+        _kick_usage_reload(state)
     config = state.usage_config or load_config(AXT_CONFIG_PATH)
-    entries = state.usage_entries or []
+    # `entries` can be None while the first load is in flight. The
+    # loading-vs-empty branches further down discriminate on that;
+    # everything that needs to iterate uses `entries_or_empty`.
+    entries_or_empty: list = entries if entries is not None else []
 
     safe_addnstr(stdscr, y0, 0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_HDR())
 
     # Plan label + monthly-budget progress bar. Always shown — plan info
     # is meaningful even with zero usage so far.
     row = y0 + 2
-    total_cost = sum(_entry_cost(e) for e in entries)
+    total_cost = sum(_entry_cost(e) for e in entries_or_empty)
     plan = config.plans.get("claude")
     plan_label = f"{plan.plan} (${plan.monthly_cost}/mo)" if plan else "—"
     safe_addnstr(stdscr, row, 2, fit_cells(f"Plan: {plan_label}", w - 4), w - 4, CP_HDR())
@@ -908,6 +906,9 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     row += _render_usage_gauges(stdscr, state, row, w)
     row += 1  # gap before period cards / "no data" message
 
+    if entries is None:
+        safe_addnstr(stdscr, row, 2, "Loading Claude usage…", w - 4, CP_DIM())
+        return
     if not entries:
         safe_addnstr(stdscr, row, 2, "No Claude usage data this month yet.", w - 4, CP_DIM())
         return

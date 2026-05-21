@@ -494,12 +494,17 @@ def _setup_isolated_paths(tmp_path, monkeypatch):
 
 
 def test_render_usage_claude_no_data(tmp_path, monkeypatch):
+    """Loaded-but-empty case: usage_entries == [] should show the
+    'No Claude usage data this month yet.' line, not the loading line."""
     _setup_isolated_paths(tmp_path, monkeypatch)
     state = axt.TuiState()
+    state.usage_entries = []                              # loaded, empty
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
     scr = _make_stdscr(rows=30, cols=120)
     axt.render_usage_tab(scr, state, 0, 28, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Claude" in flat
+    assert "No Claude usage data this month yet." in flat
+    assert "Loading Claude usage" not in flat
 
 
 def test_render_usage_tab_shows_context_5h_7d_gauges(tmp_path, monkeypatch):
@@ -1331,7 +1336,7 @@ def test_render_usage_tab_with_data_does_not_raise(monkeypatch):
     )
     state = axt.TuiState()
     state.usage_entries = [entry]
-    # Bypass _ensure_usage_loaded's load_config call by pre-seeding config.
+    # Pre-seed config to avoid a live load_config call.
     state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
 
     scr = _make_stdscr(rows=40, cols=140)
@@ -1655,3 +1660,23 @@ def test_kick_usage_reload_idempotent_while_loading(monkeypatch, tmp_path):
     gate.set()
     first_thread.join(timeout=2.0)
     assert state.usage_loading is False
+
+
+def test_render_usage_tab_shows_loading_when_entries_none(tmp_path, monkeypatch):
+    """First paint (usage_entries is None) should kick a background reload
+    and render the 'Loading Claude usage…' body line. Worker is stubbed so
+    the thread completes quickly."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", lambda **kw: [])
+
+    state = axt.TuiState()
+    assert state.usage_entries is None
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Loading Claude usage" in flat
+
+    # The worker may or may not have finished by the time we hit this
+    # assertion — either way usage_load_thread is set.
+    assert state.usage_load_thread is not None
+    state.usage_load_thread.join(timeout=2.0)
