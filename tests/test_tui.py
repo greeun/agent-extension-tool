@@ -376,12 +376,20 @@ def test_handle_vault_input_navigation():
     assert s.vault_selected == 1
 
 
-def test_handle_vault_input_filter_tab():
+def test_handle_vault_input_filter_shift_f():
+    s = axt.TuiState()
+    axt.handle_vault_input(s, ord("F"))
+    assert s.vault_filter == "skill"
+    axt.handle_vault_input(s, ord("F"))
+    assert s.vault_filter == "command"
+
+
+def test_handle_vault_input_tab_does_not_cycle_filter():
+    """Tab is reserved for sub-tab cycling at the parent level; the vault
+    handler must not consume it as a filter shortcut."""
     s = axt.TuiState()
     axt.handle_vault_input(s, 9)  # Tab
-    assert s.vault_filter == "skill"
-    axt.handle_vault_input(s, 9)
-    assert s.vault_filter == "command"
+    assert s.vault_filter == "all"
 
 
 def test_handle_vault_input_sort_cycle():
@@ -915,14 +923,15 @@ def test_subtab_tab_forward_on_non_vault():
     assert state.ext_sub_tab == "skills"
 
 
-def test_subtab_tab_on_vault_does_not_cycle():
-    """Vault's Tab is filter; it must NOT cycle sub-tabs."""
+def test_subtab_tab_on_vault_cycles_sub_tab():
+    """Tab is unified: even on Vault it advances to the next sub-tab and
+    leaves the vault filter untouched."""
     state = axt.TuiState()
     state.ext_sub_tab = "vault"
-    before = state.vault_filter
-    axt.handle_extensions_input(state, 9)  # Tab → vault handler → filter cycle
-    assert state.ext_sub_tab == "vault"
-    assert state.vault_filter != before  # filter cycled
+    before_filter = state.vault_filter
+    axt.handle_extensions_input(state, 9)  # Tab
+    assert state.ext_sub_tab != "vault"  # advanced to next sub-tab
+    assert state.vault_filter == before_filter  # filter NOT cycled
 
 
 def test_subtab_status_message_on_cycle():
@@ -965,10 +974,12 @@ def test_at_top_of_content_vault_at_zero():
     assert axt._at_top_of_content(state, "extensions") is False
 
 
-def test_at_top_of_content_usage_always_true():
-    """Usage has no selectable list — always counts as top."""
+def test_at_top_of_content_usage_respects_scroll():
+    """Usage scroll == 0 → top; scroll > 0 → not top."""
     state = axt.TuiState()
     assert axt._at_top_of_content(state, "usage") is True
+    state.usage_scroll = 1
+    assert axt._at_top_of_content(state, "usage") is False
 
 
 def test_subtab_bar_focus_attr_differs_from_unfocused(tmp_path):
@@ -1392,22 +1403,16 @@ def test_tab_has_sub_tab_only_extensions():
         assert axt.tab_has_sub_tab(k) is False
 
 
-def test_tab_has_focusable_content_excludes_usage():
-    s = axt.TuiState()
-    assert axt.tab_has_focusable_content(s, "usage") is False
-    assert axt.tab_has_focusable_content(s, "context") is True
-    assert axt.tab_has_focusable_content(s, "extensions") is True
-
-
-def test_usage_down_arrow_keeps_focus_on_main_tab():
-    """Repeated ↓ on Usage must NOT drop focus into an invisible
-    `content` layer — there's nothing to focus there."""
+def test_usage_down_arrow_keeps_focus_when_no_data(monkeypatch, tmp_path):
+    """With no usage data yet, ↓ on the Usage main tab should NOT descend
+    to the content layer (nothing to scroll)."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
     state = axt.TuiState()
-    state.tab_idx = _tab_idx("usage")
+    state.tab_idx = next(i for i, t in enumerate(axt.MAIN_TABS) if t[0] == "usage")
+    state.focused_layer = "mainTab"
     scr = _make_stdscr()
-    for _ in range(5):
-        consumed = axt._handle_layer_key(scr, state, curses.KEY_DOWN, "usage")
-        assert consumed is True
+    consumed = axt._handle_layer_key(scr, state, curses.KEY_DOWN, "usage")
+    assert consumed is True
     assert state.focused_layer == "mainTab"
 
 
@@ -1723,3 +1728,33 @@ def test_has_background_work_tracks_usage_loading():
     assert axt._has_background_work(state) is False
     state.usage_loading = True
     assert axt._has_background_work(state) is True
+
+
+def test_tui_state_has_usage_scroll_field():
+    s = axt.TuiState()
+    assert s.usage_scroll == 0
+
+
+def test_tab_has_focusable_content_usage_with_data():
+    state = axt.TuiState()
+    state.usage_entries = [object()]   # any non-empty list
+    state.usage_loading = False
+    assert axt.tab_has_focusable_content(state, "usage") is True
+
+
+def test_tab_has_focusable_content_usage_without_data():
+    state = axt.TuiState()
+    state.usage_entries = None
+    assert axt.tab_has_focusable_content(state, "usage") is False
+    state.usage_entries = []
+    assert axt.tab_has_focusable_content(state, "usage") is False
+    state.usage_entries = [object()]
+    state.usage_loading = True
+    assert axt.tab_has_focusable_content(state, "usage") is False
+
+
+def test_at_top_of_content_usage_respects_scroll_new():
+    state = axt.TuiState()
+    assert axt._at_top_of_content(state, "usage") is True
+    state.usage_scroll = 1
+    assert axt._at_top_of_content(state, "usage") is False

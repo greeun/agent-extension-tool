@@ -96,6 +96,10 @@ class TuiState:
     # `usage_loading` is True so the next frame picks up the result.
     usage_loading: bool = False
     usage_load_thread: Optional[Any] = None  # threading.Thread, kept generic
+    # Viewport scroll offset (lines, not pixels). Bumped by j/k/PgUp/PgDn
+    # in `handle_usage_input` and clamped by `render_usage_tab` against
+    # the actual line-buffer length.
+    usage_scroll: int = 0
 
     # Context tab.
     context_analysis: Optional[Any] = None
@@ -377,7 +381,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     filtered = _vault_filtered(state)
     if not filtered:
         safe_addnstr(stdscr, y0 + 2, 2, "Vault is empty or no items match the current filter.", w - 4, CP_DIM())
-        safe_addnstr(stdscr, y0 + 4, 2, "Press `m` to migrate global extensions, or `Tab` to change filter.", w - 4, CP_DIM())
+        safe_addnstr(stdscr, y0 + 4, 2, "Press `m` to migrate global extensions, or `F` to change filter.", w - 4, CP_DIM())
         return
 
     state.vault_selected = max(0, min(state.vault_selected, len(filtered) - 1))
@@ -534,7 +538,7 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         state.vault_selected = min(n - 1, state.vault_selected + 10) if n else 0
     elif key == curses.KEY_PPAGE:
         state.vault_selected = max(0, state.vault_selected - 10)
-    elif key == KEY_TAB:
+    elif key == ord("F"):
         i = _VAULT_FILTERS.index(state.vault_filter)
         state.vault_filter = _VAULT_FILTERS[(i + 1) % len(_VAULT_FILTERS)]
         state.vault_selected = 0
@@ -1564,18 +1568,22 @@ def tab_has_sub_tab(tab_key: str) -> bool:
 
 
 def tab_has_focusable_content(state: TuiState, tab_key: str) -> bool:
-    """True if the tab body has selectable rows / focusable elements.
+    """True if the tab body has selectable rows / scrollable content.
 
-    Usage is a read-only summary view with no cursor, so it should
-    NOT accept the `content` focus layer — ↓ from mainTab is a no-op
-    on it. Extensions always counts as focusable (its sub-tabs delegate
-    to lists). Context has a list of context sources.
+    Extensions: always focusable (sub-tabs delegate to lists).
+    Context: list of context sources.
+    Usage: focusable while there is loaded data to scroll. During
+    loading or the empty-this-month state the body is one line, so
+    descending into `content` would have nothing to do.
     """
-    del state  # reserved for future stateful checks (e.g. empty list)
     if tab_key == "extensions":
         return True
     if tab_key == "context":
         return True
+    if tab_key == "usage":
+        if state.usage_loading:
+            return False
+        return bool(state.usage_entries)
     return False
 
 
@@ -1601,7 +1609,9 @@ def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
         return state.ext_selected.get(state.ext_sub_tab, 0) == 0
     if tab_key == "context":
         return state.context_selected == 0
-    # Tabs without a selection (Usage) always count as "top".
+    if tab_key == "usage":
+        return state.usage_scroll == 0
+    # Other tabs without a selection — treat as top.
     return True
 
 
@@ -1612,7 +1622,7 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
       [           previous sub-tab
       ]           next sub-tab
       Shift+Tab   previous (KEY_BTAB)
-      Tab         next — ONLY on non-Vault sub-tabs (Vault's Tab is filter)
+      Tab         next
     """
     if key == ord("["):
         _cycle_sub_tab(state, -1)
@@ -1623,8 +1633,7 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
     if key == curses.KEY_BTAB:  # Shift+Tab
         _cycle_sub_tab(state, -1)
         return f"Sub-tab: {state.ext_sub_tab}"
-    if key == KEY_TAB and state.ext_sub_tab != "vault":
-        # Vault's Tab is the filter cycler; only intercept Tab elsewhere.
+    if key == KEY_TAB:
         _cycle_sub_tab(state, 1)
         return f"Sub-tab: {state.ext_sub_tab}"
     if key == ord("r"):
