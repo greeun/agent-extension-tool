@@ -763,12 +763,18 @@ def _kick_usage_reload(state: TuiState) -> None:
                 claude_projects_dir=PATHS.projects,
                 since=month_start,
             )
+            # Prime the context cache too — `_render_usage_gauges` reads
+            # `state.context_analysis` and we don't want a synchronous
+            # filesystem scan blocking the first paint.
+            if state.context_analysis is None:
+                state.context_analysis = analyze_context(
+                    home_dir=HOME,
+                    project_dir=Path.cwd(),
+                    installed_plugins_path=PATHS.installed_plugins,
+                    model="claude-opus-4-6",
+                )
             state.usage_config = config
             state.usage_entries = entries
-            # Only clear the status if it still says we're loading. The
-            # user may have switched tabs and triggered an unrelated
-            # status message between kick-off and completion — don't
-            # clobber it.
             if state.status == "Loading Claude usage…":
                 state.status = ""
         finally:

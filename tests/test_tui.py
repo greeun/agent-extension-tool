@@ -1759,3 +1759,45 @@ def test_tab_has_focusable_content_usage_without_data():
     state.usage_entries = [object()]
     state.usage_loading = True
     assert axt.tab_has_focusable_content(state, "usage") is False
+
+
+def test_kick_usage_reload_primes_context_analysis(monkeypatch, tmp_path):
+    """The Usage worker should also run analyze_context so the first paint
+    after data appears does not trigger a synchronous filesystem scan."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", lambda **kw: [])
+
+    stub_analysis = object()
+    calls = []
+    def fake_analyze(**kw):
+        calls.append(kw)
+        return stub_analysis
+    monkeypatch.setattr("axt.tui.tabs.analyze_context", fake_analyze)
+
+    state = axt.TuiState()
+    assert state.context_analysis is None
+    axt._kick_usage_reload(state)
+    if state.usage_load_thread is not None:
+        state.usage_load_thread.join(timeout=2.0)
+
+    assert state.context_analysis is stub_analysis
+    assert len(calls) == 1
+
+
+def test_kick_usage_reload_skips_context_if_already_loaded(monkeypatch, tmp_path):
+    """If state.context_analysis is already populated, the worker should
+    NOT re-run analyze_context."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", lambda **kw: [])
+
+    calls = []
+    monkeypatch.setattr("axt.tui.tabs.analyze_context",
+                        lambda **kw: calls.append(kw) or object())
+
+    state = axt.TuiState()
+    state.context_analysis = object()  # pretend already loaded
+    axt._kick_usage_reload(state)
+    if state.usage_load_thread is not None:
+        state.usage_load_thread.join(timeout=2.0)
+    assert calls == []
