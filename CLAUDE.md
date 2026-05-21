@@ -62,7 +62,7 @@ axt/                    → Package
 pyproject.toml          → Package metadata; entry = axt:main
 README.md               → User-facing install/usage doc
 DESIGN.md               → Rationale for the cst-style rewrite + Phase-C package split
-FEATURES.md             → Feature inventory (35 subcommands, 4 main TUI tabs + Scope filter)
+FEATURES.md             → Feature inventory (35 subcommands, 3 main TUI tabs + Scope filter)
 SKILL.md                → Claude Skill manifest exposing axt to Claude Code
 tests/                  → pytest suite, one test_*.py per domain (paths, json_io,
                           settings, vault, marketplace, plugin, skill, mcp,

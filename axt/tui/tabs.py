@@ -47,6 +47,7 @@ from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
     _safe_read_text,
     _today_in_tz,
     _ts_ms,
+    _type_to_dir,
     _unified_to_claude,
 )
 
@@ -86,19 +87,15 @@ class TuiState:
     ext_cache: dict[str, Any] = field(default_factory=dict)
     ext_selected: dict[str, int] = field(default_factory=dict)
 
-    # Global filter — applies to every tab uniformly.
-    # Scope axis: "project" (current cwd only) | "all" (project + global)
-    scope_filter: str = "project"
-
-    # Dashboard / usage data caches (None = not loaded yet).
-    dashboard_entries: Optional[list] = None
-    dashboard_config: Optional[Any] = None
+    # Usage data caches (None = not loaded yet).
     usage_entries: Optional[list] = None
     usage_config: Optional[Any] = None
 
     # Context tab.
     context_analysis: Optional[Any] = None
     context_selected: int = 0
+    # Toggle the bottom "Project files" pane on the Context tab (P key, tab-local).
+    context_show_project: bool = True
 
     # Project tab.
     project_items: Optional[list] = None
@@ -273,25 +270,7 @@ def _vault_apply_pending(state: TuiState) -> str:
     return f"Applied {applied}" + (f", {errors} errors" if errors else "")
 
 
-def filter_vault_items_by_scope(items: list[VaultItem], scope: str) -> list[VaultItem]:
-    """Apply the global Scope filter to a list of vault items.
-
-    scope='project': keep items that are active for the current cwd — either
-                      linked at project level or globally enabled (and thus
-                      visible from any project).
-    scope='all'    : pass everything through unchanged.
-    """
-    if scope == "project":
-        return [i for i in items if i.is_linked or i.is_global_linked]
-    return list(items)
-
-
 def _vault_filtered(state: TuiState) -> list[VaultItem]:
-    # NOTE: the global Scope filter (state.scope_filter) is *not* applied here.
-    # Vault is the machine-level inventory; hiding unlinked items would break
-    # the import/link workflow. Use `filter_vault_items_by_scope()` from other
-    # extension sub-tabs (plugins/skills/commands/agents) where the
-    # activation-vs-installed distinction matters.
     items = state.vault_items
     if state.vault_filter != "all":
         items = [i for i in items if i.type == state.vault_filter]
@@ -435,11 +414,17 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
             if state.vault_usage_index and f"{item.type}:{item.name}" in state.vault_usage_index
             else 0
         )
+        if item.in_vault:
+            vault_cell = "✓"
+        elif item.is_global_linked:
+            vault_cell = "glob*"
+        else:
+            vault_cell = "proj*"
         rows.append({
             "no": str(i + 1),
             "name": item.name,
             "type": item.type,
-            "vault": "✓" if item.in_vault else "global*",
+            "vault": vault_cell,
             "project": proj_cell,
             "global": glob_cell,
             "used": f"{used_count} proj" if used_count else "─",
@@ -458,7 +443,12 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
 
     # Detail panel.
     current = filtered[state.vault_selected]
-    vault_status = "in vault" if current.in_vault else "global only (press `i` to import)"
+    if current.in_vault:
+        vault_status = "in vault"
+    elif current.is_global_linked:
+        vault_status = "global only (press `i` to import)"
+    else:
+        vault_status = "project only (press `i` to import)"
     # Naming differs by activation mechanism (see _activation_term docstring).
     activation_kind = "enabledPlugins" if current.type == "plugin" else "symlink"
     detail_fields: list[tuple[str, str]] = [
@@ -565,7 +555,34 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
             state.vault_pending_global.add(current.name)
         return None
     elif is_enter(key) and (state.vault_pending_project or state.vault_pending_global):
-        return _vault_apply_pending(state)
+        # Ask before committing pending toggles to disk. When no stdscr is
+        # available (tests, headless) fall back to direct apply.
+        cb = state.stdscr_callbacks
+        stdscr = cb.get("stdscr") if cb else None
+        if stdscr is None:
+            return _vault_apply_pending(state)
+        items_by_name = {i.name: i for i in state.vault_items}
+
+        def _lines(names: set[str], linked_attr: str) -> list[str]:
+            out = []
+            for name in sorted(names):
+                item = items_by_name.get(name)
+                if not item:
+                    continue
+                arrow = "unlink" if getattr(item, linked_attr, False) else "link"
+                out.append(f"  - {arrow} {item.type}:{name}")
+            return out
+
+        msg_lines = ["Apply pending changes?"]
+        if state.vault_pending_project:
+            msg_lines.append(f"Project ({len(state.vault_pending_project)}):")
+            msg_lines.extend(_lines(state.vault_pending_project, "is_linked"))
+        if state.vault_pending_global:
+            msg_lines.append(f"Global ({len(state.vault_pending_global)}):")
+            msg_lines.extend(_lines(state.vault_pending_global, "is_global_linked"))
+        if confirm_modal(stdscr, "\n".join(msg_lines), title="Confirm apply"):
+            return _vault_apply_pending(state)
+        return "Cancelled"
     elif is_enter(key) and current:
         # No pending changes → drop focus into the detail panel for scrolling.
         state.vault_detail_focused = True
@@ -576,10 +593,21 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         state.vault_pending_global.clear()
         return "Discarded pending changes"
     elif key == ord("i") and current and not current.in_vault:
+        was_project_local = (not current.is_global_linked) and current.is_linked
         try:
             import_to_vault(PATHS.claude_dir, PATHS.vault, current)
+            if was_project_local:
+                # The symlink at `<project>/.claude/<sub>/<name>` is already
+                # in place (left behind by import_to_vault). Record the link
+                # in `.axt-profile.json` so `sync_project` won't later treat
+                # it as an orphan and unlink it.
+                sub = _type_to_dir(current.type)
+                profile = read_profile(Path.cwd()) or empty_profile()
+                profile = profile.with_added(sub, current.name)
+                write_profile(Path.cwd(), profile)
             _vault_load(state)
-            return f"Imported {current.name!r} to vault"
+            origin = "project-local" if was_project_local else "global"
+            return f"Imported {current.name!r} ({origin}) to vault"
         except (OSError, ValueError, FileExistsError) as e:
             return f"Import failed: {e}"
     elif key == ord("f"):
@@ -700,84 +728,6 @@ def _daily_costs(entries: list[UnifiedUsageEntry], days: int, tz: str) -> list[t
     return dates
 
 
-# ─── Dashboard tab ───────────────────────────────────────────────────────────
-
-
-def _ensure_dashboard_loaded(state: TuiState) -> None:
-    if state.dashboard_entries is not None:
-        return
-    config = load_config(AXT_CONFIG_PATH)
-    state.dashboard_config = config
-    now = datetime.now()
-    month_start = f"{now.year}-{now.month:02d}-01"
-    state.dashboard_entries = load_unified_usage(
-        claude_projects_dir=PATHS.projects,
-        since=month_start,
-    )
-
-
-def render_dashboard_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
-    _ensure_dashboard_loaded(state)
-    config = state.dashboard_config or load_config(AXT_CONFIG_PATH)
-    entries = state.dashboard_entries or []
-
-    header = " Dashboard — this month so far"
-    safe_addnstr(stdscr, y0, 0, fit_cells(header, w - 1), w - 1, CP_HDR())
-    if not entries:
-        safe_addnstr(stdscr, y0 + 2, 2, "No usage data this month yet.", w - 4, CP_DIM())
-        return
-
-    # Claude summary line.
-    row = y0 + 2
-    total_cost = sum(_entry_cost(e) for e in entries)
-    plan = config.plans.get("claude")
-    plan_label = f"{plan.plan} (${plan.monthly_cost}/mo)" if plan else "—"
-    in_t = sum(e.input_tokens for e in entries)
-    out_t = sum(e.output_tokens for e in entries)
-    cr_t = sum(e.cache_read_tokens for e in entries)
-    line = (
-        f"{'Claude':9s}  {plan_label:24s}  "
-        f"cost={format_cost(total_cost, config.exchange_rate):26s}  "
-        f"in={format_tokens(in_t):>7s}  out={format_tokens(out_t):>7s}  cache_r={format_tokens(cr_t):>7s}"
-    )
-    safe_addnstr(stdscr, row, 2, fit_cells(line, w - 4), w - 4, 0)
-    row += 1
-
-    # Total + monthly budget bar.
-    row += 1
-    safe_addnstr(stdscr, row, 2, fit_cells(f"Total: {format_cost(total_cost, config.exchange_rate)}", w - 4), w - 4, CP_HDR())
-    row += 1
-    if config.monthly_budget > 0:
-        bar_w = min(40, w - 30)
-        pct = min(total_cost / config.monthly_budget, 1.5)
-        filled = round(min(pct, 1) * bar_w)
-        bar = render_bar(filled, bar_w)
-        label = f"${total_cost:.2f}/${config.monthly_budget} ({pct * 100:.0f}%)"
-        if pct >= 1:
-            text, attr = f"{bar} {label} ⛔", CP_ERR()
-        elif pct >= 0.8:
-            text, attr = f"{bar} {label} ⚠", CP_HDR()
-        else:
-            text, attr = f"{bar} {label}", CP_OK()
-        safe_addnstr(stdscr, row, 2, fit_cells(text, w - 4), w - 4, attr)
-        row += 1
-
-    # 14-day BarChart.
-    row += 2
-    safe_addnstr(stdscr, row, 2, "Last 14 days (daily cost):", w - 4, CP_HDR())
-    row += 1
-    chart_data = _daily_costs(entries, 14, config.timezone)
-    chart_rows = render_bar_chart(stdscr, row, 4, w - 8, chart_data)
-    row += chart_rows
-
-
-def handle_dashboard_input(state: TuiState, key: int) -> Optional[str]:
-    if key == ord("r"):
-        state.dashboard_entries = None
-        return "Refreshed"
-    return None
-
-
 # ─── Usage tab (Claude-only) ─────────────────────────────────────────────────
 
 
@@ -792,6 +742,78 @@ def _ensure_usage_loaded(state: TuiState) -> None:
         claude_projects_dir=PATHS.projects,
         since=month_start,
     )
+
+
+def _fmt_quota_eta(reset_at: Optional[datetime]) -> str:
+    if not reset_at:
+        return "—"
+    secs = int((reset_at - datetime.now(timezone.utc)).total_seconds())
+    if secs <= 0:
+        return "now"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h {(secs % 3600) // 60}m"
+    return f"{secs // 86400}d {(secs % 86400) // 3600}h"
+
+
+def _gauge_attr(pct: float) -> int:
+    if pct >= 90:
+        return CP_ERR()
+    if pct >= 60:
+        return CP_INFO()
+    return CP_OK()
+
+
+def _render_usage_gauges(stdscr, state: TuiState, y: int, w: int) -> int:
+    """Three gauge bars on the usage tab: context window, 5h, 7d.
+
+    Returns the number of rows drawn so the caller can advance ``row``.
+    """
+    _ensure_context_loaded(state)
+    analysis = state.context_analysis
+    rl = read_rate_limits(PATHS.usage_snapshot)
+
+    bar_w = min(30, max(10, w - 40))
+    label_w = 10
+    rows_used = 0
+
+    if analysis is not None and analysis.context_window_size > 0:
+        pct = analysis.used_percent
+        filled = round(min(pct, 100) / 100 * bar_w)
+        bar = render_bar(filled, bar_w)
+        used_tok = format_tokens(analysis.total_tokens)
+        win_tok = format_tokens(analysis.context_window_size)
+        safe_addnstr(stdscr, y + rows_used, 2, fit_cells(
+            f"{'Context:':<{label_w}}{bar} {pct:5.1f}%  {used_tok}/{win_tok} tokens",
+            w - 4), w - 4, _gauge_attr(pct))
+        rows_used += 1
+
+    if rl is None:
+        safe_addnstr(stdscr, y + rows_used, 2,
+                     "Rate limits: snapshot missing or stale",
+                     w - 4, CP_DIM())
+        rows_used += 1
+        return rows_used
+
+    if rl.five_hour is not None:
+        pct = float(rl.five_hour)
+        filled = round(pct / 100 * bar_w)
+        bar = render_bar(filled, bar_w)
+        safe_addnstr(stdscr, y + rows_used, 2, fit_cells(
+            f"{'5h:':<{label_w}}{bar} {rl.five_hour:3d}%    reset in {_fmt_quota_eta(rl.five_hour_reset_at)}",
+            w - 4), w - 4, _gauge_attr(pct))
+        rows_used += 1
+    if rl.seven_day is not None:
+        pct = float(rl.seven_day)
+        filled = round(pct / 100 * bar_w)
+        bar = render_bar(filled, bar_w)
+        safe_addnstr(stdscr, y + rows_used, 2, fit_cells(
+            f"{'7d:':<{label_w}}{bar} {rl.seven_day:3d}%    reset in {_fmt_quota_eta(rl.seven_day_reset_at)}",
+            w - 4), w - 4, _gauge_attr(pct))
+        rows_used += 1
+
+    return rows_used
 
 
 def _usage_period_card(entries: list[UnifiedUsageEntry], label: str) -> list[str]:
@@ -817,8 +839,38 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
 
     safe_addnstr(stdscr, y0, 0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_HDR())
 
+    # Plan label + monthly-budget progress bar. Always shown — plan info
+    # is meaningful even with zero usage so far.
+    row = y0 + 2
+    total_cost = sum(_entry_cost(e) for e in entries)
+    plan = config.plans.get("claude")
+    plan_label = f"{plan.plan} (${plan.monthly_cost}/mo)" if plan else "—"
+    safe_addnstr(stdscr, row, 2, fit_cells(f"Plan: {plan_label}", w - 4), w - 4, CP_HDR())
+    row += 1
+    if config.monthly_budget > 0:
+        bar_w = min(40, max(10, w - 30))
+        pct = min(total_cost / config.monthly_budget, 1.5)
+        filled = round(min(pct, 1) * bar_w)
+        bar = render_bar(filled, bar_w)
+        label = f"${total_cost:.2f}/${config.monthly_budget} ({pct * 100:.0f}%)"
+        if pct >= 1:
+            text, attr = f"{bar} {label} ⛔", CP_ERR()
+        elif pct >= 0.8:
+            text, attr = f"{bar} {label} ⚠", CP_HDR()
+        else:
+            text, attr = f"{bar} {label}", CP_OK()
+        safe_addnstr(stdscr, row, 2, fit_cells(text, w - 4), w - 4, attr)
+        row += 1
+    row += 1  # gap before gauges
+
+    # Context window + 5h/7d plan-limit gauges. Always shown (rate-limit
+    # snapshot missing → single dim row) so users see the meters even before
+    # the first message of the month.
+    row += _render_usage_gauges(stdscr, state, row, w)
+    row += 1  # gap before period cards / "no data" message
+
     if not entries:
-        safe_addnstr(stdscr, y0 + 2, 2, "No Claude usage data this month yet.", w - 4, CP_DIM())
+        safe_addnstr(stdscr, row, 2, "No Claude usage data this month yet.", w - 4, CP_DIM())
         return
 
     tz = config.timezone
@@ -829,7 +881,6 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     week_entries = [e for e in entries if _date_in_tz(e.timestamp, tz) >= week_ago]
     month_entries = entries
 
-    row = y0 + 2
     for label, eps in (("Today", today_entries), ("Week", week_entries), ("Month", month_entries)):
         for line in _usage_period_card(eps, label):
             safe_addnstr(stdscr, row, 2, fit_cells(line, w - 4), w - 4, 0)
@@ -870,15 +921,6 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         f"  top model by tokens:                          "
         f"{insights['top_model'] or '—'}",
         w - 4), w - 4, 0)
-    row += 1
-    # Plan-limit row (5h / 7d) if we have the snapshot.
-    rl = read_rate_limits(PATHS.usage_snapshot)
-    if rl is not None:
-        five = f"{rl.five_hour}%" if rl.five_hour is not None else "—"
-        seven = f"{rl.seven_day}%" if rl.seven_day is not None else "—"
-        safe_addnstr(stdscr, row, 2, fit_cells(
-            f"  plan limits:  5h={five}  7d={seven}",
-            w - 4), w - 4, CP_INFO())
 
 
 def _compute_simple_insights(entries: list[ClaudeUsageEntry]) -> dict[str, Any]:
@@ -1103,9 +1145,9 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
     # Reserve 2 rows at the bottom: cost line + spacing.
     body_h = max(1, h - (y_body - y0) - 2)
 
-    # When scope=project, split the body between sources (top) and project
-    # files (bottom). When scope=all, sources fill the whole body.
-    show_project = (state.scope_filter == "project")
+    # The bottom "Project files" pane is toggled by P (tab-local). When off,
+    # context sources fill the whole body.
+    show_project = state.context_show_project
     project_h = max(6, body_h // 3) if show_project else 0
     sources_h = max(1, body_h - project_h)
 
@@ -1466,16 +1508,39 @@ def _cycle_sub_tab(state: TuiState, direction: int) -> None:
     state.ext_sub_tab = EXTENSION_SUB_TABS[(i + direction) % len(EXTENSION_SUB_TABS)][0]
 
 
-_SCOPE_FILTER_ORDER: tuple[str, ...] = ("project", "all")
+def tab_has_sub_tab(tab_key: str) -> bool:
+    """True if the tab owns a sub-tab bar (Extensions is the only one today).
+    Drives whether ↓ from mainTab should land on the subTab layer."""
+    return tab_key == "extensions"
 
 
-def cycle_scope_filter(state: TuiState, direction: int) -> None:
-    """Toggle `state.scope_filter` between project and all."""
-    try:
-        i = _SCOPE_FILTER_ORDER.index(state.scope_filter)
-    except ValueError:
-        i = 0
-    state.scope_filter = _SCOPE_FILTER_ORDER[(i + direction) % len(_SCOPE_FILTER_ORDER)]
+def tab_has_focusable_content(state: TuiState, tab_key: str) -> bool:
+    """True if the tab body has selectable rows / focusable elements.
+
+    Usage is a read-only summary view with no cursor, so it should
+    NOT accept the `content` focus layer — ↓ from mainTab is a no-op
+    on it. Extensions always counts as focusable (its sub-tabs delegate
+    to lists). Context has a list of context sources.
+    """
+    del state  # reserved for future stateful checks (e.g. empty list)
+    if tab_key == "extensions":
+        return True
+    if tab_key == "context":
+        return True
+    return False
+
+
+def sub_tab_has_focusable_content(state: TuiState, sub_key: str) -> bool:
+    """True if the active Extensions sub-tab body has selectable rows.
+
+    Mirrors tab_has_focusable_content for the second focus layer: when the
+    sub-tab body is empty (e.g. "No plugins found." or zero vault items),
+    descending from subTab into `content` would silently swallow focus, so
+    the loop keeps focus on subTab instead.
+    """
+    if sub_key == "vault":
+        return len(state.vault_items) > 0
+    return bool(state.ext_cache.get(sub_key))
 
 
 def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
@@ -1487,7 +1552,7 @@ def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
         return state.ext_selected.get(state.ext_sub_tab, 0) == 0
     if tab_key == "context":
         return state.context_selected == 0
-    # Tabs without a selection (dashboard, usage) always count as "top".
+    # Tabs without a selection (Usage) always count as "top".
     return True
 
 
@@ -1730,14 +1795,12 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
 
 # Dispatch tables: tab key → renderer / handler. Keep in sync with MAIN_TABS.
 TAB_RENDERERS: dict[str, Callable[..., None]] = {
-    "dashboard":  render_dashboard_tab,
     "extensions": render_extensions_tab,
     "context":    render_context_tab,
     "usage":      render_usage_tab,
 }
 
 TAB_HANDLERS: dict[str, Callable[..., Optional[str]]] = {
-    "dashboard":  handle_dashboard_input,
     "extensions": handle_extensions_input,
     "context":    handle_context_input,
     "usage":      handle_usage_input,

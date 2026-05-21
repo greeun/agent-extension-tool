@@ -1454,16 +1454,97 @@ def _list_global_non_vault_items(global_dir: Path, vault_dir: Path) -> list[Vaul
     return out
 
 
+def _list_project_non_vault_items(
+    project_dir: Path, vault_dir: Path, global_dir: Optional[Path] = None,
+) -> list[VaultItem]:
+    """Items present in `<project>/.claude/<sub>/` but NOT in the vault and
+    NOT already shadowed by a same-name item in the global tree.
+
+    Used to surface project-local skills/commands/agents as import candidates
+    in the Vault tab — these are real files inside the project directory that
+    have never been promoted to the vault. Symlinks are skipped because they
+    are already pointing into the vault (or some other resolved location) and
+    should not be presented as fresh import candidates.
+    """
+    vault_items = list_vault_items(vault_dir)
+    skip_by_type: dict[str, set[str]] = {}
+    for v in vault_items:
+        skip_by_type.setdefault(v.type, set()).add(v.name)
+    if global_dir is not None:
+        for sub, item_type in (("skills", "skill"), ("commands", "command"), ("agents", "agent")):
+            gd = Path(global_dir) / sub
+            if not gd.exists() or not gd.is_dir():
+                continue
+            try:
+                for entry in gd.iterdir():
+                    if entry.name.startswith("."):
+                        continue
+                    skip_by_type.setdefault(item_type, set()).add(entry.name)
+            except OSError:
+                continue
+
+    out: list[VaultItem] = []
+    for sub, item_type in (("skills", "skill"), ("commands", "command"), ("agents", "agent")):
+        d = Path(project_dir) / ".claude" / sub
+        if not d.exists() or not d.is_dir():
+            continue
+        try:
+            entries = sorted(d.iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        skip_names = skip_by_type.get(item_type, set())
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            if entry.name in skip_names:
+                continue
+            # Symlinks here typically resolve to a vault target or another
+            # already-managed location — not an import candidate.
+            if entry.is_symlink():
+                continue
+            try:
+                entry.stat()
+            except OSError:
+                continue
+            if item_type == "skill":
+                if not entry.is_dir():
+                    continue
+            else:
+                if not (entry.is_file() and entry.suffix == ".md"):
+                    continue
+            created, updated = _stat_times(entry)
+            out.append(
+                VaultItem(
+                    name=entry.name,
+                    type=item_type,
+                    path=str(entry),
+                    description=_read_description_for_item(entry, item_type),
+                    is_linked=True,         # lives inside the current project
+                    is_global_linked=False,
+                    in_vault=False,
+                    created_at=created,
+                    updated_at=updated,
+                )
+            )
+    return out
+
+
 def import_to_vault(
     global_dir: os.PathLike[str] | str,
     vault_dir: os.PathLike[str] | str,
     item: VaultItem,
 ) -> None:
-    """Move a global item into the vault and leave a symlink behind."""
+    """Move an item into the vault and leave a symlink behind.
+
+    Source location is taken from ``item.path`` so this supports both
+    ``~/.claude/<sub>/`` (global) and ``<project>/.claude/<sub>/`` sources.
+    The ``global_dir`` argument is retained for API compatibility but is no
+    longer required to locate the source.
+    """
     if item.type == "plugin":
         raise ValueError("Plugins cannot be imported to vault.")
     sub = _type_to_dir(item.type)
-    src_path = Path(global_dir) / sub / item.name
+    src_path = Path(item.path) if item.path else (Path(global_dir) / sub / item.name)
     dest_path = Path(vault_dir) / sub / item.name
     (Path(vault_dir) / sub).mkdir(parents=True, exist_ok=True)
 
@@ -1615,6 +1696,12 @@ def list_vault_items_with_project_state(
             lp = claude_dir / sub / g.name
             g.is_linked = lp.is_symlink() if lp.exists() or lp.is_symlink() else False
         items += global_items
+
+    # Project-local items: real files inside the current project that have
+    # never been promoted to the vault. These appear in the Vault tab so the
+    # user can `i`-import them in one keystroke (move into vault + leave a
+    # symlink at the original project location + record in `.axt-profile.json`).
+    items += _list_project_non_vault_items(pd, Path(vault_dir), global_dir=gd)
 
     return items
 

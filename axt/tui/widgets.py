@@ -160,7 +160,6 @@ def is_quit(k: int) -> bool:
 # Main tabs in display order. Index is also their 1-based keyboard shortcut.
 MAIN_TABS: tuple[tuple[str, str, str], ...] = (
     # (key, short label, long label)
-    ("dashboard",  "Dash", "Dashboard"),
     ("extensions", "Ext",  "Extensions"),
     ("context",    "Ctx",  "Context"),
     ("usage",      "Use",  "Usage"),
@@ -213,29 +212,6 @@ def render_tab_bar(stdscr, y: int, x: int, w: int, active_idx: int, focused: boo
         cur += cell_width(cell)
     if cur < tab_limit:
         safe_addnstr(stdscr, y, cur, " " * (tab_limit - cur), tab_limit - cur, CP_DIM())
-
-
-_SCOPE_CHIP_LABEL: dict[str, str] = {"project": "Project", "all": "All"}
-
-
-def render_filter_chips(stdscr, y: int, x: int, w: int, scope: str) -> None:
-    """Render the Scope filter chip on the header line.
-
-    Layout:  `Scope: [Project]`  (left-aligned, single row)
-
-    A chip whose value is the default (`project`) renders dim — it carries
-    no information. A non-default chip renders BOLD cyan so the user can
-    see at a glance that the view is filtered.
-    """
-    scope_label = _SCOPE_CHIP_LABEL.get(scope, scope.title())
-    scope_attr = CP_CYAN() | curses.A_BOLD if scope != "project" else CP_DIM()
-
-    cur = x
-    label = "Scope: "
-    safe_addnstr(stdscr, y, cur, label, w - (cur - x), CP_DIM())
-    cur += cell_width(label)
-    chip = f"[{scope_label}]"
-    safe_addnstr(stdscr, y, cur, chip, w - (cur - x), scope_attr)
 
 
 @dataclass
@@ -428,28 +404,6 @@ def render_status_bar(stdscr, y: int, w: int, shortcuts: str, status: str = "") 
     if status:
         text = f"{status}  │  {shortcuts}" if len(status) + 3 + len(shortcuts) < w else status
     safe_addnstr(stdscr, y, 0, fit_cells(text, w - 1), w - 1, CP_DIM())
-
-
-def show_modal(stdscr, message: str, title: str = "axt") -> None:
-    """Centered modal with the given message. Press any key to dismiss."""
-    h, w = stdscr.getmaxyx()
-    lines = message.split("\n")
-    box_w = min(w - 4, max(40, max(cell_width(l) for l in lines) + 4))
-    box_h = min(h - 4, len(lines) + 4)
-    y0 = max(0, (h - box_h) // 2)
-    x0 = max(0, (w - box_w) // 2)
-    try:
-        win = curses.newwin(box_h, box_w, y0, x0)
-    except curses.error:
-        return
-    win.keypad(True)
-    win.box()
-    safe_addnstr(win, 0, max(2, (box_w - cell_width(title) - 2) // 2), f" {title} ", box_w - 4, CP_HDR())
-    for i, line in enumerate(lines):
-        safe_addnstr(win, 2 + i, 2, fit_cells(line, box_w - 4), box_w - 4, 0)
-    safe_addnstr(win, box_h - 2, 2, fit_cells(" Press any key… ", box_w - 4), box_w - 4, CP_DIM())
-    win.refresh()
-    win.getch()
 
 
 def confirm_modal(stdscr, message: str, *, title: str = "Confirm") -> bool:

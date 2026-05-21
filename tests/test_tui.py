@@ -27,44 +27,16 @@ def _make_stdscr(rows: int = 30, cols: int = 120):
     return scr
 
 
-def test_main_tabs_collapsed_to_four_resource_types():
-    """After reorganization, top-level tabs are resource-axis only."""
+def test_main_tabs_three_resource_types():
+    """Top-level tabs after Dashboard was folded into Usage."""
     keys = [t[0] for t in axt.MAIN_TABS]
-    assert keys == ["dashboard", "extensions", "context", "usage"]
+    assert keys == ["extensions", "context", "usage"]
 
 
-def test_tui_state_defaults_scope_project():
-    """Per design: Scope=Current Project."""
+def test_tui_state_defaults_context_show_project_on():
+    """Context-tab-local toggle for the project files pane defaults to on."""
     s = axt.TuiState()
-    assert s.scope_filter == "project"
-
-
-def test_render_filter_chips_shows_scope_label():
-    scr = _make_stdscr()
-    axt.render_filter_chips(scr, y=1, x=0, w=120, scope="project")
-    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Scope:" in flat
-    assert "Project" in flat
-
-
-def test_render_filter_chips_highlights_non_default_scope():
-    """When Scope is set to a non-default value, its chip should stand out."""
-    scr = _make_stdscr()
-    axt.render_filter_chips(scr, y=1, x=0, w=120, scope="all")
-    for call in scr.calls:
-        if len(call) >= 5 and isinstance(call[2], str) and "All" in call[2]:
-            assert call[4] & curses.A_BOLD
-            return
-    pytest.fail("Scope=all chip was not drawn with BOLD")
-
-
-def test_cycle_scope_filter_toggles_between_project_and_all():
-    state = axt.TuiState()
-    assert state.scope_filter == "project"
-    axt.cycle_scope_filter(state, +1)
-    assert state.scope_filter == "all"
-    axt.cycle_scope_filter(state, +1)
-    assert state.scope_filter == "project"
+    assert s.context_show_project is True
 
 
 def test_render_frame_dispatches_usage_tab(monkeypatch):
@@ -99,15 +71,15 @@ def _make_empty_context_analysis():
     )
 
 
-def test_context_tab_includes_project_files_section_when_scope_project(monkeypatch, tmp_path):
-    """With Scope=project, Context tab must list project context files
-    (the old Project tab's content) under a dedicated section header."""
+def test_context_tab_includes_project_files_section_when_toggle_on(monkeypatch, tmp_path):
+    """With context_show_project=True (default), Context tab lists project
+    context files under a dedicated section header."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "CLAUDE.md").write_text("# test\nproject level\n")
 
     scr = _make_stdscr(rows=40, cols=140)
     state = axt.TuiState()
-    state.scope_filter = "project"
+    assert state.context_show_project is True
     state.context_analysis = _make_empty_context_analysis()
     axt.render_context_tab(scr, state, y0=3, h=30, w=140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
@@ -115,40 +87,18 @@ def test_context_tab_includes_project_files_section_when_scope_project(monkeypat
     assert "CLAUDE.md" in flat
 
 
-def test_context_tab_hides_project_files_section_when_scope_all(monkeypatch, tmp_path):
-    """With Scope=all (global+project), the per-project file list is hidden."""
+def test_context_tab_hides_project_files_section_when_toggle_off(monkeypatch, tmp_path):
+    """With context_show_project=False, the per-project file list is hidden."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "CLAUDE.md").write_text("# test\nshould not appear\n")
 
     scr = _make_stdscr(rows=40, cols=140)
     state = axt.TuiState()
-    state.scope_filter = "all"
+    state.context_show_project = False
     state.context_analysis = _make_empty_context_analysis()
     axt.render_context_tab(scr, state, y0=3, h=30, w=140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Project files" not in flat
-
-
-def _vi(name, *, linked=False, glinked=False):
-    return axt.VaultItem(name=name, type="skill", path=f"/v/{name}",
-                         description="", is_linked=linked, is_global_linked=glinked)
-
-
-def test_filter_vault_items_by_scope_project_keeps_active_in_project():
-    """Scope=project: keep items active in the project (linked or globally
-    active so they are visible from cwd)."""
-    items = [_vi("p1", linked=True),
-             _vi("g1", glinked=True),
-             _vi("idle"),
-             _vi("both", linked=True, glinked=True)]
-    visible = axt.filter_vault_items_by_scope(items, "project")
-    assert {i.name for i in visible} == {"p1", "g1", "both"}
-
-
-def test_filter_vault_items_by_scope_all_returns_everything():
-    items = [_vi("p1", linked=True), _vi("g1", glinked=True), _vi("idle")]
-    visible = axt.filter_vault_items_by_scope(items, "all")
-    assert {i.name for i in visible} == {"p1", "g1", "idle"}
 
 
 def test_tui_state_initial_focus_is_main_tab():
@@ -312,8 +262,9 @@ def test_render_tab_bar_lists_all_tabs_full_names():
     scr = _make_stdscr()
     axt.render_tab_bar(scr, 0, 0, 160, active_idx=0, focused=True)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    for full in ("Dashboard", "Extensions", "Context", "Usage"):
+    for full in ("Extensions", "Context", "Usage"):
         assert full in flat, f"Expected full name {full!r} in tab bar"
+    assert "Dashboard" not in flat, "Dashboard tab was removed"
     # Platform names no longer appear at the top level (they moved into
     # Usage sub-tabs).
     for moved in ("Claude", "Codex", "Gemini", "Cursor", "Project"):
@@ -323,11 +274,13 @@ def test_render_tab_bar_lists_all_tabs_full_names():
 def test_render_tab_bar_falls_back_to_short_names_in_narrow_terminal():
     """A narrow terminal where the full names won't fit must use the short labels."""
     scr = _make_stdscr()
-    axt.render_tab_bar(scr, 0, 0, 50, active_idx=0, focused=True)
+    # 30 cols is too tight for "Extensions / Context / Usage" + version
+    # badge, so the renderer must fall back to short labels.
+    axt.render_tab_bar(scr, 0, 0, 30, active_idx=0, focused=True)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Extensions" not in flat
-    # At least one of the 4-tab short labels must render.
-    assert any(short in flat for short in ("Dash", "Ext", "Ctx", "Use"))
+    # At least one short label must render.
+    assert any(short in flat for short in ("Ext", "Ctx", "Use"))
 
 
 def test_render_tab_bar_highlights_active_when_focused():
@@ -452,17 +405,20 @@ def test_launch_tui_returns_1_when_curses_unavailable(capsys):
 
 
 def test_help_text_documents_quit_key():
-    assert "q / Esc" in axt.HELP_TEXT
+    # `q` quits unconditionally; Esc climbs the focus stack and quits only at
+    # the main-tab layer (see _handle_content_layer_key / _handle_sub_tab_key).
+    assert "q / Q" in axt.HELP_TEXT
+    assert "Esc" in axt.HELP_TEXT
     assert "Quit" in axt.HELP_TEXT
 
 
 def test_help_text_documents_tab_navigation():
-    assert "1–4" in axt.HELP_TEXT
+    assert "1–3" in axt.HELP_TEXT
     assert "main tab" in axt.HELP_TEXT
 
 
-def test_help_text_documents_global_filter_keys():
-    assert "Scope filter" in axt.HELP_TEXT
+def test_help_text_documents_context_project_pane_toggle():
+    assert "project files pane" in axt.HELP_TEXT.lower()
 
 
 # ─── # column regression (the bug the user reported) ─────────────────────────
@@ -521,7 +477,7 @@ def test_render_extensions_plugins_subtab_shows_row_number_in_prefix(tmp_path, m
     assert plugin_calls
 
 
-# ─── Dashboard / Usage / Cursor / Context / Project smoke tests ──────────────
+# ─── Usage / Context / Project smoke tests ───────────────────────────────────
 
 
 def _setup_isolated_paths(tmp_path, monkeypatch):
@@ -537,15 +493,6 @@ def _setup_isolated_paths(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
 
-def test_render_dashboard_no_data(tmp_path, monkeypatch):
-    _setup_isolated_paths(tmp_path, monkeypatch)
-    state = axt.TuiState()
-    scr = _make_stdscr(rows=30, cols=120)
-    axt.render_dashboard_tab(scr, state, 0, 28, 120)
-    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Dashboard" in flat
-
-
 def test_render_usage_claude_no_data(tmp_path, monkeypatch):
     _setup_isolated_paths(tmp_path, monkeypatch)
     state = axt.TuiState()
@@ -553,6 +500,56 @@ def test_render_usage_claude_no_data(tmp_path, monkeypatch):
     axt.render_usage_tab(scr, state, 0, 28, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Claude" in flat
+
+
+def test_render_usage_tab_shows_context_5h_7d_gauges(tmp_path, monkeypatch):
+    """Usage tab top should render three gauge bars: Context / 5h / 7d."""
+    import json
+
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    snap = tmp_path / "usage-snapshot.json"
+    snap.write_text(json.dumps({
+        "five_hour": {"used_percentage": 42, "resets_at": "2099-01-01T00:00:00Z"},
+        "seven_day": {"used_percentage": 17, "resets_at": "2099-01-08T00:00:00Z"},
+        "updated_at": "2099-01-01T00:00:00Z",
+    }))
+    # Re-point PATHS to also include usage_snapshot.
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        claude_dir=tmp_path / "claude",
+        settings=tmp_path / "settings.json",
+        installed_plugins=tmp_path / "ip.json",
+        projects=tmp_path / "claude_projects",
+        vault=tmp_path / "vault",
+        usage_snapshot=snap,
+    ))
+
+    state = axt.TuiState()
+    # Pre-seed context_analysis so render does not need to walk the filesystem.
+    state.context_analysis = axt.ContextAnalysis(
+        total_tokens=120_000,
+        context_window_size=500_000,
+        used_percent=24.0,
+        model="claude-opus-4-7",
+        sources=[],
+        cost_impact=axt.CostImpact(
+            model="claude-opus-4-7",
+            cache_write_cost=0.0,
+            cache_read_cost_per_turn=0.0,
+            avg_turns_per_session=0,
+            avg_sessions_per_day=0,
+            per_session_cost=0.0,
+            monthly_cost=0.0,
+        ),
+    )
+    scr = _make_stdscr(rows=40, cols=140)
+    axt.render_usage_tab(scr, state, 0, 38, 140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Context:" in flat
+    assert "5h:" in flat
+    assert "7d:" in flat
+    assert "24.0%" in flat
+    assert " 42%" in flat
+    assert " 17%" in flat
 
 
 def test_render_context_basic(tmp_path, monkeypatch):
@@ -769,7 +766,7 @@ def test_vault_used_column_present_in_render(tmp_path, monkeypatch):
 
 
 def test_vault_global_only_status_clarified(tmp_path, monkeypatch):
-    """A global-only item (not in vault) is marked `global*` in the Vault column."""
+    """A global-only item (not in vault) is marked `glob*` in the Vault column."""
     vault = tmp_path / "vault"
     claude = tmp_path / "claude"
     # Item exists ONLY in ~/.claude/skills, NOT in vault.
@@ -782,9 +779,9 @@ def test_vault_global_only_status_clarified(tmp_path, monkeypatch):
     state = axt.TuiState()
     scr = _make_stdscr(rows=20, cols=140)
     axt.render_vault_tab(scr, state, 0, 18, 140)
-    # The "global*" status must appear at least once.
+    # The "glob*" status must appear at least once.
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "global" in flat
+    assert "glob*" in flat
 
 
 def test_help_text_documents_new_keys():
@@ -799,7 +796,7 @@ def test_help_text_documents_new_keys():
 
 def test_help_text_documents_vault_column_meanings():
     h = axt.HELP_TEXT
-    assert "global*" in h or "global only" in h.lower()
+    assert "glob*" in h or "global only" in h.lower()
     # The short column label is "Used" (was "Used in" before the column rename).
     assert "Used" in h
 
@@ -963,10 +960,9 @@ def test_at_top_of_content_vault_at_zero():
     assert axt._at_top_of_content(state, "extensions") is False
 
 
-def test_at_top_of_content_dashboard_and_usage_always_true():
-    """Dashboard and Usage have no selectable list — both always count as top."""
+def test_at_top_of_content_usage_always_true():
+    """Usage has no selectable list — always counts as top."""
     state = axt.TuiState()
-    assert axt._at_top_of_content(state, "dashboard") is True
     assert axt._at_top_of_content(state, "usage") is True
 
 
@@ -1069,6 +1065,32 @@ def test_vault_enter_applies_pending_first():
     msg = axt.handle_vault_input(state, 10)
     assert state.vault_detail_focused is False
     assert "Applied" in (msg or "") or "error" in (msg or "").lower()
+
+
+def test_vault_enter_pending_confirm_yes_applies(monkeypatch):
+    calls = []
+    monkeypatch.setattr("axt.confirm_modal",
+                        lambda stdscr, msg, title="Confirm": calls.append(msg) or True)
+    state = axt.TuiState()
+    state.stdscr_callbacks = {"stdscr": object()}
+    state.vault_items = [axt.VaultItem(name="alpha", type="skill", path="", description="")]
+    state.vault_pending_project.add("alpha")
+    msg = axt.handle_vault_input(state, 10)
+    assert calls and "Apply pending" in calls[0]
+    assert "Applied" in (msg or "") or "error" in (msg or "").lower()
+
+
+def test_vault_enter_pending_confirm_no_keeps_pending(monkeypatch):
+    monkeypatch.setattr("axt.confirm_modal",
+                        lambda stdscr, msg, title="Confirm": False)
+    state = axt.TuiState()
+    state.stdscr_callbacks = {"stdscr": object()}
+    state.vault_items = [axt.VaultItem(name="alpha", type="skill", path="", description="")]
+    state.vault_pending_project.add("alpha")
+    msg = axt.handle_vault_input(state, 10)
+    assert msg == "Cancelled"
+    # Pending toggles are preserved so the user can retry.
+    assert state.vault_pending_project == {"alpha"}
 
 
 def test_vault_detail_focus_scroll_j_k():
@@ -1341,3 +1363,239 @@ def test_render_extensions_tab_mcp_sub_tab_does_not_raise(monkeypatch, tmp_path)
     scr = _make_stdscr(rows=40, cols=140)
     # Must NOT raise NameError("_active_plugins").
     axt.render_extensions_tab(scr, state, y0=3, h=30, w=140)
+
+
+# ─── Focus-layer key routing (per-layer handlers) ────────────────────────────
+#
+# These tests pin down the layered key model that replaced the original
+# single if/elif/else block in loop.py. The key contract:
+#   • mainTab ↓ only descends when the tab actually has a focusable target
+#     (sub-tab bar OR a focusable content body). Usage has neither, so ↓
+#     stays put — no silent focus loss.
+#   • subTab ↓ always lands on content (Extensions sub-tabs are lists).
+#   • content ←/→ is owned by the tab body now — the legacy mainTab
+#     cycling that lived at the content layer is gone.
+
+
+def _tab_idx(key: str) -> int:
+    return [t[0] for t in axt.MAIN_TABS].index(key)
+
+
+def test_tab_has_sub_tab_only_extensions():
+    assert axt.tab_has_sub_tab("extensions") is True
+    for k in ("context", "usage"):
+        assert axt.tab_has_sub_tab(k) is False
+
+
+def test_tab_has_focusable_content_excludes_usage():
+    s = axt.TuiState()
+    assert axt.tab_has_focusable_content(s, "usage") is False
+    assert axt.tab_has_focusable_content(s, "context") is True
+    assert axt.tab_has_focusable_content(s, "extensions") is True
+
+
+def test_usage_down_arrow_keeps_focus_on_main_tab():
+    """Repeated ↓ on Usage must NOT drop focus into an invisible
+    `content` layer — there's nothing to focus there."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("usage")
+    scr = _make_stdscr()
+    for _ in range(5):
+        consumed = axt._handle_layer_key(scr, state, curses.KEY_DOWN, "usage")
+        assert consumed is True
+    assert state.focused_layer == "mainTab"
+
+
+def test_extensions_down_arrow_descends_to_sub_tab():
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    # Use the plugins sub-tab with a real PluginInfo so the second descent
+    # passes the "no focusable rows → keep focus on subTab" guard *and* the
+    # downstream renderer (which accesses attributes on each row). The empty
+    # case is covered by test_sub_tab_down_arrow_keeps_focus_when_empty.
+    state.ext_sub_tab = "plugins"
+    state.ext_cache["plugins"] = [
+        axt.PluginInfo(
+            id="p1@m", name="p1", marketplace="m", version="1.0",
+            install_path="/tmp/p1", scope="user",
+            installed_at="", last_updated="",
+        ),
+    ]
+    scr = _make_stdscr()
+    axt._handle_layer_key(scr, state, curses.KEY_DOWN, "extensions")
+    assert state.focused_layer == "subTab"
+    # Second ↓ from subTab → content.
+    axt._handle_layer_key(scr, state, curses.KEY_DOWN, "extensions")
+    assert state.focused_layer == "content"
+
+
+def test_context_down_arrow_descends_directly_to_content():
+    """Context has no sub-tab but has a focusable list, so ↓ → content."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("context")
+    scr = _make_stdscr()
+    axt._handle_layer_key(scr, state, curses.KEY_DOWN, "context")
+    assert state.focused_layer == "content"
+
+
+def test_sub_tab_up_arrow_returns_to_main_tab():
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.focused_layer = "subTab"
+    scr = _make_stdscr()
+    axt._handle_layer_key(scr, state, curses.KEY_UP, "extensions")
+    assert state.focused_layer == "mainTab"
+
+
+def test_content_left_right_no_longer_cycles_main_tabs():
+    """The legacy 'content layer ← / → cycles main tabs' fallback was
+    removed — ←/→ now belong to the tab body."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("context")
+    state.focused_layer = "content"
+    original = state.tab_idx
+    scr = _make_stdscr()
+    # The layer dispatcher must NOT consume ←/→ here.
+    assert axt._handle_layer_key(scr, state, curses.KEY_LEFT, "context") is False
+    assert axt._handle_layer_key(scr, state, curses.KEY_RIGHT, "context") is False
+    assert state.tab_idx == original
+
+
+def test_content_up_at_top_climbs_out_for_context():
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("context")
+    state.focused_layer = "content"
+    state.context_selected = 0  # at top
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, curses.KEY_UP, "context")
+    assert consumed is True
+    # Context has no sub-tab, so we climb all the way back to mainTab.
+    assert state.focused_layer == "mainTab"
+
+
+def test_content_up_at_top_climbs_to_sub_tab_for_extensions():
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "plugins"
+    state.focused_layer = "content"
+    state.ext_selected = {"plugins": 0}  # at top
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, curses.KEY_UP, "extensions")
+    assert consumed is True
+    assert state.focused_layer == "subTab"
+
+
+def test_main_tab_left_right_cycles_tabs():
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    scr = _make_stdscr()
+    axt._handle_layer_key(scr, state, curses.KEY_RIGHT, "extensions")
+    assert state.tab_idx == _tab_idx("context")
+    axt._handle_layer_key(scr, state, curses.KEY_LEFT, "context")
+    assert state.tab_idx == _tab_idx("extensions")
+
+
+def test_main_tab_up_arrow_is_no_op_but_consumed():
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, curses.KEY_UP, "extensions")
+    assert consumed is True
+    assert state.focused_layer == "mainTab"
+
+
+def test_esc_in_content_climbs_to_sub_tab_for_extensions():
+    """Esc anywhere in the content list (not just at row 0) should climb back
+    to the sub-tab — otherwise users at the bottom of a long list have to
+    press ↑ many times just to leave the list."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "plugins"
+    state.focused_layer = "content"
+    state.ext_selected = {"plugins": 42}  # mid-list, not at top
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, axt.KEY_ESC, "extensions")
+    assert consumed is True
+    assert state.focused_layer == "subTab"
+
+
+def test_esc_in_content_climbs_to_main_tab_for_context():
+    """Tabs without a sub-tab bar (Context) jump straight to the main tab."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("context")
+    state.focused_layer = "content"
+    state.context_selected = 5
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, axt.KEY_ESC, "context")
+    assert consumed is True
+    assert state.focused_layer == "mainTab"
+
+
+def test_esc_on_sub_tab_climbs_to_main_tab():
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.focused_layer = "subTab"
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, axt.KEY_ESC, "extensions")
+    assert consumed is True
+    assert state.focused_layer == "mainTab"
+
+
+def test_sub_tab_has_focusable_content_reflects_data():
+    """Vault uses vault_items; the other Extensions sub-tabs use ext_cache."""
+    s = axt.TuiState()
+    # Empty by default.
+    assert axt.sub_tab_has_focusable_content(s, "vault") is False
+    assert axt.sub_tab_has_focusable_content(s, "plugins") is False
+    # Populate and re-check (sentinel values — function only inspects truthiness).
+    s.vault_items = ["dummy"]
+    s.ext_cache["plugins"] = ["dummy"]
+    assert axt.sub_tab_has_focusable_content(s, "vault") is True
+    assert axt.sub_tab_has_focusable_content(s, "plugins") is True
+
+
+def test_sub_tab_down_arrow_keeps_focus_when_empty():
+    """↓ on an empty Extensions sub-tab must NOT drop focus into an
+    invisible `content` layer — there are no rows to focus on."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "plugins"
+    state.focused_layer = "subTab"
+    state.ext_cache["plugins"] = []  # explicitly empty
+    scr = _make_stdscr()
+    for _ in range(5):
+        consumed = axt._handle_layer_key(scr, state, curses.KEY_DOWN, "extensions")
+        assert consumed is True
+    assert state.focused_layer == "subTab"
+
+
+def test_sub_tab_enter_keeps_focus_when_empty():
+    """Enter from an empty sub-tab is the same no-op as ↓."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "vault"
+    state.focused_layer = "subTab"
+    state.vault_items = []  # empty
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, ord("\n"), "extensions")
+    assert consumed is True
+    assert state.focused_layer == "subTab"
+
+
+def test_sub_tab_down_arrow_descends_when_populated():
+    """When the sub-tab has rows, ↓ still drops into the content layer."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "plugins"
+    state.focused_layer = "subTab"
+    state.ext_cache["plugins"] = [
+        axt.PluginInfo(
+            id="p1@m", name="p1", marketplace="m", version="1.0",
+            install_path="/tmp/p1", scope="user",
+            installed_at="", last_updated="",
+        ),
+    ]
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, curses.KEY_DOWN, "extensions")
+    assert consumed is True
+    assert state.focused_layer == "content"

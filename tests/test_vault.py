@@ -339,3 +339,119 @@ def test_list_with_project_state_includes_plugins(tmp_path: Path):
     assert len(plugin_items) == 1
     assert plugin_items[0].name == "p"
     assert plugin_items[0].description == "P plugin"
+
+
+# ─── Project-local import candidates ─────────────────────────────────────────
+
+
+def _make_project_local_skill(proj: Path, name: str = "proj-skill") -> Path:
+    skill = proj / ".claude" / "skills" / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: A project-local skill\n---\nbody"
+    )
+    return skill
+
+
+def test_list_project_non_vault_items_finds_skill(tmp_path: Path):
+    vault = tmp_path / "vault"
+    proj = tmp_path / "proj"
+    _make_project_local_skill(proj)
+    items = axt._list_project_non_vault_items(proj, vault)
+    assert len(items) == 1
+    item = items[0]
+    assert item.name == "proj-skill"
+    assert item.type == "skill"
+    assert item.in_vault is False
+    assert item.is_linked is True
+    assert item.is_global_linked is False
+    assert item.description == "A project-local skill"
+
+
+def test_list_project_non_vault_items_finds_command_and_agent(tmp_path: Path):
+    vault = tmp_path / "vault"
+    proj = tmp_path / "proj"
+    (proj / ".claude" / "commands").mkdir(parents=True)
+    (proj / ".claude" / "commands" / "deploy.md").write_text(
+        '---\ndescription: "Project deploy"\n---\n'
+    )
+    (proj / ".claude" / "agents").mkdir(parents=True)
+    (proj / ".claude" / "agents" / "reviewer.md").write_text(
+        "---\ndescription: Reviews project\n---\n"
+    )
+    items = axt._list_project_non_vault_items(proj, vault)
+    by_type = {i.type: i for i in items}
+    assert set(by_type) == {"command", "agent"}
+    assert by_type["command"].name == "deploy.md"
+    assert by_type["agent"].name == "reviewer.md"
+
+
+def test_list_project_non_vault_items_skips_vault_names(tmp_path: Path):
+    vault = _make_vault(tmp_path)  # already has "myskill"
+    proj = tmp_path / "proj"
+    _make_project_local_skill(proj, name="myskill")
+    items = axt._list_project_non_vault_items(proj, vault)
+    # Project's "myskill" is shadowed by the vault entry — should not appear.
+    assert items == []
+
+
+def test_list_project_non_vault_items_skips_global_names(tmp_path: Path):
+    vault = tmp_path / "vault"
+    proj = tmp_path / "proj"
+    global_dir = tmp_path / "global"
+    (global_dir / "skills" / "shared").mkdir(parents=True)
+    (global_dir / "skills" / "shared" / "SKILL.md").write_text("---\n---\n")
+    _make_project_local_skill(proj, name="shared")
+    items = axt._list_project_non_vault_items(proj, vault, global_dir=global_dir)
+    # Same name exists globally; global wins. Project entry suppressed.
+    assert items == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need elevation")
+def test_list_project_non_vault_items_skips_symlinks(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    (proj / ".claude" / "skills").mkdir(parents=True)
+    # Pre-existing symlink (e.g. pointing into vault) is NOT a fresh
+    # import candidate.
+    os.symlink(vault / "skills" / "myskill", proj / ".claude" / "skills" / "linked")
+    items = axt._list_project_non_vault_items(proj, vault)
+    assert items == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_list_with_project_state_includes_project_local_items(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    _make_project_local_skill(proj, name="local-only")
+    enriched = axt.list_vault_items_with_project_state(vault, proj)
+    by_name = {i.name: i for i in enriched}
+    assert "local-only" in by_name
+    local = by_name["local-only"]
+    assert local.in_vault is False
+    assert local.is_linked is True
+    assert local.is_global_linked is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_import_to_vault_from_project_source(tmp_path: Path):
+    vault = tmp_path / "vault"
+    proj = tmp_path / "proj"
+    src = _make_project_local_skill(proj, name="promote-me")
+    item = axt.VaultItem(
+        name="promote-me",
+        type="skill",
+        path=str(src),
+        description="",
+        in_vault=False,
+        is_linked=True,
+        is_global_linked=False,
+    )
+    # global_dir is irrelevant for a project source; the path on `item` drives it.
+    axt.import_to_vault(tmp_path / "global", vault, item)
+
+    dest = vault / "skills" / "promote-me"
+    assert (dest / "SKILL.md").exists()
+    # Original project location must now be a symlink pointing at vault.
+    assert src.is_symlink()
+    assert Path(os.readlink(src)) == dest

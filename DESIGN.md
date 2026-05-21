@@ -100,8 +100,8 @@ cst의 `tracker.py`처럼 섹션 헤더 주석으로 코드를 구분한다는 �
 - `axt usage {today|week|month|blocks|session}`
 - `axt vault {list|migrate|add|install|link-global|unlink-global}`
 
-### TUI 탭 (4 메인 + Extensions 서브탭 8개)
-- Top-level: Dashboard / Extensions / Context / Usage
+### TUI 탭 (3 메인 + Extensions 서브탭 8개)
+- Top-level: Extensions / Context / Usage
 - Extensions 서브탭: Vault / Plugins / Skills / Commands / Agents / MCP / Hooks / Market
 
 ### 핵심 데이터 흐름

@@ -17,7 +17,7 @@ Python + curses package, pure stdlib runtime. The older TypeScript+Ink line (v0.
 - **Usage tracking** — Claude token usage and cost with per-model pricing; today / week / month / 5-hour billing blocks / session views.
 - **Plan budget** — plan overview with daily / weekly / monthly projections and budget bars.
 - **Context analysis** — token estimate per context source at session start (CLAUDE.md, skills, MCP tools, hooks, etc.).
-- **Interactive TUI** — 4 main tabs (Dashboard / Extensions / Context / Usage) with keyboard-driven navigation. Renders via curses absolute-cell drawing, so it stays correct under terminal multiplexers (WezTerm + cmux verified).
+- **Interactive TUI** — 3 main tabs (Extensions / Context / Usage) with keyboard-driven navigation. Renders via curses absolute-cell drawing, so it stays correct under terminal multiplexers (WezTerm + cmux verified).
 - **Claude Skill** — `SKILL.md` at the repo root exposes `axt` as a Claude Code skill (EN + KO triggers).
 
 Pure standard library at runtime — no external Python dependencies. Windows users additionally need `windows-curses`.

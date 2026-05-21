@@ -97,11 +97,10 @@ TUI 대시보드 실행.
 
 ## 2. TUI
 
-### 2.1 메인 탭 (4개)
-1. **Dashboard** (Dash) — 1
-2. **Extensions** (Ext) — 2
-3. **Context** (Ctx) — 3
-4. **Usage** (Use) — 4
+### 2.1 메인 탭 (3개)
+1. **Extensions** (Ext) — 1
+2. **Context** (Ctx) — 2
+3. **Usage** (Use) — 3
 
 ### 2.2 글로벌 필터 (헤더 칩)
 - **Scope**: `Project` / `All` — 키 `P`
@@ -110,7 +109,8 @@ TUI 대시보드 실행.
 (v0.2.x의 Platform 필터는 v1.0.0에서 Claude 전용이 되면서 제거됨.)
 
 ### 2.3 Focus Layer (3단계)
-`mainTab` ↔ `subTab` ↔ `content`. 메인탭은 `← →` 또는 숫자 1~4, 포커스 이동은 `↑ ↓ Return`.
+`mainTab` ↔ `subTab` ↔ `content`. 메인탭은 `← →` 또는 숫자 1~3, 포커스 이동은 `↑ ↓ Return`.
+포커스 가능한 본문이 없는 탭(Usage)은 mainTab에서 `↓`를 받아도 포커스가 그대로 mainTab에 머무름 — capability 기반 분기.
 
 ### 2.4 Extensions 탭 (8개 서브탭)
 - **Vault** (기본) — `# Name Type Vault Added Updated Project Global Used in`
@@ -144,11 +144,8 @@ Esc         폐기/뒤로        f           scan mode toggle (default/full)
 키: `j/k`, `Enter` (카테고리 소스 모달), `e` (첫 소스를 에디터로), `r` (새로고침).
 **Scope=Project** 일 때 하단에 "Project files" 패널이 함께 표시됨 (CLAUDE.md / settings.json / memory 등 cwd 기준 컨텍스트 파일 목록).
 
-### 2.8 Dashboard 탭
-Claude 카드 (Cost/Input/Output/Cache) + 14일 BarChart + 월간 예산 바. 키: `r` 새로고침.
-
-### 2.9 Usage 탭
-Today/Week/Month 카드 + 14일 BarChart + Active Block + 예산 라인. (v0.2.x의 platform/cursor 서브탭은 제거.)
+### 2.8 Usage 탭
+Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarChart + Active Block + Insights(large-context %, parallel %, top model) + plan rate-limit(5h/7d) 라인. 키: `r` 새로고침. (v0.2.x의 platform/cursor 서브탭은 제거. 별도였던 Dashboard 탭은 이 탭의 상단(Plan/Budget 블록)으로 흡수됨.)
 
 ### 2.10 공통 위젯
 - **Table**: prefix 4셀(`▸/space + ■/□` 또는 `▸/space + 번호`), 마지막 컬럼 자동 확장, selected는 cyan+bold (inverse 회피)
@@ -158,14 +155,14 @@ Today/Week/Month 카드 + 14일 BarChart + Active Block + 예산 라인. (v0.2.x
 - **BarChart**: 8셀 label + `█` cyan bar + dim value
 - **SearchInput**: in-place input row
 - **HelpPopup**: `?/q/Esc/Return`으로 닫기
-- **TabBar**: 4 메인 탭 가로 배치, active inverse + focus 표시 (`▶` 마커)
+- **TabBar**: 3 메인 탭 가로 배치, active inverse + focus 표시 (`▶` 마커)
 - **FilterChips**: `Scope: [...]` 헤더 라인 좌측, 디폴트 외 값은 BOLD
 
 ### 2.11 글로벌 키
 - `q` / `Esc`: 종료 (특정 탭의 subview 중에는 차단)
 - `?`: HelpPopup 토글
 - `r`: refresh
-- `1-4`: 메인탭 점프
+- `1-3`: 메인탭 점프
 - `← →`: 메인탭 순회
 
 ---
