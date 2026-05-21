@@ -6521,6 +6521,55 @@ def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
     return rows_used
 
 
+def _render_usage_sub_tab_bar(stdscr, y: int, w: int, active_key: str, *,
+                              focused: bool = False) -> None:
+    """Sibling of `_render_subtab_bar` for Usage. Draws `[ All ] Claude Codex Gemini Cursor`."""
+    label_attr = CP_HDR() if focused else CP_DIM()
+    marker = "▶ " if focused else "  "
+    marker_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
+    safe_addnstr(stdscr, y, 0, marker, w, marker_attr)
+    safe_addnstr(stdscr, y, cell_width(marker), "Sub: ", w - cell_width(marker), label_attr)
+    cur = cell_width(marker) + 5
+    inactive_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
+    active_attr = _safe_pair(1, curses.A_BOLD) if focused else _safe_pair(8, curses.A_BOLD | curses.A_UNDERLINE)
+    for key, label in USAGE_SUB_TABS:
+        if key == active_key:
+            cell = f"[ {label} ]"
+            attr = active_attr
+        else:
+            cell = f"  {label}  "
+            attr = inactive_attr
+        if cur + cell_width(cell) >= w:
+            break
+        safe_addnstr(stdscr, y, cur, cell, w - cur, attr)
+        cur += cell_width(cell) + 1
+    if cur < w:
+        safe_addnstr(stdscr, y, cur, " " * (w - cur - 1), w - cur - 1, CP_DIM())
+
+
+def render_usage_root_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
+    """Top-level Usage tab. Renders the sub-tab bar, then dispatches to a
+    platform-specific renderer (or stacks all platforms when sub_tab='all')."""
+    _render_usage_sub_tab_bar(stdscr, y0, w,
+                              active_key=state.usage_sub_tab,
+                              focused=(state.focused_layer == "subTab"))
+    body_y = y0 + 1
+    body_h = max(1, h - 1)
+    key = state.usage_sub_tab
+    if key == "all":
+        # Aggregate view: stack 3 usage panels + Cursor panel evenly.
+        section_h = max(4, body_h // 4)
+        for i, platform in enumerate(("claude", "codex", "gemini")):
+            render_usage_tab(stdscr, state, body_y + i * section_h,
+                             section_h, w, platform)
+        render_cursor_tab(stdscr, state, body_y + 3 * section_h,
+                          max(1, body_h - 3 * section_h), w)
+    elif key in ("claude", "codex", "gemini"):
+        render_usage_tab(stdscr, state, body_y, body_h, w, key)
+    elif key == "cursor":
+        render_cursor_tab(stdscr, state, body_y, body_h, w)
+
+
 def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     _ensure_context_loaded(state)
     analysis = state.context_analysis

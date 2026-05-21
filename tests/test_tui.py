@@ -90,6 +90,29 @@ def test_cycle_scope_filter_toggles_between_project_and_all():
     assert state.scope_filter == "project"
 
 
+def test_render_usage_root_tab_draws_sub_tab_bar():
+    """Usage root must render a sub-tab bar showing All/Claude/Codex/Gemini/Cursor."""
+    scr = _make_stdscr()
+    state = axt.TuiState()
+    state.usage_sub_tab = "claude"
+    axt.render_usage_root_tab(scr, state, y0=3, h=20, w=120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    for label in ("All", "Claude", "Codex", "Gemini", "Cursor"):
+        assert label in flat, f"Usage sub-tab bar must include {label!r}"
+
+
+def test_render_usage_root_tab_active_sub_tab_is_highlighted():
+    scr = _make_stdscr()
+    state = axt.TuiState()
+    state.usage_sub_tab = "codex"
+    axt.render_usage_root_tab(scr, state, y0=3, h=20, w=120)
+    for call in scr.calls:
+        if len(call) >= 5 and isinstance(call[2], str) and "Codex" in call[2]:
+            if call[4] & curses.A_BOLD:
+                return
+    pytest.fail("Active Usage sub-tab 'Codex' was not bold")
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 
