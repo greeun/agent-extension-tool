@@ -8,12 +8,14 @@ axt는 본래 TypeScript + Ink(React-for-CLI)로 작성되었다. Ink의 flexbox
 
 > **v2.0.0 변경**: Codex / Gemini / Cursor 지원을 제거하고 Claude 한정으로 집중. `UnifiedUsageEntry` 어댑터 구조는 유지하되 `PLATFORMS = ("claude",)`로 좁힌다. 멀티 플랫폼 추상화를 다시 도입할 계획은 없다.
 
+> **Phase C (v2.0.0-rc.C) 변경**: 단일 파일 `axt.py`(~7,400줄)를 섹션별 모듈 패키지 `axt/`로 분리했다. 섹션 헤더(`# ── Section N:`)는 각 모듈 내부에서 그대로 보존되어 네비게이션 앵커 역할을 한다. 패키지의 `__init__.py`는 서브모듈 globals를 `axt` 네임스페이스에 미러링하여 `axt.X`/`monkeypatch.setattr("axt.X", ...)` 같은 기존 호출 규약을 그대로 유지한다.
+
 ## 범위 및 결정 사항
 
 | 결정 | 선택 |
 |---|---|
-| 진행 순서 | 한 번에 전체 재작성 (v1) → v2에서 claude-only 정리 |
-| 프로젝트 구조 | cst 스타일 단일 파일 (`axt.py`) |
+| 진행 순서 | 한 번에 전체 재작성 (v1) → v2에서 claude-only 정리 → v2.0.0-rc.C에서 섹션 모듈 분리 |
+| 프로젝트 구조 | 섹션별 모듈 패키지 (`axt/core.py`, `axt/cli.py`, `axt/tui/*.py`); 섹션 헤더는 모듈 내 앵커로 보존 |
 | 언어 | Python 3.9+ (set_escdelay 등 사용) |
 | TUI | 표준 라이브러리 `curses` |
 | CLI | 표준 라이브러리 `argparse` |
@@ -25,10 +27,19 @@ axt는 본래 TypeScript + Ink(React-for-CLI)로 작성되었다. Ink의 flexbox
 
 ```
 .
-├── axt.py              # 메인 단일 파일 (~7,400줄)
-├── pricing.json        # 모델별 토큰 가격 테이블 (코드 분리)
-├── README.md           # 사용법
-├── pyproject.toml      # bin entry: `axt = axt:main`
+├── axt/                       # Python 패키지 (Phase C에서 단일 파일에서 분리)
+│   ├── __init__.py            # public API + submodule mirror (axt.X 네임스페이스 유지)
+│   ├── __main__.py            # `python3 -m axt`
+│   ├── core.py                # Section 1-9 (도메인)
+│   ├── cli.py                 # Section 10 + 15 (argparse + main)
+│   ├── pricing.json           # 모델별 토큰 가격 테이블 (코드 분리; 패키지 데이터로 포함)
+│   └── tui/
+│       ├── __init__.py
+│       ├── widgets.py         # Section 11-12 (curses helpers + 공용 widgets)
+│       ├── tabs.py            # Section 13 (TuiState, render_*_tab, handle_*_input)
+│       └── loop.py            # Section 14 (HELP_TEXT, _render_frame, _tui_loop, launch_tui)
+├── README.md                  # 사용법
+├── pyproject.toml             # bin entry: `axt = axt:main`
 ├── .gitignore
 └── tests/
     ├── conftest.py     # 공통 fixture (tmp_home 등)
@@ -50,27 +61,29 @@ axt는 본래 TypeScript + Ink(React-for-CLI)로 작성되었다. Ink의 flexbox
     └── test_cli.py
 ```
 
-## 단일 파일 내부 섹션 구조
+## 패키지 내부 섹션 매핑
 
-`axt.py`는 cst의 `tracker.py`처럼 단일 파일이지만, 다음 섹션 헤더 주석으로 구분:
+cst의 `tracker.py`처럼 섹션 헤더 주석으로 코드를 구분한다는 컨벤션은 유지하되, 섹션을 모듈로 분리했다:
 
-```
-# ── Section 1: Constants & Paths ───────────────────────────
-# ── Section 2: JSON I/O ────────────────────────────────────
-# ── Section 3: Settings Reader (multi-scope merge) ─────────
-# ── Section 4: Plugin/Marketplace/Skill/MCP/Hook/Cmd/Agent ─
-# ── Section 5: Vault ───────────────────────────────────────
-# ── Section 6: Usage Parsers (Claude) ──────────────────────
-# ── Section 7: Pricing & Cost ──────────────────────────────
-# ── Section 8: Context Analysis ────────────────────────────
-# ── Section 9: Project Usage Index ─────────────────────────
-# ── Section 10: CLI Commands ───────────────────────────────
-# ── Section 11: TUI — Common Helpers (color, key) ──────────
-# ── Section 12: TUI — Common Widgets (Table, DetailPanel, …)
-# ── Section 13: TUI — Tabs ─────────────────────────────────
-# ── Section 14: TUI — Main Loop ────────────────────────────
-# ── Section 15: Entry Point ────────────────────────────────
-```
+| 섹션 | 모듈 | 설명 |
+|---|---|---|
+| 1 — Constants & Paths | `axt/core.py` | `Paths` dataclass, `CLAUDE_CONFIG_DIR` env, Windows 처리 |
+| 2 — JSON I/O | `axt/core.py` | `read_json`, `write_json_atomic` |
+| 3 — Settings | `axt/core.py` | single-scope read/write, plugin enable/disable |
+| 4 — Plugin/Marketplace/Skill/MCP/Hook/Cmd/Agent | `axt/core.py` | 도메인 목록·메타·info |
+| 5 — Vault | `axt/core.py` | `.axt-profile.json` + `~/.claude/vault/` |
+| 6 — Usage Parsers (Claude) | `axt/core.py` | JSONL → `UnifiedUsageEntry`, mtime 캐시 |
+| 7 — Pricing & Cost | `axt/core.py` | `pricing.json` 로더 |
+| 8 — Context Analysis | `axt/core.py` | CLAUDE.md / .mdc / settings / MCP 토큰 추정 |
+| 9 — Project Usage Index | `axt/core.py` | 프로젝트 사용량 집계 |
+| 10 — CLI Commands | `axt/cli.py` | argparse 트리 + `cli_*` 핸들러 |
+| 11 — TUI Common Helpers | `axt/tui/widgets.py` | color/key/width 헬퍼 |
+| 12 — TUI Common Widgets | `axt/tui/widgets.py` | `Table`, `DetailPanel`, … |
+| 13 — TUI Tabs | `axt/tui/tabs.py` | `TuiState`, `render_*_tab`, `handle_*_input` |
+| 14 — TUI Main Loop | `axt/tui/loop.py` | `HELP_TEXT`, `_render_frame`, `_tui_loop`, `launch_tui` |
+| 15 — Entry Point | `axt/cli.py` | `main()` (console_script 진입점) |
+
+각 모듈 안에는 원래 섹션 헤더 주석(`# ── Section N: …`)이 그대로 남아있다. 도메인 코드를 찾을 때는 `axt/core.py`에서 `# ── Section 6:` 같은 앵커로 점프하면 된다.
 
 ## 기능 인벤토리 (요약)
 
@@ -98,9 +111,9 @@ axt는 본래 TypeScript + Ink(React-for-CLI)로 작성되었다. Ink의 flexbox
 - Vault: `.axt-profile.json` per project, `~/.claude/vault/` 글로벌, link/unlink/sync/migrate/import
 - Pricing: `pricing.json` 정적 테이블
 
-## 컴포넌트 책임 분리 (단일 파일 내)
+## 컴포넌트 책임 분리
 
-각 섹션은 다음 인터페이스를 갖는다.
+각 섹션 모듈은 다음 인터페이스를 갖는다.
 
 **Section 2 (JSON I/O)** — 외부 의존: pathlib, json, tempfile, os
 ```python
@@ -175,7 +188,7 @@ Python: 3.9+
 
 - **단위 테스트**: 각 함수에 대해 tmp 디렉터리 fixture (`pytest tmp_path`) 활용
 - **TUI 테스트**: `unittest.mock`으로 curses stdscr 모킹, `addstr` 호출 인자 검증
-- **smoke 테스트**: CLI 명령 각각 `subprocess.run([sys.executable, "axt.py", ...])` 실행 후 exit code 검증
+- **smoke 테스트**: CLI 명령 각각 `subprocess.run([sys.executable, "-m", "axt", ...])` 실행 후 exit code 검증
 
 ## 성공 기준
 
@@ -188,7 +201,7 @@ Python: 3.9+
 
 | 위험 | 완화 |
 |---|---|
-| 7,000줄+ 단일 파일 가독성 | 섹션 주석 + 명확한 함수 이름, type hint 활용 |
+| 모듈 분리로 인한 namespace 회귀 | `axt/__init__.py`의 submodule mirror + write-proxy가 `axt.X` / `monkeypatch.setattr("axt.X", ...)`를 보장. 340 테스트로 회귀 감시 |
 | Python의 JSONL 파싱 성능 | usage 데이터 mtime 기반 캐시 (cst가 이미 검증) |
 | curses의 색상 표현 한계 | `curses.init_pair`로 8색 + bold/dim/reverse 조합 |
 | Windows curses | `windows-curses` 패키지 필요. 별도 install 안내. macOS/Linux 우선 |

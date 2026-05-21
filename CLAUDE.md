@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **axt** (Agent eXtension Tool) is a CLI + TUI dashboard that manages extensions, plugins, skills, MCP servers, hooks, commands, agents, and usage-cost tracking for Claude Code. It reads data from `~/.claude/` and presents a unified view. **v2.0.0 onwards is Claude-only** (v1.x also supported Codex / Gemini CLI / Cursor; that surface area was removed to focus on Claude depth).
 
-**Primary implementation**: Python + curses, single file `axt.py`. Pure stdlib runtime.
+**Primary implementation**: Python + curses, packaged as `axt/`. Pure stdlib runtime.
 
 **Frozen legacy**: TypeScript + Ink implementation lives under `legacy-ts/` (v0.1.x line). Read-only — no new development.
 
@@ -39,30 +39,29 @@ The entry point is `axt:main` (declared in `pyproject.toml` under `[project.scri
 
 ## Architecture
 
-Single-file Python: `axt.py` (~7,400 lines). Internally organized into 15 numbered sections — search by `# ── Section N:` header to navigate.
+`axt/` is a Python package; section headers (`# ── Section N:`) are preserved as stable navigation anchors inside each module. Phase C (commits up to v2.0.0-rc.C) split the original single-file `axt.py` into per-section modules. The package's `__init__.py` mirrors each submodule's globals onto the `axt` namespace, so `axt.X` still resolves regardless of which submodule owns `X`.
 
 ```
-axt.py                  → All code (CLI + TUI + domain + parsers)
-  Section 1             → Constants & Paths
-  Section 2             → JSON I/O (atomic write)
-  Section 3             → Settings (single-scope read/write)
-  Section 4             → Plugin / MCP / Skill / Commands / Agents / Hooks
-  Section 5             → Vault + Marketplace
-  Section 6             → Usage parsers (Claude)
-  Section 7             → Pricing, Plans & Config
-  Section 8             → Context Analysis
-  Section 9             → Project Usage Index
-  Section 10            → CLI Commands (argparse)
-  Section 11            → TUI common helpers (curses, color, key, width)
-  Section 12            → TUI common widgets (Table, DetailPanel, …)
-  Section 13            → TUI tabs (Vault + others)
-  Section 14            → TUI main loop
-  Section 15            → Entry point (main)
+axt/                    → Package
+├── __init__.py         → Public API, version, submodule mirror system
+├── __main__.py         → `python3 -m axt` entry
+├── core.py             → Sections 1-9 — domain layer:
+│                         paths, JSON I/O, settings,
+│                         plugin / MCP / skill / hook / command / agent,
+│                         vault, marketplace, usage parsers (Claude),
+│                         pricing / plans / config, context analysis,
+│                         project usage index
+├── cli.py              → Section 10 + Section 15 — argparse subcommands and `main`
+├── pricing.json        → Per-million-token pricing table (package data)
+└── tui/
+    ├── __init__.py
+    ├── widgets.py      → Sections 11-12 — curses helpers + common widgets
+    ├── tabs.py         → Section 13 — TuiState, render_*_tab, handle_*_input, dispatch
+    └── loop.py         → Section 14 — HELP_TEXT, _render_frame, _tui_loop, launch_tui
 
-pricing.json            → Model pricing table (kept out of code for easy updates)
 pyproject.toml          → Package metadata; entry = axt:main
 README.md               → User-facing install/usage doc
-DESIGN.md               → Rationale for the cst-style single-file rewrite
+DESIGN.md               → Rationale for the cst-style rewrite + Phase-C package split
 FEATURES.md             → Feature inventory (35 subcommands, 4 main TUI tabs + Scope filter)
 SKILL.md                → Claude Skill manifest exposing axt to Claude Code
 tests/                  → pytest suite, one test_*.py per domain (paths, json_io,
@@ -110,7 +109,7 @@ Full subcommand inventory: see `FEATURES.md`.
 
 - Python 3.9+ (uses `set_escdelay`, type-hint syntax `dict[str, X]`, etc.).
 - Pure stdlib runtime — no external dependencies. Dev: pytest, pytest-cov.
-- Package layout: single-file (`py-modules = ["axt"]` in `pyproject.toml`).
+- Package layout: `packages = ["axt"]` (via `setuptools.find_packages`) in `pyproject.toml`; `axt/pricing.json` is shipped as package data.
 
 ## Claude Skill
 
@@ -118,6 +117,13 @@ Full subcommand inventory: see `FEATURES.md`.
 
 ## Working in this repo
 
-- Edit `axt.py` directly. Section headers are stable navigation anchors — keep them.
-- Tests live in `tests/` and import `axt` as a module (via `pyproject` `py-modules`). Run `pytest` from the repo root.
+- Edit per-section modules inside `axt/` directly:
+  - Domain (Sections 1-9) → `axt/core.py`
+  - CLI (Section 10) + entry point (Section 15) → `axt/cli.py`
+  - TUI helpers/widgets (Sections 11-12) → `axt/tui/widgets.py`
+  - TUI tabs (Section 13) → `axt/tui/tabs.py`
+  - TUI main loop (Section 14) → `axt/tui/loop.py`
+- Section header comments (`# ── Section N:`) are stable navigation anchors — keep them.
+- The package mirror in `axt/__init__.py` re-exports submodule globals onto `axt`, so tests can keep using `axt.X` / `monkeypatch.setattr("axt.X", ...)` without caring which submodule owns `X`. When adding a new public name, no manual re-export is needed; mirror happens automatically.
+- Tests live in `tests/` and import `axt` as a package. Run `pytest` from the repo root.
 - Do not modify `legacy-ts/`. It is frozen as historical reference and a fallback.

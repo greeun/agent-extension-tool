@@ -1,15 +1,26 @@
 #!/usr/bin/env python3
 """
-axt — Agent eXtension Tool (Python edition)
+axt — Agent eXtension Tool (Python edition) — core module
 
-Single-file CLI + curses TUI for Claude Code extension / plugin / skill /
-MCP / hook / command / agent / usage management. v2.0.0 onwards is
-Claude-only (Codex / Gemini / Cursor support was dropped after v1.x).
+Domain layer for axt: paths, JSON I/O, settings, plugin/skill/MCP/hook/
+command/agent management, vault, marketplace, usage parsing, pricing,
+context analysis, project usage index.
 
-See DESIGN.md (architecture) and FEATURES.md (feature inventory)
+v2.0.0 is Claude-only (Codex / Gemini / Cursor support was dropped after
+v1.x). See DESIGN.md (architecture) and FEATURES.md (feature inventory)
 for the canonical specification.
 
-Sections (search by header):
+Phase-C package layout — this file (``axt/core.py``) holds Sections 1-9.
+Sections 10 and 11-14 were extracted into sibling modules:
+
+  Section 10  → axt/cli.py             (argparse subcommands)
+  Section 11  → axt/tui/widgets.py     (TUI common helpers)
+  Section 12  → axt/tui/widgets.py     (TUI common widgets)
+  Section 13  → axt/tui/tabs.py        (TUI tabs)
+  Section 14  → axt/tui/loop.py        (TUI main loop)
+  Section 15  → axt/cli.py             (entry point — ``main``)
+
+Section index (search by header in this file):
   Section 1: Constants & Paths
   Section 2: JSON I/O
   Section 3: Settings (single-scope read/write)
@@ -19,12 +30,6 @@ Sections (search by header):
   Section 7: Pricing & Cost
   Section 8: Context Analysis
   Section 9: Project Usage Index
-  Section 10: CLI Commands (argparse)
-  Section 11: TUI — Common helpers (color, key, width)
-  Section 12: TUI — Common widgets (Table, DetailPanel, …)
-  Section 13: TUI — Tabs
-  Section 14: TUI — Main loop
-  Section 15: Entry point
 
 Pure stdlib runtime — `pip install -e .` and `axt` should just work on
 Python 3.9+ (macOS/Linux). Windows needs `windows-curses`.
@@ -3582,8 +3587,8 @@ def format_scan_summary(index: UsageIndex, *, style: str) -> str:
 #
 # The argparse tree, `cli_*` handlers, and `main` live in axt/cli.py. The
 # shared color/format helpers below are referenced by both the CLI module
-# (via ``from axt._core import *``) and by the TUI sections that follow,
-# so they stay here in _core.
+# (via ``from axt.core import *``) and by the TUI sections that follow,
+# so they stay here in core.
 
 
 # ─── Color helpers (shared by CLI + TUI) ─────────────────────────────────────
@@ -3673,7 +3678,7 @@ def budget_bar(used: float, budget: float, width: int = 25) -> str:
 # Section 13    → axt/tui/tabs.py
 # Section 14    → axt/tui/loop.py
 #
-# After C5 those modules no longer need anything mirrored back into _core,
+# After C5 those modules no longer need anything mirrored back into core,
 # so the transitional re-import shims that used to live here are gone.
 # Anything tests reach via ``axt.<name>`` is provided by the package-level
 # mirror in :mod:`axt/__init__.py`, which walks the submodules in order.

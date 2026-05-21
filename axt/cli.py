@@ -4,7 +4,7 @@ Section 10 of the original monolith (plus the Section 15 ``main`` entry
 point). All CLI subcommand handlers, the argparse tree builder, ANSI
 color helpers, and console-output formatters live here.
 
-The module relies on a wildcard import from :mod:`axt._core` so handlers
+The module relies on a wildcard import from :mod:`axt.core` so handlers
 keep using bare symbol names (``PATHS``, ``load_config``, ``ContextSource``,
 …) the way they did when this code shared one big namespace. The
 ``axt/__init__.py`` mirror loop ensures the same symbols are reachable
@@ -21,17 +21,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-# Wildcard import: this module is a logical continuation of _core.py
+# Wildcard import: this module is a logical continuation of core.py
 # (sharing its module-level constants and domain helpers). Explicit
 # imports here would require listing ~80 names and would re-break every
-# time _core grows a new public symbol. Wildcard mirrors the legacy
+# time core grows a new public symbol. Wildcard mirrors the legacy
 # single-namespace behavior; the package-level mirror in
 # axt/__init__.py keeps `axt.<name>` lookups working.
-from axt._core import *  # noqa: F401,F403
+from axt.core import *  # noqa: F401,F403
 
 # Underscore-prefixed names are skipped by `import *`; pull them in
 # explicitly so handlers can use them.
-from axt._core import (  # noqa: F401
+from axt.core import (  # noqa: F401
     _active_plugins,
     _date_in_tz,
     _today_in_tz,
@@ -45,10 +45,10 @@ from axt._core import (  # noqa: F401
 
 
 # Color / formatting helpers (``_red``, ``format_tokens``, ``render_bar``,
-# ``budget_bar``, …) are defined in :mod:`axt._core` because the curses
+# ``budget_bar``, …) are defined in :mod:`axt.core` because the curses
 # TUI uses them too. They land in this module via the wildcard import
 # above and the explicit re-exports below for legibility / IDE support.
-from axt._core import (  # noqa: F401
+from axt.core import (  # noqa: F401
     _bold, _c, _color_enabled, _cyan, _dim, _green, _red, _yellow,
     C_BOLD, C_CYAN, C_DIM, C_GRAY, C_GREEN, C_RED, C_RESET, C_YELLOW,
     budget_bar, format_cost, format_tokens, render_bar,
@@ -222,9 +222,9 @@ def cli_market_remove(args) -> int:
 
 
 # mcp
-# (_active_plugins moved to axt/_core.py near plugin code so the curses
+# (_active_plugins moved to axt/core.py near plugin code so the curses
 # TUI in axt/tui/tabs.py can reach it too. It is re-exported here via the
-# wildcard `from axt._core import *` at the top of this module.)
+# wildcard `from axt.core import *` at the top of this module.)
 
 
 def cli_mcp_list(args) -> int:
@@ -522,9 +522,9 @@ def cli_skill_unlink(args) -> int:
 
 
 # usage
-# (_unified_to_claude and _today_in_tz moved to axt/_core.py so the curses
+# (_unified_to_claude and _today_in_tz moved to axt/core.py so the curses
 # TUI in axt/tui/tabs.py can reach them too. Both are re-exported here via
-# the wildcard `from axt._core import *` at the top of this module.)
+# the wildcard `from axt.core import *` at the top of this module.)
 
 
 def _shared_usage_load(args, *, since: Optional[str] = None, until: Optional[str] = None) -> list[UnifiedUsageEntry]:

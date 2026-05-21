@@ -1283,13 +1283,13 @@ def test_tab_renderers_are_callable():
 
 # ─── C5 regression: helpers referenced as bare names in tabs.py ──────────────
 #
-# The C4 extraction (commit 74b50ee) moved Section 13 out of _core.py into
-# axt/tui/tabs.py. tabs.py wildcards from _core, but THREE helpers were
-# defined in cli.py, not _core.py — so the bare references in
+# The C4 extraction (commit 74b50ee) moved Section 13 out of core.py into
+# axt/tui/tabs.py. tabs.py wildcards from core, but THREE helpers were
+# defined in cli.py, not core.py — so the bare references in
 # tabs.py:render_usage_tab (_today_in_tz, _unified_to_claude) and
 # tabs.py:_ensure_subtab_loaded (_active_plugins) resolved to nothing once
 # tabs.py left the cli.py namespace. C5 moves the three helpers into
-# _core.py and explicitly imports them from tabs.py. These tests force the
+# core.py and explicitly imports them from tabs.py. These tests force the
 # code paths that trip the bare-name lookups.
 
 

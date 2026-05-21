@@ -131,15 +131,26 @@ pytest -k "marketplace"           # match by name
 ## Repository layout
 
 ```
-axt.py            single source file (~7,400 lines, 15 numbered sections)
-pricing.json      model pricing table (edit to add new models — no code change)
-pyproject.toml    package metadata, entry point: axt:main
-tests/            pytest suite, one test_*.py per domain
-DESIGN.md         cst-style single-file rewrite rationale
-FEATURES.md       feature inventory
-SKILL.md          Claude Code skill manifest
-MIGRATION.md      Upgrade notes: v0.1.x→v1.0.0 and v1.x→v2.0.0 (EN; KO in MIGRATION.ko.md)
-legacy-ts/        frozen TypeScript+Ink implementation (v0.1.x line)
+axt/                Python package (sections preserved as # ── Section N: anchors)
+├── __init__.py     public API + submodule mirror
+├── __main__.py     `python3 -m axt` entry
+├── core.py         Sections 1-9: domain (paths, JSON I/O, settings, plugin,
+│                   skill, MCP, hooks, commands, agents, vault, marketplace,
+│                   usage, pricing, context, project usage)
+├── cli.py          Section 10 + 15: argparse + `main` entry
+├── pricing.json    model pricing table (edit to add new models — no code change)
+└── tui/
+    ├── widgets.py  Sections 11-12: curses helpers + common widgets
+    ├── tabs.py     Section 13: tab rendering + input dispatch
+    └── loop.py     Section 14: TUI main loop + launch_tui
+
+pyproject.toml      package metadata, entry point: axt:main
+tests/              pytest suite, one test_*.py per domain
+DESIGN.md           rewrite rationale + Phase-C package split
+FEATURES.md         feature inventory
+SKILL.md            Claude Code skill manifest
+MIGRATION.md        Upgrade notes: v0.1.x→v1.0.0 and v1.x→v2.0.0 (EN; KO in MIGRATION.ko.md)
+legacy-ts/          frozen TypeScript+Ink implementation (v0.1.x line)
 ```
 
 ## License

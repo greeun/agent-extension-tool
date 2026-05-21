@@ -3,7 +3,7 @@
 Public API re-exported from per-section submodules. Phase C keeps the
 package shell intentionally thin: the ``axt`` package mirrors each
 submodule's globals onto its own namespace, so ``axt.X`` and
-``axt._core.X`` (or ``axt.cli.X``, etc.) refer to the same value. This
+``axt.core.X`` (or ``axt.cli.X``, etc.) refer to the same value. This
 preserves the legacy "everything lives on the ``axt`` module" contract
 that tests rely on (including ``monkeypatch`` patches against
 ``axt.PATHS`` / ``axt.AXT_CONFIG_DIR`` / module-level helpers).
@@ -20,20 +20,21 @@ import sys as _sys
 
 # Per-section submodules. C2 added ``cli``. C3 added ``tui.widgets``.
 # C4 added ``tui.tabs``. C5 added ``tui.loop`` and finished the TUI
-# extraction — ``_core.py`` now only carries Sections 1-9 (domain).
+# extraction. C6 renamed ``_core`` → ``core`` — ``core.py`` carries
+# Sections 1-9 (domain).
 # Order matters: later entries override earlier entries when names collide.
 #
-# ``tui.widgets`` is loaded BEFORE ``_core`` only by convention; ``_core``
+# ``tui.widgets`` is loaded BEFORE ``core`` only by convention; ``core``
 # no longer re-imports from it after the C5 cleanup. Loading widgets
 # first keeps lower-level (curses primitive) names earlier in the
 # last-write-wins chain.
-# ``tui.tabs`` is loaded AFTER ``_core`` because it wildcards from
-# ``axt._core`` (Section 13 needs Sections 1-9 domain helpers).
+# ``tui.tabs`` is loaded AFTER ``core`` because it wildcards from
+# ``axt.core`` (Section 13 needs Sections 1-9 domain helpers).
 # ``tui.loop`` is loaded AFTER ``tui.tabs`` because it wildcards from
 # both ``tui.widgets`` and ``tui.tabs``.
 # ``cli`` is last so its names win over any same-named helpers (the
 # CLI module owns the user-facing ``main`` and console-output formatters).
-_SUBMODULES: list[str] = ["tui.widgets", "_core", "tui.tabs", "tui.loop", "cli"]
+_SUBMODULES: list[str] = ["tui.widgets", "core", "tui.tabs", "tui.loop", "cli"]
 
 # Imported submodule objects, in the same order as _SUBMODULES. Populated
 # by _load_submodules() / _reload_submodules() below.

@@ -7,7 +7,7 @@ around the dispatch.
 
 This module imports from both :mod:`axt.tui.widgets` (curses primitives)
 and :mod:`axt.tui.tabs` (tab renderers/handlers + :class:`TuiState`).
-After C5, :mod:`axt._core` no longer carries any TUI code — domain only.
+After C5, :mod:`axt.core` no longer carries any TUI code — domain only.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ from axt.tui.tabs import (  # noqa: F401 — `_`-prefixed names that wildcard sk
 )
 
 # Domain helpers (colors for error messages on TUI startup failure).
-from axt._core import *  # noqa: F401,F403
-from axt._core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
+from axt.core import *  # noqa: F401,F403
+from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
     _dim,
     _red,
 )

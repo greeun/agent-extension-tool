@@ -4,17 +4,17 @@ This module owns Section 13 of the original monolith: every per-tab
 ``render_*`` / ``handle_*`` function, the tab-specific data caches that
 hang off :class:`TuiState`, and the ``TAB_RENDERERS`` / ``TAB_HANDLERS``
 dispatch tables consumed by the main loop (Section 14, currently in
-:mod:`axt._core`).
+:mod:`axt.core`).
 
 Imports follow the C-phase layering convention:
 
 - Widget primitives (Sections 11-12) come from :mod:`axt.tui.widgets`.
-- Domain logic (Sections 1-9) comes from :mod:`axt._core` via a
+- Domain logic (Sections 1-9) comes from :mod:`axt.core` via a
   wildcard re-export, mirrored to keep the legacy bare-name references
   inside Section 13 working without touching every call-site.
 
 The wildcard imports below run during ``axt`` package initialization
-(after ``tui.widgets`` and ``_core`` have populated their globals — see
+(after ``tui.widgets`` and ``core`` have populated their globals — see
 ``axt/__init__.py`` ``_SUBMODULES``).
 """
 
@@ -36,10 +36,10 @@ from axt.tui.widgets import (  # noqa: F401 — wildcard skips `_`-prefixed name
     _wrap_to_cells,
 )
 
-# Domain logic — pull from _core. (After Phase C, this dependency direction
+# Domain logic — pull from core. (After Phase C, this dependency direction
 # is fine: tabs depend on domain, not the other way around.)
-from axt._core import *  # noqa: F401,F403
-from axt._core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
+from axt.core import *  # noqa: F401,F403
+from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
     _active_plugins,
     _date_in_tz,
     _iso_now,

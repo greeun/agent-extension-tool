@@ -1,10 +1,10 @@
 """TUI common helpers + widgets — Sections 11-12 of the original monolith.
 
 Self-contained: depends only on stdlib (curses, unicodedata, subprocess, os).
-The ``__version__`` constant is duplicated from :mod:`axt._core` so this
-module can be imported before ``_core`` finishes initialization (avoiding
+The ``__version__`` constant is duplicated from :mod:`axt.core` so this
+module can be imported before ``core`` finishes initialization (avoiding
 the circular import that would happen if widgets.py needed
-``axt._core.__version__`` at module level).
+``axt.core.__version__`` at module level).
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 
-# Duplicated to keep widgets.py independent of axt._core. The single source
-# of truth is still axt._core.__version__ / axt.__version__ — the package
+# Duplicated to keep widgets.py independent of axt.core. The single source
+# of truth is still axt.core.__version__ / axt.__version__ — the package
 # mirror loop in axt/__init__.py re-exports the most-recent definition.
 __version__ = "2.0.0"
 
