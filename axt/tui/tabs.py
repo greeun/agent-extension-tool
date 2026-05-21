@@ -761,7 +761,12 @@ def _kick_usage_reload(state: TuiState) -> None:
             )
             state.usage_config = config
             state.usage_entries = entries
-            state.status = ""
+            # Only clear the status if it still says we're loading. The
+            # user may have switched tabs and triggered an unrelated
+            # status message between kick-off and completion — don't
+            # clobber it.
+            if state.status == "Loading Claude usage…":
+                state.status = ""
         finally:
             state.usage_loading = False
 
