@@ -19,15 +19,19 @@ import importlib as _importlib
 import sys as _sys
 
 # Per-section submodules. C2 added ``cli``. C3 added ``tui.widgets``.
-# C4-C5 will append the remaining ``tui.*`` modules. Order matters:
-# later entries override earlier entries when names collide.
+# C4 added ``tui.tabs``. C5 will append the remaining ``tui.*`` modules.
+# Order matters: later entries override earlier entries when names collide.
 #
 # ``tui.widgets`` is loaded BEFORE ``_core`` because ``_core``'s
-# Section 13 re-imports from ``axt.tui.widgets`` at module-execution
+# Sections 11-13 shim re-imports from ``axt.tui.widgets`` at module-execution
 # time — the dotted name must already be resolvable in ``sys.modules``.
+# ``tui.tabs`` is loaded AFTER ``_core`` because it wildcards from
+# ``axt._core`` (Section 13 needs Sections 1-9 domain helpers). ``_core``
+# in turn pulls Section 13 names back via a deferred import at its bottom
+# so Section 14 (still in ``_core``) can use them.
 # ``cli`` is last so its names win over any same-named helpers (the
 # CLI module owns the user-facing ``main`` and console-output formatters).
-_SUBMODULES: list[str] = ["tui.widgets", "_core", "cli"]
+_SUBMODULES: list[str] = ["tui.widgets", "_core", "tui.tabs", "cli"]
 
 # Imported submodule objects, in the same order as _SUBMODULES. Populated
 # by _load_submodules() / _reload_submodules() below.
