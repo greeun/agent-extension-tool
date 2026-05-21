@@ -134,10 +134,44 @@ def _vault_load(state: TuiState) -> None:
 _SCAN_CACHE_NAME = "vault-scan-index.json"
 
 
+# ─── Vault scan cache policy ────────────────────────────────────────────────
+#
+# Cache file: <AXT_CONFIG_DIR>/cache/vault-scan-index.json
+#   - POSIX:   ~/.config/axt/cache/vault-scan-index.json
+#              (or $XDG_CONFIG_HOME/axt/cache/... if XDG_CONFIG_HOME is set)
+#   - Windows: %APPDATA%/axt/cache/vault-scan-index.json
+#   The on-disk payload carries a `"mode"` tag of either "default" or "full"
+#   (see ``TuiState.vault_scan_mode``).
+#
+# Invalidation:
+#   - Cache is best-effort. There is NO automatic TTL — the file is read on
+#     vault-tab entry and trusted as-is.
+#   - The user explicitly refreshes by pressing `f` in the Vault tab, which
+#     also toggles the scan mode (default <-> full) before re-scanning.
+#   - Staleness is not surfaced as a relative timestamp; the title bar only
+#     shows the current scan mode and the populated-row count
+#     (e.g. ``scan=default(12/40)``).
+#
+# Concurrency:
+#   - Writes go through ``write_json_atomic`` (tempfile + os.replace), so
+#     concurrent reads never see a partial file.
+#   - No file locking — assumed single-user, single-process tool.
+#
+# Schema versioning:
+#   - Current payload shape: ``{ "mode": str, "scannedAt": ISO8601,
+#     "entries": { "<type>:<name>": {type, name, projects: [...]} } }``.
+#     No ``"version"`` field today; loaders tolerate missing/extra keys.
+#   - Future schema changes should add a ``"version": N`` field; loaders
+#     can treat missing version as v0.
+# ────────────────────────────────────────────────────────────────────────────
+
+
 def _scan_cache_path() -> Path:
     return AXT_CONFIG_DIR / "cache" / _SCAN_CACHE_NAME
 
 
+# Persists the result of `f`-triggered cross-project scans.
+# See "Vault scan cache policy" above.
 def _save_scan_cache(index: dict[str, ExtensionUsage], mode: str) -> None:
     """Persist the cross-project scan so it survives axt restarts.
 
@@ -162,6 +196,9 @@ def _save_scan_cache(index: dict[str, ExtensionUsage], mode: str) -> None:
         pass  # best-effort cache; never fail the scan
 
 
+# Reads the most recent scan result. Never used as a substitute for live data —
+# only populates the "Used" column.
+# See "Vault scan cache policy" above.
 def _load_scan_cache() -> tuple[dict[str, ExtensionUsage], str]:
     """Return (index, mode). Empty index + 'default' mode when no cache yet."""
     data = read_json(_scan_cache_path(), fallback={})
