@@ -44,21 +44,6 @@ def test_claude_config_dir_env_overrides(clean_env, monkeypatch):
     assert axt.PATHS.settings == Path("/custom/claude/settings.json")
 
 
-def test_codex_home_env_overrides(clean_env, monkeypatch):
-    monkeypatch.setenv("CODEX_HOME", "/custom/codex")
-    axt = _reload_axt()
-    assert axt.CODEX_DIR == Path("/custom/codex")
-    assert axt.PATHS.codex_sessions == Path("/custom/codex/sessions")
-
-
-def test_gemini_cli_home_points_above_dotgemini(clean_env, monkeypatch):
-    """Mirror the TS quirk: GEMINI_CLI_HOME is the parent of .gemini."""
-    monkeypatch.setenv("GEMINI_CLI_HOME", "/custom/parent")
-    axt = _reload_axt()
-    assert axt.GEMINI_DIR == Path("/custom/parent/.gemini")
-    assert axt.PATHS.gemini_tmp == Path("/custom/parent/.gemini/tmp")
-
-
 def test_empty_env_var_falls_back_to_default(clean_env, monkeypatch):
     """Empty-string env var should NOT override default (treat as unset)."""
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: Path("/h")))
@@ -109,9 +94,3 @@ def test_vault_subdirs_under_axt_dir(clean_env, monkeypatch):
     assert axt.PATHS.vault_agents == Path("/h/.axt/vault/agents")
 
 
-def test_cursor_db_path_under_dotcursor(clean_env, monkeypatch):
-    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: Path("/h")))
-    axt = _reload_axt()
-    assert axt.PATHS.cursor_tracking_db == Path(
-        "/h/.cursor/ai-tracking/ai-code-tracking.db"
-    )

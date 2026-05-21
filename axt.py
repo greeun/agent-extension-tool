@@ -47,9 +47,8 @@ T = TypeVar("T")
 
 # ── Section 1: Constants & Paths ─────────────────────────────────────────────
 #
-# Mirrors src/core/paths.ts. Honors the same env vars (`CLAUDE_CONFIG_DIR`,
-# `CODEX_HOME`, `GEMINI_CLI_HOME`) and the same Windows %APPDATA% fallback
-# for the axt user-config dir.
+# Mirrors src/core/paths.ts. Honors `CLAUDE_CONFIG_DIR` and the Windows
+# %APPDATA% fallback for the axt user-config dir.
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -63,10 +62,6 @@ def _env_dir(env_var: str, default: Path) -> Path:
 
 
 CLAUDE_DIR: Path = _env_dir("CLAUDE_CONFIG_DIR", HOME / ".claude")
-CODEX_DIR: Path = _env_dir("CODEX_HOME", HOME / ".codex")
-# Mirror the TS quirk: $GEMINI_CLI_HOME points one level above ".gemini".
-_GEMINI_BASE = os.environ.get("GEMINI_CLI_HOME")
-GEMINI_DIR: Path = (Path(_GEMINI_BASE) / ".gemini") if _GEMINI_BASE else (HOME / ".gemini")
 
 
 @dataclass(frozen=True)
@@ -85,19 +80,6 @@ class Paths:
     projects: Path = CLAUDE_DIR / "projects"
     stats_cache: Path = CLAUDE_DIR / "stats-cache.json"
     usage_snapshot: Path = CLAUDE_DIR / "usage-snapshot.json"
-
-    # Codex
-    codex_dir: Path = CODEX_DIR
-    codex_sessions: Path = CODEX_DIR / "sessions"
-
-    # Gemini
-    gemini_dir: Path = GEMINI_DIR
-    gemini_tmp: Path = GEMINI_DIR / "tmp"
-    gemini_projects: Path = GEMINI_DIR / "projects.json"
-
-    # Cursor
-    cursor_dir: Path = HOME / ".cursor"
-    cursor_tracking_db: Path = HOME / ".cursor" / "ai-tracking" / "ai-code-tracking.db"
 
     # axt vault
     axt_dir: Path = HOME / ".axt"
