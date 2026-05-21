@@ -33,52 +33,29 @@ def test_main_tabs_collapsed_to_four_resource_types():
     assert keys == ["dashboard", "extensions", "context", "usage"]
 
 
-def test_usage_sub_tabs_include_all_four_platforms():
-    """Platform views move into Usage sub-tabs (plus an 'all' rollup)."""
-    keys = [t[0] for t in axt.USAGE_SUB_TABS]
-    assert keys == ["all", "claude", "codex", "gemini", "cursor"]
-
-
-def test_tui_state_defaults_platform_all_scope_project():
-    """Per design: Platform=All (aggregate), Scope=Current Project."""
+def test_tui_state_defaults_scope_project():
+    """Per design: Scope=Current Project."""
     s = axt.TuiState()
-    assert s.platform_filter == "all"
     assert s.scope_filter == "project"
 
 
-def test_tui_state_initializes_usage_sub_tab():
-    """Usage tab remembers its last sub-tab between renders."""
-    s = axt.TuiState()
-    assert s.usage_sub_tab == "all"
-
-
-def test_render_filter_chips_shows_platform_and_scope_labels():
+def test_render_filter_chips_shows_scope_label():
     scr = _make_stdscr()
-    axt.render_filter_chips(scr, y=1, x=0, w=120, platform="all", scope="project")
+    axt.render_filter_chips(scr, y=1, x=0, w=120, scope="project")
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Platform:" in flat
     assert "Scope:" in flat
-    assert "All" in flat
     assert "Project" in flat
 
 
-def test_render_filter_chips_highlights_non_default_filter():
-    """When a filter is set to a non-default value, its chip should stand out."""
+def test_render_filter_chips_highlights_non_default_scope():
+    """When Scope is set to a non-default value, its chip should stand out."""
     scr = _make_stdscr()
-    axt.render_filter_chips(scr, y=1, x=0, w=120, platform="claude", scope="project")
+    axt.render_filter_chips(scr, y=1, x=0, w=120, scope="all")
     for call in scr.calls:
-        if len(call) >= 5 and isinstance(call[2], str) and "Claude" in call[2]:
+        if len(call) >= 5 and isinstance(call[2], str) and "All" in call[2]:
             assert call[4] & curses.A_BOLD
             return
-    pytest.fail("Platform=claude chip was not drawn with BOLD")
-
-
-def test_cycle_platform_filter_rotates_through_options():
-    state = axt.TuiState()
-    options = ["all", "claude", "codex", "gemini", "cursor"]
-    for expected in options[1:] + [options[0]]:
-        axt.cycle_platform_filter(state, +1)
-        assert state.platform_filter == expected
+    pytest.fail("Scope=all chip was not drawn with BOLD")
 
 
 def test_cycle_scope_filter_toggles_between_project_and_all():
@@ -90,49 +67,24 @@ def test_cycle_scope_filter_toggles_between_project_and_all():
     assert state.scope_filter == "project"
 
 
-def test_render_usage_root_tab_draws_sub_tab_bar():
-    """Usage root must render a sub-tab bar showing All/Claude/Codex/Gemini/Cursor."""
-    scr = _make_stdscr()
-    state = axt.TuiState()
-    state.usage_sub_tab = "claude"
-    axt.render_usage_root_tab(scr, state, y0=3, h=20, w=120)
-    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    for label in ("All", "Claude", "Codex", "Gemini", "Cursor"):
-        assert label in flat, f"Usage sub-tab bar must include {label!r}"
-
-
-def test_render_usage_root_tab_active_sub_tab_is_highlighted():
-    scr = _make_stdscr()
-    state = axt.TuiState()
-    state.usage_sub_tab = "codex"
-    axt.render_usage_root_tab(scr, state, y0=3, h=20, w=120)
-    for call in scr.calls:
-        if len(call) >= 5 and isinstance(call[2], str) and "Codex" in call[2]:
-            if call[4] & curses.A_BOLD:
-                return
-    pytest.fail("Active Usage sub-tab 'Codex' was not bold")
-
-
-def test_render_frame_dispatches_usage_tab_to_root_renderer(monkeypatch):
-    """When tab_idx points at 'usage', _render_frame should call render_usage_root_tab."""
+def test_render_frame_dispatches_usage_tab(monkeypatch):
+    """When tab_idx points at 'usage', _render_frame should call render_usage_tab."""
     calls = []
-    monkeypatch.setattr(axt, "render_usage_root_tab",
-                        lambda *a, **kw: calls.append("root"))
+    monkeypatch.setattr(axt, "render_usage_tab",
+                        lambda *a, **kw: calls.append("usage"))
     scr = _make_stdscr()
     state = axt.TuiState()
     state.tab_idx = next(i for i, t in enumerate(axt.MAIN_TABS) if t[0] == "usage")
     axt._render_frame(scr, state)
-    assert calls == ["root"]
+    assert calls == ["usage"]
 
 
-def test_cycle_sub_tab_dispatches_on_active_main_tab():
-    """_cycle_sub_tab on Usage tab rotates usage_sub_tab, not ext_sub_tab."""
+def test_cycle_sub_tab_rotates_only_extensions():
+    """_cycle_sub_tab rotates ext_sub_tab — Extensions is the only tab with sub-tabs."""
     state = axt.TuiState()
-    state.tab_idx = next(i for i, t in enumerate(axt.MAIN_TABS) if t[0] == "usage")
-    state.usage_sub_tab = "all"
+    assert state.ext_sub_tab == "vault"
     axt._cycle_sub_tab(state, +1)
-    assert state.usage_sub_tab == "claude"
-    assert state.ext_sub_tab == "vault"  # unchanged
+    assert state.ext_sub_tab == "plugins"
 
 
 def _make_empty_context_analysis():
@@ -197,43 +149,6 @@ def test_filter_vault_items_by_scope_all_returns_everything():
     items = [_vi("p1", linked=True), _vi("g1", glinked=True), _vi("idle")]
     visible = axt.filter_vault_items_by_scope(items, "all")
     assert {i.name for i in visible} == {"p1", "g1", "idle"}
-
-
-def _ue(platform: str):
-    return axt.UnifiedUsageEntry(
-        platform=platform, model="m", timestamp="2026-05-21T00:00:00Z",
-        session_id="s", project_path="/p",
-        input_tokens=1, output_tokens=1,
-        cache_write_tokens=0, cache_read_tokens=0,
-    )
-
-
-def test_filter_entries_by_platform_keeps_only_matching():
-    entries = [_ue("claude"), _ue("codex"), _ue("gemini")]
-    filtered = axt.filter_entries_by_platform(entries, "codex")
-    assert [e.platform for e in filtered] == ["codex"]
-
-
-def test_filter_entries_by_platform_all_returns_everything():
-    entries = [_ue("claude"), _ue("codex")]
-    filtered = axt.filter_entries_by_platform(entries, "all")
-    assert len(filtered) == 2
-
-
-def test_sync_usage_sub_tab_snaps_to_platform_filter():
-    state = axt.TuiState()
-    state.usage_sub_tab = "all"
-    state.platform_filter = "gemini"
-    axt.sync_usage_sub_tab_to_platform_filter(state)
-    assert state.usage_sub_tab == "gemini"
-
-
-def test_sync_usage_sub_tab_noop_when_platform_filter_is_all():
-    state = axt.TuiState()
-    state.usage_sub_tab = "codex"
-    state.platform_filter = "all"
-    axt.sync_usage_sub_tab_to_platform_filter(state)
-    assert state.usage_sub_tab == "codex"
 
 
 def test_tui_state_initial_focus_is_main_tab():
@@ -547,7 +462,6 @@ def test_help_text_documents_tab_navigation():
 
 
 def test_help_text_documents_global_filter_keys():
-    assert "Platform filter" in axt.HELP_TEXT
     assert "Scope filter" in axt.HELP_TEXT
 
 
@@ -617,9 +531,6 @@ def _setup_isolated_paths(tmp_path, monkeypatch):
         settings=tmp_path / "settings.json",
         installed_plugins=tmp_path / "ip.json",
         projects=tmp_path / "claude_projects",
-        codex_sessions=tmp_path / "codex",
-        gemini_tmp=tmp_path / "gemini",
-        cursor_tracking_db=tmp_path / "cursor.db",
         vault=tmp_path / "vault",
     ))
     monkeypatch.setattr("axt.AXT_CONFIG_PATH", tmp_path / "config.json")
@@ -639,19 +550,9 @@ def test_render_usage_claude_no_data(tmp_path, monkeypatch):
     _setup_isolated_paths(tmp_path, monkeypatch)
     state = axt.TuiState()
     scr = _make_stdscr(rows=30, cols=120)
-    axt.render_usage_tab(scr, state, 0, 28, 120, "claude")
+    axt.render_usage_tab(scr, state, 0, 28, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Claude" in flat
-
-
-def test_render_cursor_no_db(tmp_path, monkeypatch):
-    _setup_isolated_paths(tmp_path, monkeypatch)
-    state = axt.TuiState()
-    scr = _make_stdscr(rows=20, cols=120)
-    axt.render_cursor_tab(scr, state, 0, 18, 120)
-    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Cursor" in flat
-    assert "No Cursor commit metrics found" in flat
 
 
 def test_render_context_basic(tmp_path, monkeypatch):
@@ -1062,21 +963,10 @@ def test_at_top_of_content_vault_at_zero():
     assert axt._at_top_of_content(state, "extensions") is False
 
 
-def test_at_top_of_content_usage_cursor_sub_tab():
-    """Usage tab with cursor sub-tab: selection 0 → at top, >0 → not."""
-    state = axt.TuiState()
-    state.usage_sub_tab = "cursor"
-    state.cursor_selected = 0
-    assert axt._at_top_of_content(state, "usage") is True
-    state.cursor_selected = 2
-    assert axt._at_top_of_content(state, "usage") is False
-
-
-def test_at_top_of_content_dashboard_always_true():
-    """Dashboard and non-Cursor usage sub-tabs have no selectable list."""
+def test_at_top_of_content_dashboard_and_usage_always_true():
+    """Dashboard and Usage have no selectable list — both always count as top."""
     state = axt.TuiState()
     assert axt._at_top_of_content(state, "dashboard") is True
-    state.usage_sub_tab = "claude"
     assert axt._at_top_of_content(state, "usage") is True
 
 
@@ -1239,26 +1129,7 @@ def test_subtab_action_without_stdscr_is_noop():
     assert axt._handle_subtab_action(state, "skills", ord("l")) is None
 
 
-# ─── Cursor / Project Enter previews & `e` editor (smoke) ────────────────────
-
-
-def test_cursor_enter_calls_preview(monkeypatch, tmp_path):
-    """Enter on a Cursor row should call preview_modal."""
-    called = []
-    monkeypatch.setattr("axt.preview_modal", lambda stdscr, content, title="Preview": called.append((title, content)))
-    state = axt.TuiState()
-    state.cursor_metrics = [axt.CursorCommitMetrics(
-        commit_hash="abc1234", branch_name="main", scored_at=0,
-        lines_added=10, lines_deleted=2,
-        human_lines_added=5, human_lines_deleted=1,
-        composer_lines_added=5, composer_lines_deleted=1,
-        ai_percentage=50.0, commit_message="fix: a bug", commit_date="2026-05-01",
-    )]
-    state.cursor_selected = 0
-    state.stdscr_callbacks = {"stdscr": object()}
-    axt.handle_cursor_input(state, 10)  # Enter
-    assert len(called) == 1
-    assert "abc1234" in called[0][0]
+# ─── Project Enter preview & `e` editor (smoke) ──────────────────────────────
 
 
 def test_project_enter_calls_preview(monkeypatch):

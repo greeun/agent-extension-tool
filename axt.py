@@ -4653,16 +4653,6 @@ MAIN_TABS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-# Usage sub-tabs — platform axis, paralleling EXTENSION_SUB_TABS.
-USAGE_SUB_TABS: tuple[tuple[str, str], ...] = (
-    ("all",    "All"),
-    ("claude", "Claude"),
-    ("codex",  "Codex"),
-    ("gemini", "Gemini"),
-    ("cursor", "Cursor"),
-)
-
-
 def render_tab_bar(stdscr, y: int, x: int, w: int, active_idx: int, focused: bool) -> None:
     """Top tab bar: `▶ 1·Ext  2·Ctx  3·Prj  …` on the left, ` axt v0.2.0 ` on
     the right.
@@ -4711,38 +4701,22 @@ def render_tab_bar(stdscr, y: int, x: int, w: int, active_idx: int, focused: boo
         safe_addnstr(stdscr, y, cur, " " * (tab_limit - cur), tab_limit - cur, CP_DIM())
 
 
-_PLATFORM_CHIP_LABEL: dict[str, str] = {
-    "all": "All", "claude": "Claude", "codex": "Codex",
-    "gemini": "Gemini", "cursor": "Cursor",
-}
 _SCOPE_CHIP_LABEL: dict[str, str] = {"project": "Project", "all": "All"}
 
 
-def render_filter_chips(stdscr, y: int, x: int, w: int,
-                        platform: str, scope: str) -> None:
-    """Render the two global filter chips on the header line.
+def render_filter_chips(stdscr, y: int, x: int, w: int, scope: str) -> None:
+    """Render the Scope filter chip on the header line.
 
-    Layout:  `Platform: [All]  Scope: [Project]`  (left-aligned, single row)
+    Layout:  `Scope: [Project]`  (left-aligned, single row)
 
-    A chip whose value is the *default* (`all` for platform, `project` for
-    scope) renders dim — it carries no information. A non-default chip
-    renders BOLD cyan so the user can see at a glance that the view is
-    filtered.
+    A chip whose value is the default (`project`) renders dim — it carries
+    no information. A non-default chip renders BOLD cyan so the user can
+    see at a glance that the view is filtered.
     """
-    platform_label = _PLATFORM_CHIP_LABEL.get(platform, platform.title())
     scope_label = _SCOPE_CHIP_LABEL.get(scope, scope.title())
-
-    platform_attr = CP_CYAN() | curses.A_BOLD if platform != "all" else CP_DIM()
     scope_attr = CP_CYAN() | curses.A_BOLD if scope != "project" else CP_DIM()
 
     cur = x
-    label = "Platform: "
-    safe_addnstr(stdscr, y, cur, label, w - (cur - x), CP_DIM())
-    cur += cell_width(label)
-    chip = f"[{platform_label}]"
-    safe_addnstr(stdscr, y, cur, chip, w - (cur - x), platform_attr)
-    cur += cell_width(chip) + 2
-
     label = "Scope: "
     safe_addnstr(stdscr, y, cur, label, w - (cur - x), CP_DIM())
     cur += cell_width(label)
@@ -5172,24 +5146,15 @@ class TuiState:
     ext_cache: dict[str, Any] = field(default_factory=dict)
     ext_selected: dict[str, int] = field(default_factory=dict)
 
-    # Global filters — apply to every tab uniformly.
-    # Platform axis: "all" | "claude" | "codex" | "gemini" | "cursor"
-    platform_filter: str = "all"
+    # Global filter — applies to every tab uniformly.
     # Scope axis: "project" (current cwd only) | "all" (project + global)
     scope_filter: str = "project"
-
-    # Usage sub-tab state (mirrors ext_sub_tab pattern).
-    usage_sub_tab: str = "all"                     # one of USAGE_SUB_TABS keys
 
     # Dashboard / usage data caches (None = not loaded yet).
     dashboard_entries: Optional[list] = None
     dashboard_config: Optional[Any] = None
-    usage_data: dict[str, list] = field(default_factory=dict)
+    usage_entries: Optional[list] = None
     usage_config: Optional[Any] = None
-
-    # Cursor tab.
-    cursor_metrics: Optional[list] = None
-    cursor_selected: int = 0
 
     # Context tab.
     context_analysis: Optional[Any] = None
@@ -5770,8 +5735,6 @@ def _ensure_dashboard_loaded(state: TuiState) -> None:
     month_start = f"{now.year}-{now.month:02d}-01"
     state.dashboard_entries = load_unified_usage(
         claude_projects_dir=PATHS.projects,
-        codex_sessions_dir=PATHS.codex_sessions,
-        gemini_tmp_dir=PATHS.gemini_tmp,
         since=month_start,
     )
 
@@ -5779,39 +5742,29 @@ def _ensure_dashboard_loaded(state: TuiState) -> None:
 def render_dashboard_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     _ensure_dashboard_loaded(state)
     config = state.dashboard_config or load_config(AXT_CONFIG_PATH)
-    entries = filter_entries_by_platform(
-        state.dashboard_entries or [], state.platform_filter,
-    )
+    entries = state.dashboard_entries or []
 
     header = " Dashboard — this month so far"
-    if state.platform_filter != "all":
-        header += f"  [{state.platform_filter}]"
     safe_addnstr(stdscr, y0, 0, fit_cells(header, w - 1), w - 1, CP_HDR())
     if not entries:
         safe_addnstr(stdscr, y0 + 2, 2, "No usage data this month yet.", w - 4, CP_DIM())
         return
 
-    # Per-platform card line.
+    # Claude summary line.
     row = y0 + 2
-    total_cost = 0.0
-    for platform in ("claude", "codex", "gemini"):
-        plat_entries = [e for e in entries if e.platform == platform]
-        if not plat_entries:
-            continue
-        cost = sum(_entry_cost(e) for e in plat_entries)
-        total_cost += cost
-        plan = config.plans.get(platform)
-        plan_label = f"{plan.plan} (${plan.monthly_cost}/mo)" if plan else "—"
-        in_t = sum(e.input_tokens for e in plat_entries)
-        out_t = sum(e.output_tokens for e in plat_entries)
-        cr_t = sum(e.cache_read_tokens for e in plat_entries)
-        line = (
-            f"{platform.capitalize():9s}  {plan_label:24s}  "
-            f"cost={format_cost(cost, config.exchange_rate):26s}  "
-            f"in={format_tokens(in_t):>7s}  out={format_tokens(out_t):>7s}  cache_r={format_tokens(cr_t):>7s}"
-        )
-        safe_addnstr(stdscr, row, 2, fit_cells(line, w - 4), w - 4, 0)
-        row += 1
+    total_cost = sum(_entry_cost(e) for e in entries)
+    plan = config.plans.get("claude")
+    plan_label = f"{plan.plan} (${plan.monthly_cost}/mo)" if plan else "—"
+    in_t = sum(e.input_tokens for e in entries)
+    out_t = sum(e.output_tokens for e in entries)
+    cr_t = sum(e.cache_read_tokens for e in entries)
+    line = (
+        f"{'Claude':9s}  {plan_label:24s}  "
+        f"cost={format_cost(total_cost, config.exchange_rate):26s}  "
+        f"in={format_tokens(in_t):>7s}  out={format_tokens(out_t):>7s}  cache_r={format_tokens(cr_t):>7s}"
+    )
+    safe_addnstr(stdscr, row, 2, fit_cells(line, w - 4), w - 4, 0)
+    row += 1
 
     # Total + monthly budget bar.
     row += 1
@@ -5848,28 +5801,24 @@ def handle_dashboard_input(state: TuiState, key: int) -> Optional[str]:
     return None
 
 
-# ─── Usage tabs (Claude / Codex / Gemini share a renderer) ───────────────────
+# ─── Usage tab (Claude-only) ─────────────────────────────────────────────────
 
 
-def _ensure_usage_loaded(state: TuiState, platform: str) -> None:
-    bucket = state.usage_data.get(platform)
-    if bucket is not None:
+def _ensure_usage_loaded(state: TuiState) -> None:
+    if state.usage_entries is not None:
         return
     config = load_config(AXT_CONFIG_PATH)
     state.usage_config = config
     now = datetime.now(timezone.utc)
     month_start = f"{now.year}-{now.month:02d}-01"
-    state.usage_data[platform] = load_unified_usage(
+    state.usage_entries = load_unified_usage(
         claude_projects_dir=PATHS.projects,
-        codex_sessions_dir=PATHS.codex_sessions,
-        gemini_tmp_dir=PATHS.gemini_tmp,
         since=month_start,
-        platform=platform,
     )
 
 
-def _platform_period_card(entries: list[UnifiedUsageEntry], label: str, w: int) -> list[str]:
-    """3-line summary card."""
+def _usage_period_card(entries: list[UnifiedUsageEntry], label: str) -> list[str]:
+    """3-line summary card for a period (Today/Week/Month)."""
     sessions = {e.session_id for e in entries}
     cost = sum(_entry_cost(e) for e in entries)
     in_t = sum(e.input_tokens for e in entries)
@@ -5884,15 +5833,15 @@ def _platform_period_card(entries: list[UnifiedUsageEntry], label: str, w: int) 
     ]
 
 
-def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int, platform: str) -> None:
-    _ensure_usage_loaded(state, platform)
+def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
+    _ensure_usage_loaded(state)
     config = state.usage_config or load_config(AXT_CONFIG_PATH)
-    entries = state.usage_data.get(platform) or []
+    entries = state.usage_entries or []
 
-    safe_addnstr(stdscr, y0, 0, fit_cells(f" {platform.capitalize()} usage — this month", w - 1), w - 1, CP_HDR())
+    safe_addnstr(stdscr, y0, 0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_HDR())
 
     if not entries:
-        safe_addnstr(stdscr, y0 + 2, 2, f"No {platform} usage data this month yet.", w - 4, CP_DIM())
+        safe_addnstr(stdscr, y0 + 2, 2, "No Claude usage data this month yet.", w - 4, CP_DIM())
         return
 
     tz = config.timezone
@@ -5905,7 +5854,7 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int, platform:
 
     row = y0 + 2
     for label, eps in (("Today", today_entries), ("Week", week_entries), ("Month", month_entries)):
-        for line in _platform_period_card(eps, label, w - 4):
+        for line in _usage_period_card(eps, label):
             safe_addnstr(stdscr, row, 2, fit_cells(line, w - 4), w - 4, 0)
             row += 1
         row += 1
@@ -5917,43 +5866,42 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int, platform:
     rows_used = render_bar_chart(stdscr, row, 4, w - 8, chart_data)
     row += rows_used + 1
 
-    # Claude: show current active block + simple insights summary.
-    if platform == "claude":
-        claude_entries = [_unified_to_claude(e) for e in entries]
-        blocks = compute_blocks(claude_entries, tz)
-        active = next((b for b in blocks if b.is_active), None)
-        if active:
-            burn = format_tokens(active.burn_rate_per_min) if active.burn_rate_per_min else "—"
-            safe_addnstr(stdscr, row, 2, fit_cells(
-                f"Active block: {active.start_time[11:16]}–{active.end_time[11:16]}  "
-                f"tokens={format_tokens(active.total_tokens)}  burn={burn}/min",
-                w - 4), w - 4, CP_OK())
-            row += 2
+    # Active block + simple insights summary.
+    claude_entries = [_unified_to_claude(e) for e in entries]
+    blocks = compute_blocks(claude_entries, tz)
+    active = next((b for b in blocks if b.is_active), None)
+    if active:
+        burn = format_tokens(active.burn_rate_per_min) if active.burn_rate_per_min else "—"
+        safe_addnstr(stdscr, row, 2, fit_cells(
+            f"Active block: {active.start_time[11:16]}–{active.end_time[11:16]}  "
+            f"tokens={format_tokens(active.total_tokens)}  burn={burn}/min",
+            w - 4), w - 4, CP_OK())
+        row += 2
 
-        insights = _compute_simple_insights(claude_entries)
-        safe_addnstr(stdscr, row, 2, "Insights (this month):", w - 4, CP_HDR())
-        row += 1
+    insights = _compute_simple_insights(claude_entries)
+    safe_addnstr(stdscr, row, 2, "Insights (this month):", w - 4, CP_HDR())
+    row += 1
+    safe_addnstr(stdscr, row, 2, fit_cells(
+        f"  large-context sessions (>150k input tokens):  {insights['large_pct']:.1f}%",
+        w - 4), w - 4, 0)
+    row += 1
+    safe_addnstr(stdscr, row, 2, fit_cells(
+        f"  parallel sessions (3+ overlapping at once):   {insights['parallel_pct']:.1f}%",
+        w - 4), w - 4, 0)
+    row += 1
+    safe_addnstr(stdscr, row, 2, fit_cells(
+        f"  top model by tokens:                          "
+        f"{insights['top_model'] or '—'}",
+        w - 4), w - 4, 0)
+    row += 1
+    # Plan-limit row (5h / 7d) if we have the snapshot.
+    rl = read_rate_limits(PATHS.usage_snapshot)
+    if rl is not None:
+        five = f"{rl.five_hour}%" if rl.five_hour is not None else "—"
+        seven = f"{rl.seven_day}%" if rl.seven_day is not None else "—"
         safe_addnstr(stdscr, row, 2, fit_cells(
-            f"  large-context sessions (>150k input tokens):  {insights['large_pct']:.1f}%",
-            w - 4), w - 4, 0)
-        row += 1
-        safe_addnstr(stdscr, row, 2, fit_cells(
-            f"  parallel sessions (3+ overlapping at once):   {insights['parallel_pct']:.1f}%",
-            w - 4), w - 4, 0)
-        row += 1
-        safe_addnstr(stdscr, row, 2, fit_cells(
-            f"  top model by tokens:                          "
-            f"{insights['top_model'] or '—'}",
-            w - 4), w - 4, 0)
-        row += 1
-        # Plan-limit row (5h / 7d) if we have the snapshot.
-        rl = read_rate_limits(PATHS.usage_snapshot)
-        if rl is not None:
-            five = f"{rl.five_hour}%" if rl.five_hour is not None else "—"
-            seven = f"{rl.seven_day}%" if rl.seven_day is not None else "—"
-            safe_addnstr(stdscr, row, 2, fit_cells(
-                f"  plan limits:  5h={five}  7d={seven}",
-                w - 4), w - 4, CP_INFO())
+            f"  plan limits:  5h={five}  7d={seven}",
+            w - 4), w - 4, CP_INFO())
 
 
 def _compute_simple_insights(entries: list[ClaudeUsageEntry]) -> dict[str, Any]:
@@ -6007,105 +5955,10 @@ def _compute_simple_insights(entries: list[ClaudeUsageEntry]) -> dict[str, Any]:
     return {"large_pct": large_pct, "parallel_pct": parallel_pct, "top_model": top_model}
 
 
-def handle_usage_input(state: TuiState, key: int, platform: str) -> Optional[str]:
+def handle_usage_input(state: TuiState, key: int) -> Optional[str]:
     if key == ord("r"):
-        state.usage_data.pop(platform, None)
+        state.usage_entries = None
         return "Refreshed"
-    return None
-
-
-# ─── Cursor tab ──────────────────────────────────────────────────────────────
-
-
-def _ensure_cursor_loaded(state: TuiState) -> None:
-    if state.cursor_metrics is not None:
-        return
-    state.cursor_metrics = load_cursor_metrics(PATHS.cursor_tracking_db)
-
-
-def render_cursor_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
-    _ensure_cursor_loaded(state)
-    metrics = state.cursor_metrics or []
-    summary = summarize_cursor_metrics(metrics)
-
-    safe_addnstr(stdscr, y0, 0, fit_cells(" Cursor — AI vs human code", w - 1), w - 1, CP_HDR())
-
-    if not metrics:
-        safe_addnstr(stdscr, y0 + 2, 2, "No Cursor commit metrics found.", w - 4, CP_DIM())
-        safe_addnstr(stdscr, y0 + 3, 2, f"Expected DB at: {PATHS.cursor_tracking_db}", w - 4, CP_DIM())
-        return
-
-    # Three summary lines.
-    row = y0 + 2
-    safe_addnstr(stdscr, row, 2, fit_cells(
-        f"Commits: {summary.total_commits:>5d}    "
-        f"+{summary.total_lines_added:>5d} / -{summary.total_lines_deleted:>5d} lines",
-        w - 4), w - 4, 0)
-    row += 1
-    safe_addnstr(stdscr, row, 2, fit_cells(
-        f"AI:      +{summary.ai_lines_added:>5d} / -{summary.ai_lines_deleted:>5d}    "
-        f"Human: +{summary.human_lines_added:>5d} / -{summary.human_lines_deleted:>5d}",
-        w - 4), w - 4, 0)
-    row += 1
-    pct = summary.avg_ai_percentage
-    bar_w = min(40, w - 30)
-    filled = round((pct / 100) * bar_w)
-    safe_addnstr(stdscr, row, 2, fit_cells(
-        f"Avg AI %: {render_bar(filled, bar_w)} {pct:5.1f}%",
-        w - 4), w - 4, CP_INFO())
-    row += 2
-
-    # Commits table.
-    columns = [
-        TableColumn("hash", "Hash", 9),
-        TableColumn("date", "Date", 12),
-        TableColumn("ai", "AI %", 7),
-        TableColumn("lines", "Lines", 14),
-        TableColumn("message", "Message", max(20, w - 60)),
-    ]
-    rows = []
-    for m in metrics[:50]:
-        rows.append({
-            "hash": m.commit_hash[:8],
-            "date": m.commit_date[:10] if m.commit_date else "—",
-            "ai": f"{m.ai_percentage:.1f}%",
-            "lines": f"+{m.lines_added}/-{m.lines_deleted}",
-            "message": (m.commit_message or "")[:80],
-        })
-    state.cursor_selected = max(0, min(state.cursor_selected, max(0, len(rows) - 1)))
-    render_table(stdscr, row, 0, h - (row - y0) - 1, w, columns, rows,
-                 selected=state.cursor_selected, show_header=True)
-
-
-def handle_cursor_input(state: TuiState, key: int) -> Optional[str]:
-    metrics = state.cursor_metrics or []
-    n = min(50, len(metrics))
-    if key in (ord("j"), curses.KEY_DOWN):
-        state.cursor_selected = min(n - 1, state.cursor_selected + 1) if n else 0
-    elif key in (ord("k"), curses.KEY_UP):
-        state.cursor_selected = max(0, state.cursor_selected - 1)
-    elif key == curses.KEY_NPAGE:
-        state.cursor_selected = min(n - 1, state.cursor_selected + 10) if n else 0
-    elif key == curses.KEY_PPAGE:
-        state.cursor_selected = max(0, state.cursor_selected - 10)
-    elif key == ord("r"):
-        state.cursor_metrics = None
-        return "Refreshed"
-    elif is_enter(key) and state.stdscr_callbacks and metrics and state.cursor_selected < len(metrics):
-        m = metrics[state.cursor_selected]
-        lines = [
-            f"Commit:   {m.commit_hash}",
-            f"Branch:   {m.branch_name}",
-            f"Date:     {m.commit_date}",
-            f"AI %:     {m.ai_percentage:.1f}",
-            f"Lines:    +{m.lines_added} / -{m.lines_deleted}",
-            f"  human:  +{m.human_lines_added} / -{m.human_lines_deleted}",
-            f"  AI:     +{m.composer_lines_added} / -{m.composer_lines_deleted}",
-            "",
-            "── Message ──",
-            m.commit_message or "(empty)",
-        ]
-        preview_modal(state.stdscr_callbacks["stdscr"], "\n".join(lines), title=f"Cursor {m.commit_hash[:8]}")
     return None
 
 
@@ -6190,55 +6043,6 @@ def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
             w - 4), w - 4, attr)
         rows_used += 1
     return rows_used
-
-
-def _render_usage_sub_tab_bar(stdscr, y: int, w: int, active_key: str, *,
-                              focused: bool = False) -> None:
-    """Sibling of `_render_subtab_bar` for Usage. Draws `[ All ] Claude Codex Gemini Cursor`."""
-    label_attr = CP_HDR() if focused else CP_DIM()
-    marker = "▶ " if focused else "  "
-    marker_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
-    safe_addnstr(stdscr, y, 0, marker, w, marker_attr)
-    safe_addnstr(stdscr, y, cell_width(marker), "Sub: ", w - cell_width(marker), label_attr)
-    cur = cell_width(marker) + 5
-    inactive_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
-    active_attr = _safe_pair(1, curses.A_BOLD) if focused else _safe_pair(8, curses.A_BOLD | curses.A_UNDERLINE)
-    for key, label in USAGE_SUB_TABS:
-        if key == active_key:
-            cell = f"[ {label} ]"
-            attr = active_attr
-        else:
-            cell = f"  {label}  "
-            attr = inactive_attr
-        if cur + cell_width(cell) >= w:
-            break
-        safe_addnstr(stdscr, y, cur, cell, w - cur, attr)
-        cur += cell_width(cell) + 1
-    if cur < w:
-        safe_addnstr(stdscr, y, cur, " " * (w - cur - 1), w - cur - 1, CP_DIM())
-
-
-def render_usage_root_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
-    """Top-level Usage tab. Renders the sub-tab bar, then dispatches to a
-    platform-specific renderer (or stacks all platforms when sub_tab='all')."""
-    _render_usage_sub_tab_bar(stdscr, y0, w,
-                              active_key=state.usage_sub_tab,
-                              focused=(state.focused_layer == "subTab"))
-    body_y = y0 + 1
-    body_h = max(1, h - 1)
-    key = state.usage_sub_tab
-    if key == "all":
-        # Aggregate view: stack 3 usage panels + Cursor panel evenly.
-        section_h = max(4, body_h // 4)
-        for i, platform in enumerate(("claude", "codex", "gemini")):
-            render_usage_tab(stdscr, state, body_y + i * section_h,
-                             section_h, w, platform)
-        render_cursor_tab(stdscr, state, body_y + 3 * section_h,
-                          max(1, body_h - 3 * section_h), w)
-    elif key in ("claude", "codex", "gemini"):
-        render_usage_tab(stdscr, state, body_y, body_h, w, key)
-    elif key == "cursor":
-        render_cursor_tab(stdscr, state, body_y, body_h, w)
 
 
 def _render_context_sources(stdscr, state: TuiState, y0: int, h: int, w: int,
@@ -6680,29 +6484,12 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
 
 
 def _cycle_sub_tab(state: TuiState, direction: int) -> None:
-    tab_key = MAIN_TABS[state.tab_idx][0]
-    if tab_key == "usage":
-        i = next((idx for idx, (k, _) in enumerate(USAGE_SUB_TABS) if k == state.usage_sub_tab), 0)
-        state.usage_sub_tab = USAGE_SUB_TABS[(i + direction) % len(USAGE_SUB_TABS)][0]
-        return
-    # Default: Extensions sub-tabs.
+    """Cycle Extensions sub-tabs. Other main tabs have no sub-tabs."""
     i = next((idx for idx, (k, _) in enumerate(EXTENSION_SUB_TABS) if k == state.ext_sub_tab), 0)
     state.ext_sub_tab = EXTENSION_SUB_TABS[(i + direction) % len(EXTENSION_SUB_TABS)][0]
 
 
-_PLATFORM_FILTER_ORDER: tuple[str, ...] = ("all", "claude", "codex", "gemini", "cursor")
 _SCOPE_FILTER_ORDER: tuple[str, ...] = ("project", "all")
-
-
-def cycle_platform_filter(state: TuiState, direction: int) -> None:
-    """Rotate `state.platform_filter` through `_PLATFORM_FILTER_ORDER`.
-    Side effect: snap the Usage sub-tab to match the new filter."""
-    try:
-        i = _PLATFORM_FILTER_ORDER.index(state.platform_filter)
-    except ValueError:
-        i = 0
-    state.platform_filter = _PLATFORM_FILTER_ORDER[(i + direction) % len(_PLATFORM_FILTER_ORDER)]
-    sync_usage_sub_tab_to_platform_filter(state)
 
 
 def cycle_scope_filter(state: TuiState, direction: int) -> None:
@@ -6714,20 +6501,6 @@ def cycle_scope_filter(state: TuiState, direction: int) -> None:
     state.scope_filter = _SCOPE_FILTER_ORDER[(i + direction) % len(_SCOPE_FILTER_ORDER)]
 
 
-def sync_usage_sub_tab_to_platform_filter(state: TuiState) -> None:
-    """If the Platform filter is non-default, snap the Usage sub-tab to match
-    so opening Usage takes the user straight to the relevant view."""
-    if state.platform_filter != "all":
-        state.usage_sub_tab = state.platform_filter
-
-
-def filter_entries_by_platform(entries: list, platform: str) -> list:
-    """Keep only usage entries for the requested platform. 'all' is a no-op."""
-    if platform == "all":
-        return list(entries)
-    return [e for e in entries if getattr(e, "platform", None) == platform]
-
-
 def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
     """True when the active tab's selection is at row 0 — used to decide
     whether ↑ should climb out of the content into the focus row above."""
@@ -6735,14 +6508,9 @@ def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
         if state.ext_sub_tab == "vault":
             return state.vault_selected == 0
         return state.ext_selected.get(state.ext_sub_tab, 0) == 0
-    if tab_key == "usage":
-        # Cursor sub-tab is the only Usage view with a row selection.
-        if state.usage_sub_tab == "cursor":
-            return state.cursor_selected == 0
-        return True
     if tab_key == "context":
         return state.context_selected == 0
-    # Tabs without a selection (dashboard) always count as "top".
+    # Tabs without a selection (dashboard, usage) always count as "top".
     return True
 
 
@@ -6993,11 +6761,9 @@ Main tabs (resource axis)
   1  Dashboard     Aggregate overview (this month so far)
   2  Extensions    vault / plugins / skills / commands / agents / mcp / hooks / market
   3  Context       Session context window analysis + Project files (scope=project)
-  4  Usage         Per-platform usage & cost — sub-tabs: All / Claude / Codex / Gemini / Cursor
+  4  Usage         Claude usage & cost
 
-Global filters (apply to every tab)
-  p             Cycle Platform filter: All → Claude → Codex → Gemini → Cursor
-                (When non-All, the Usage sub-tab snaps to match.)
+Global filter (applies to every tab)
   P             Toggle Scope filter:   Project ↔ All
                 (Scope=Project hides the per-project pane in Context tab when off.)
 
@@ -7006,7 +6772,7 @@ Navigation
   ← / →         Previous / next within the focused layer
   ↑ / ↓         Move focus between layers (mainTab ↔ subTab ↔ content)
   Enter         Drop focus one layer down OR confirm an action
-  [ / ]         Extensions / Usage: previous / next sub-tab
+  [ / ]         Extensions: previous / next sub-tab
   Shift+Tab     Extensions: previous sub-tab (alt)
   Tab           Extensions (non-Vault): next sub-tab (alt)
   j / ↓         Move selection down (within a list)
@@ -7037,9 +6803,8 @@ Extensions sub-tab actions
   Commands/Agents: e=open source file in $EDITOR
   Hooks:        p=preview hook execution (scrollable modal)
 
-Context / Usage (Cursor sub-tab)
+Context
   Enter         Context: category source list preview
-                Usage→Cursor: full commit preview
   e             Context: open first source file in $EDITOR
 
 linked vs enabled (activation mechanism)
@@ -7080,8 +6845,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
         safe_addnstr(stdscr, 1, cwd_x, cwd_text, cwd_w, CP_DIM())
     chip_max_w = max(0, cwd_x - 1)
     if chip_max_w > 0:
-        render_filter_chips(stdscr, 1, 0, chip_max_w,
-                            platform=state.platform_filter, scope=state.scope_filter)
+        render_filter_chips(stdscr, 1, 0, chip_max_w, scope=state.scope_filter)
     safe_addnstr(stdscr, 2, 0, "─" * (w - 1), w - 1, CP_DIM())
 
     # Tab content.
@@ -7096,7 +6860,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
     elif tab_key == "dashboard":
         render_dashboard_tab(stdscr, state, body_y, body_h, w)
     elif tab_key == "usage":
-        render_usage_root_tab(stdscr, state, body_y, body_h, w)
+        render_usage_tab(stdscr, state, body_y, body_h, w)
     else:
         render_stub_tab(stdscr, state, body_y, body_h, w,
                         name=MAIN_TABS[state.tab_idx][2], hint="")
@@ -7109,15 +6873,13 @@ def _render_frame(stdscr, state: TuiState) -> None:
             shortcuts = "Enter:apply pending  Esc:discard  Space:project  g:global  j/k:nav"
         else:
             shortcuts = (
-                "1-4:tab  [/]:sub  p:platform  P:scope  j/k:nav  Space:project  g:global  "
+                "1-4:tab  [/]:sub  P:scope  j/k:nav  Space:project  g:global  "
                 "Enter:apply  Tab:filter  s:sort  /:search  i:import  f:scan  m:migrate  S:sync  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
-        shortcuts = "1-4:tab  [/]:sub  p:platform  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
-    elif tab_key == "usage":
-        shortcuts = "1-4:tab  [/]:sub  p:platform  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
+        shortcuts = "1-4:tab  [/]:sub  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
     else:
-        shortcuts = "1-4:tab  p:platform  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
+        shortcuts = "1-4:tab  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
     render_status_bar(stdscr, h - 1, w, shortcuts, state.status)
 
     stdscr.refresh()
@@ -7175,11 +6937,6 @@ def _tui_loop(stdscr) -> None:
             if key == curses.KEY_RESIZE:
                 _render_frame(stdscr, state)
                 continue
-            if key == ord("p"):
-                cycle_platform_filter(state, +1)
-                state.status = f"Platform: {state.platform_filter}"
-                _render_frame(stdscr, state)
-                continue
             if key == ord("P"):
                 cycle_scope_filter(state, +1)
                 state.status = f"Scope: {state.scope_filter}"
@@ -7209,7 +6966,7 @@ def _tui_loop(stdscr) -> None:
                     _render_frame(stdscr, state)
                     continue
                 if key == curses.KEY_DOWN or is_enter(key):
-                    state.focused_layer = "subTab" if tab_key in ("extensions", "usage") else "content"
+                    state.focused_layer = "subTab" if tab_key == "extensions" else "content"
                     _render_frame(stdscr, state)
                     continue
                 if key == curses.KEY_UP:
@@ -7237,7 +6994,7 @@ def _tui_loop(stdscr) -> None:
             else:  # focused_layer == "content"
                 # Allow ↑ from the TOP of a list to climb back out.
                 if key == curses.KEY_UP and _at_top_of_content(state, tab_key):
-                    state.focused_layer = "subTab" if tab_key in ("extensions", "usage") else "mainTab"
+                    state.focused_layer = "subTab" if tab_key == "extensions" else "mainTab"
                     _render_frame(stdscr, state)
                     continue
                 # ← / → still cycle main tabs (legacy) so users without focus
@@ -7272,12 +7029,7 @@ def _tui_loop(stdscr) -> None:
         elif tab_key == "dashboard":
             status = handle_dashboard_input(state, key)
         elif tab_key == "usage":
-            sub = state.usage_sub_tab
-            if sub in ("claude", "codex", "gemini"):
-                status = handle_usage_input(state, key, sub)
-            elif sub == "cursor":
-                status = handle_cursor_input(state, key)
-            # sub == "all": no row selection on the aggregate view.
+            status = handle_usage_input(state, key)
         else:
             handle_stub_input(state, key)
 
