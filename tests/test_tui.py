@@ -177,6 +177,28 @@ def test_context_tab_hides_project_files_section_when_scope_all(monkeypatch, tmp
     assert "Project files" not in flat
 
 
+def _vi(name, *, linked=False, glinked=False):
+    return axt.VaultItem(name=name, type="skill", path=f"/v/{name}",
+                         description="", is_linked=linked, is_global_linked=glinked)
+
+
+def test_filter_vault_items_by_scope_project_keeps_active_in_project():
+    """Scope=project: keep items active in the project (linked or globally
+    active so they are visible from cwd)."""
+    items = [_vi("p1", linked=True),
+             _vi("g1", glinked=True),
+             _vi("idle"),
+             _vi("both", linked=True, glinked=True)]
+    visible = axt.filter_vault_items_by_scope(items, "project")
+    assert {i.name for i in visible} == {"p1", "g1", "both"}
+
+
+def test_filter_vault_items_by_scope_all_returns_everything():
+    items = [_vi("p1", linked=True), _vi("g1", glinked=True), _vi("idle")]
+    visible = axt.filter_vault_items_by_scope(items, "all")
+    assert {i.name for i in visible} == {"p1", "g1", "idle"}
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 

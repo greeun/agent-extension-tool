@@ -5683,7 +5683,25 @@ def _vault_apply_pending(state: TuiState) -> str:
     return f"Applied {applied}" + (f", {errors} errors" if errors else "")
 
 
+def filter_vault_items_by_scope(items: list[VaultItem], scope: str) -> list[VaultItem]:
+    """Apply the global Scope filter to a list of vault items.
+
+    scope='project': keep items that are active for the current cwd — either
+                      linked at project level or globally enabled (and thus
+                      visible from any project).
+    scope='all'    : pass everything through unchanged.
+    """
+    if scope == "project":
+        return [i for i in items if i.is_linked or i.is_global_linked]
+    return list(items)
+
+
 def _vault_filtered(state: TuiState) -> list[VaultItem]:
+    # NOTE: the global Scope filter (state.scope_filter) is *not* applied here.
+    # Vault is the machine-level inventory; hiding unlinked items would break
+    # the import/link workflow. Use `filter_vault_items_by_scope()` from other
+    # extension sub-tabs (plugins/skills/commands/agents) where the
+    # activation-vs-installed distinction matters.
     items = state.vault_items
     if state.vault_filter != "all":
         items = [i for i in items if i.type == state.vault_filter]
