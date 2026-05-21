@@ -138,7 +138,7 @@ tests/            pytest suite, one test_*.py per domain
 DESIGN.md         cst-style single-file rewrite rationale
 FEATURES.md       feature inventory
 SKILL.md          Claude Code skill manifest
-MIGRATION.md      v0.1.x → v1.0.0 upgrade guide (EN; KO in MIGRATION.ko.md)
+MIGRATION.md      Upgrade notes: v0.1.x→v1.0.0 and v1.x→v2.0.0 (EN; KO in MIGRATION.ko.md)
 legacy-ts/        frozen TypeScript+Ink implementation (v0.1.x line)
 ```
 

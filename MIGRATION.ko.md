@@ -1,6 +1,25 @@
-# axt v0.1.x → v1.0.0 마이그레이션 가이드
+# axt 마이그레이션 가이드
 
 English version: [MIGRATION.md](./MIGRATION.md).
+
+## v1.x → v2.0 — Claude 전용 전환
+
+axt v2.0부터 Codex, Gemini CLI, Cursor 지원이 제거되었습니다. 이제 Claude Code
+전용 도구입니다. 제거된 표면:
+
+- CLI: `axt usage --platform`, `axt codex|gemini|cursor` 하위 명령 일체.
+- CLI: `axt plan set <platform> <plan-name>` → `axt plan set <plan-name>` (claude 고정).
+- TUI: Platform 필터(`p` 키), Usage 서브탭(All / Codex / Gemini / Cursor), Cursor 커밋 히스토리 탭.
+- 가격표: `gpt-*`, `gemini-*` 모델이 `pricing.json`에서 삭제됨.
+- 경로: `CODEX_HOME`, `GEMINI_CLI_HOME` 환경변수 더 이상 인식되지 않음.
+- 설정: `AxtConfig.plans`는 이제 Claude만 저장.
+
+멀티 플랫폼 동작이 필요하면 `axt==1.0.x`로 핀하거나 frozen된 `legacy-ts/`
+구현을 사용하세요.
+
+---
+
+## v0.1.x → v1.0.0 — TypeScript+Ink에서 Python+curses로
 
 기존 TypeScript+Ink axt(`v0.1.x`, `bun link` 기반)에서 새 Python+curses axt(`v1.0.0`, `pip install -e .` 기반)로 갈아타는 절차입니다.
 

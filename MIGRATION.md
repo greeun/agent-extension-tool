@@ -1,8 +1,27 @@
-# Migrating from axt v0.1.x to v1.0.0
-
-This guide walks existing users of the TypeScript+Ink axt (`v0.1.x`, installed via `bun link`) through removing the old build and installing the new Python+curses axt (`v1.0.0`, installed via `pip install -e .`).
+# axt Migration Guide
 
 A Korean translation is available at [MIGRATION.ko.md](./MIGRATION.ko.md).
+
+## v1.x → v2.0 — Claude-only
+
+axt v2.0 drops support for Codex, Gemini CLI, and Cursor. The tool now manages
+Claude Code exclusively. Removed surfaces:
+
+- CLI: `axt usage --platform`, all `axt codex|gemini|cursor` subcommands.
+- CLI: `axt plan set <platform> <plan-name>` → `axt plan set <plan-name>` (claude always assumed).
+- TUI: Platform filter (`p` key), Usage sub-tabs (All / Codex / Gemini / Cursor), Cursor commit-history tab.
+- Pricing: `gpt-*`, `gemini-*` models removed from `pricing.json`.
+- Paths: `CODEX_HOME`, `GEMINI_CLI_HOME` env vars no longer honored.
+- Config: `AxtConfig.plans` only stores Claude plan now.
+
+If you still need the multi-platform behavior, pin to `axt==1.0.x` or use the
+frozen `legacy-ts/` implementation.
+
+---
+
+## v0.1.x → v1.0.0 — TypeScript+Ink to Python+curses
+
+This guide walks existing users of the TypeScript+Ink axt (`v0.1.x`, installed via `bun link`) through removing the old build and installing the new Python+curses axt (`v1.0.0`, installed via `pip install -e .`).
 
 ## At a glance
 
