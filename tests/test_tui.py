@@ -39,6 +39,19 @@ def test_usage_sub_tabs_include_all_four_platforms():
     assert keys == ["all", "claude", "codex", "gemini", "cursor"]
 
 
+def test_tui_state_defaults_platform_all_scope_project():
+    """Per design: Platform=All (aggregate), Scope=Current Project."""
+    s = axt.TuiState()
+    assert s.platform_filter == "all"
+    assert s.scope_filter == "project"
+
+
+def test_tui_state_initializes_usage_sub_tab():
+    """Usage tab remembers its last sub-tab between renders."""
+    s = axt.TuiState()
+    assert s.usage_sub_tab == "all"
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 

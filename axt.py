@@ -5485,6 +5485,15 @@ class TuiState:
     ext_cache: dict[str, Any] = field(default_factory=dict)
     ext_selected: dict[str, int] = field(default_factory=dict)
 
+    # Global filters — apply to every tab uniformly.
+    # Platform axis: "all" | "claude" | "codex" | "gemini" | "cursor"
+    platform_filter: str = "all"
+    # Scope axis: "project" (current cwd only) | "all" (project + global)
+    scope_filter: str = "project"
+
+    # Usage sub-tab state (mirrors ext_sub_tab pattern).
+    usage_sub_tab: str = "all"                     # one of USAGE_SUB_TABS keys
+
     # Dashboard / usage data caches (None = not loaded yet).
     dashboard_entries: Optional[list] = None
     dashboard_config: Optional[Any] = None
