@@ -1,104 +1,133 @@
 """axt — Agent eXtension Tool.
 
-Public API re-exported from ``_core``. Phase C keeps the package shell
-intentionally thin: the ``axt`` package and the ``axt._core`` submodule
-share the same module namespace, so ``axt.X`` and ``axt._core.X`` refer
-to the same slot. This preserves the legacy "everything lives on the
-``axt`` module" contract that tests rely on (including ``monkeypatch``
-patches against ``axt.PATHS`` / ``axt.AXT_CONFIG_DIR`` etc.).
+Public API re-exported from per-section submodules. Phase C keeps the
+package shell intentionally thin: the ``axt`` package mirrors each
+submodule's globals onto its own namespace, so ``axt.X`` and
+``axt._core.X`` (or ``axt.cli.X``, etc.) refer to the same value. This
+preserves the legacy "everything lives on the ``axt`` module" contract
+that tests rely on (including ``monkeypatch`` patches against
+``axt.PATHS`` / ``axt.AXT_CONFIG_DIR`` / module-level helpers).
 
-Subsequent Phase C tasks (C2–C5) will split ``_core`` into per-domain
-modules; this file is the only place that needs to change when that
-happens.
+Submodules are listed in :data:`_SUBMODULES` and imported in order; when
+two submodules define the same name, the *later* one wins (last-write
+wins). The write-proxy installed at the bottom routes attribute
+assignments back to whichever submodule defined the name, so test
+monkeypatches reach the place the function actually reads from.
 """
 
 import importlib as _importlib
 import sys as _sys
 
-from axt import _core as _core
+# Per-section submodules. C2 added ``cli``. C3-C5 will append the
+# ``tui.*`` modules. Order matters: later entries override earlier
+# entries when names collide.
+_SUBMODULES: list[str] = ["_core", "cli"]
 
-# --- Share _core's namespace with the package namespace.
-#
-# Tests patch attributes on the `axt` module (e.g.
-# `monkeypatch.setattr("axt.PATHS", ...)`) and expect those patches to be
-# visible from code that reads the same global from inside _core. The
-# simplest robust way to make that work is to mirror _core's globals onto
-# axt's globals at import time AND to keep them in sync by routing the
-# package's __dict__ to point at _core's __dict__.
-#
-# We can't legally set `axt.__dict__ = _core.__dict__` (modules use a
-# read-only dict slot), so we mirror eagerly here and provide a
-# `__getattr__` fallback for anything added to _core after this point.
-for _name in list(vars(_core).keys()):
-    if _name in {"__name__", "__loader__", "__spec__", "__file__",
-                 "__package__", "__path__", "__builtins__", "__doc__"}:
-        continue
-    globals()[_name] = vars(_core)[_name]
-del _name
+# Imported submodule objects, in the same order as _SUBMODULES. Populated
+# by _load_submodules() / _reload_submodules() below.
+_loaded_submodules: list = []
+
+
+_PACKAGE_DUNDERS_SKIP = {
+    "__name__", "__loader__", "__spec__", "__file__",
+    "__package__", "__path__", "__builtins__", "__doc__",
+}
+
+
+def _mirror_into_package(mod) -> None:
+    """Copy every public/private (non-dunder-skip) name from ``mod`` into
+    this package's globals. Called once per submodule at import and on
+    reload."""
+    g = globals()
+    for name, value in vars(mod).items():
+        if name in _PACKAGE_DUNDERS_SKIP:
+            continue
+        g[name] = value
+
+
+def _load_submodules() -> None:
+    """Import each submodule in order and mirror its globals into axt."""
+    _loaded_submodules.clear()
+    for mod_name in _SUBMODULES:
+        mod = _importlib.import_module(f"axt.{mod_name}")
+        _loaded_submodules.append(mod)
+        _mirror_into_package(mod)
+
+
+_load_submodules()
 
 # Explicit re-export for the console-script entry point (`axt = "axt:main"`).
-from axt._core import main  # noqa: E402,F401
+# `main` is mirrored from ``axt.cli`` above; this line documents the
+# contract and gives IDEs / static checkers something to find.
+from axt.cli import main  # noqa: E402,F401
 
 __version__ = "2.0.0"
 
 
+def _find_submodule_with(name: str):
+    """Return the most-recently-loaded submodule that defines ``name``, or
+    None if no submodule defines it. ``vars(mod)`` is checked directly so
+    we observe the live module dict (post-monkeypatch)."""
+    for mod in reversed(_loaded_submodules):
+        if name in vars(mod):
+            return mod
+    return None
+
+
 def __getattr__(name: str):
-    """Fallback for names not mirrored above (defensive).
+    """Fallback for names not mirrored at import time.
 
-    Called only when normal attribute lookup on the package fails.
+    Called only when normal attribute lookup on the package fails. We
+    consult submodules in reverse order so the last-defined wins,
+    matching the mirror loop.
     """
-    try:
-        return getattr(_core, name)
-    except AttributeError:
-        raise AttributeError(f"module 'axt' has no attribute {name!r}") from None
+    mod = _find_submodule_with(name)
+    if mod is not None:
+        return getattr(mod, name)
+    raise AttributeError(f"module 'axt' has no attribute {name!r}")
 
 
-def _reload_core() -> None:
-    """Re-execute _core (re-reading env vars, etc.) and remirror into axt.
+def _reload_submodules() -> None:
+    """Re-execute every submodule (re-reading env vars, etc.) and refresh
+    the mirror.
 
     Tests call ``importlib.reload(axt)`` to pick up env-var changes that
     influence module-level constants like ``CLAUDE_DIR``. Since those
-    constants live in ``_core``, reloading just ``axt/__init__.py`` is not
-    enough — we must reload ``_core`` first, then refresh the mirror.
-    This helper is invoked from the top of ``__init__.py`` when the module
-    is being re-executed (detected via the presence of ``__version__`` in
-    the existing module dict).
+    constants live in the submodules, reloading just ``axt/__init__.py``
+    is not enough — we must reload each submodule first, then refresh
+    the mirror. This helper is invoked from below when this module is
+    being re-executed (detected via ``__axt_loaded__`` in globals).
     """
-    _importlib.reload(_core)
-    for _n in list(vars(_core).keys()):
-        if _n in {"__name__", "__loader__", "__spec__", "__file__",
-                  "__package__", "__path__", "__builtins__", "__doc__"}:
-            continue
-        globals()[_n] = vars(_core)[_n]
+    _loaded_submodules.clear()
+    for mod_name in _SUBMODULES:
+        mod = _sys.modules.get(f"axt.{mod_name}")
+        if mod is None:
+            mod = _importlib.import_module(f"axt.{mod_name}")
+        else:
+            mod = _importlib.reload(mod)
+        _loaded_submodules.append(mod)
+        _mirror_into_package(mod)
 
 
-# If this is a reload (detected by the presence of __version__ in our
-# globals before the assignment above takes effect again on the new run),
-# Python has already re-executed the file from the top. The mirror loop
-# at the top of this file picks up _core's current values — but _core
-# itself was NOT reloaded. So a test that did `monkeypatch.setenv(...);
-# importlib.reload(axt)` would see stale values. To handle that case,
-# re-mirror _core *after* reloading it, but only when this run is a
-# reload (the previous run already installed _reload_core in globals).
+# Reload-detection: when ``importlib.reload(axt)`` runs the file a second
+# time, the previous globals (including ``__axt_loaded__``) are still
+# attached to this module — so we re-execute submodules and re-mirror.
 if "__axt_loaded__" in globals():
-    _reload_core()
+    _reload_submodules()
 globals()["__axt_loaded__"] = True
 
 
-# Mirror attribute writes onto _core so test patches like
-# ``monkeypatch.setattr("axt.PATHS", ...)`` are observed by code that
-# reads ``PATHS`` from inside _core's module globals.
+# ── Write-proxy ───────────────────────────────────────────────────────────────
+#
+# Mirror attribute writes onto whichever submodule defines the name, so
+# test patches like ``monkeypatch.setattr("axt.PATHS", ...)`` are observed
+# by code that reads ``PATHS`` from inside its home submodule's globals.
 _this_module = _sys.modules[__name__]
 
 
 def _install_write_proxy() -> None:
-    """Wrap the module class so __setattr__ mirrors writes onto _core.
-
-    We carefully avoid touching dunder attributes (which would re-route
-    things like ``__class__``, ``__name__`` and cause recursion).
-    """
+    """Wrap the module class so __setattr__ mirrors writes to submodules."""
     base_cls = type(_this_module)
-    # Idempotent: if we already installed the proxy, leave it alone.
     if getattr(base_cls, "_axt_proxy_installed", False):
         return
 
@@ -111,18 +140,22 @@ def _install_write_proxy() -> None:
         _axt_proxy_installed = True
 
         def __setattr__(self, name, value):  # type: ignore[override]
-            if (
-                name not in _MIRRORED_DUNDERS_SKIP
-                and name in vars(_core)
-            ):
-                # Use vars() (a direct dict assignment) to avoid going
-                # through any __setattr__ on _core itself.
-                vars(_core)[name] = value
+            if name not in _MIRRORED_DUNDERS_SKIP:
+                # Write to every submodule that already defines this
+                # name. Last-write-wins matches the mirror import order;
+                # writing to all matching submodules keeps state
+                # consistent even when (rarely) two submodules both
+                # expose the same symbol.
+                for mod in _loaded_submodules:
+                    if name in vars(mod):
+                        vars(mod)[name] = value
             base_cls.__setattr__(self, name, value)
 
         def __delattr__(self, name):  # type: ignore[override]
-            if name not in _MIRRORED_DUNDERS_SKIP and name in vars(_core):
-                vars(_core).pop(name, None)
+            if name not in _MIRRORED_DUNDERS_SKIP:
+                for mod in _loaded_submodules:
+                    if name in vars(mod):
+                        vars(mod).pop(name, None)
             try:
                 base_cls.__delattr__(self, name)
             except AttributeError:
