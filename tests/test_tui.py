@@ -135,6 +135,48 @@ def test_cycle_sub_tab_dispatches_on_active_main_tab():
     assert state.ext_sub_tab == "vault"  # unchanged
 
 
+def _make_empty_context_analysis():
+    return axt.ContextAnalysis(
+        total_tokens=0, context_window_size=200_000, used_percent=0.0,
+        model="claude-sonnet", sources=[],
+        cost_impact=axt.CostImpact(
+            model="claude-sonnet", cache_write_cost=0.0,
+            cache_read_cost_per_turn=0.0, avg_turns_per_session=10,
+            avg_sessions_per_day=1, per_session_cost=0.0, monthly_cost=0.0,
+        ),
+    )
+
+
+def test_context_tab_includes_project_files_section_when_scope_project(monkeypatch, tmp_path):
+    """With Scope=project, Context tab must list project context files
+    (the old Project tab's content) under a dedicated section header."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# test\nproject level\n")
+
+    scr = _make_stdscr(rows=40, cols=140)
+    state = axt.TuiState()
+    state.scope_filter = "project"
+    state.context_analysis = _make_empty_context_analysis()
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Project files" in flat
+    assert "CLAUDE.md" in flat
+
+
+def test_context_tab_hides_project_files_section_when_scope_all(monkeypatch, tmp_path):
+    """With Scope=all (global+project), the per-project file list is hidden."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# test\nshould not appear\n")
+
+    scr = _make_stdscr(rows=40, cols=140)
+    state = axt.TuiState()
+    state.scope_filter = "all"
+    state.context_analysis = _make_empty_context_analysis()
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Project files" not in flat
+
+
 # ─── cell_width / fit_cells ──────────────────────────────────────────────────
 
 

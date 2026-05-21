@@ -6570,28 +6570,10 @@ def render_usage_root_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         render_cursor_tab(stdscr, state, body_y, body_h, w)
 
 
-def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
-    _ensure_context_loaded(state)
-    analysis = state.context_analysis
-    if analysis is None:
-        safe_addnstr(stdscr, y0 + 2, 2, "Loading context…", w - 4, CP_DIM())
-        return
-
-    safe_addnstr(stdscr, y0, 0, fit_cells(
-        f" Context — {format_tokens(analysis.total_tokens)} / {format_tokens(analysis.context_window_size)} "
-        f"({analysis.used_percent:.1f}%)  model={analysis.model}",
-        w - 1), w - 1, CP_HDR())
-
-    # Rate-limit bars (5h / 7d quota) at the top so the user sees them first.
-    rl_rows = _render_rate_limit_bars(stdscr, y0 + 1, w)
-    y0_table = y0 + 1 + rl_rows + 1
-
-    rows = _context_rows(analysis)
-    if not rows:
-        safe_addnstr(stdscr, y0 + 2, 2, "No context sources detected.", w - 4, CP_DIM())
-        return
-
-    # Layout: table on left (60%), detail on right (40%).
+def _render_context_sources(stdscr, state: TuiState, y0: int, h: int, w: int,
+                            analysis: ContextAnalysis, rows: list) -> None:
+    """Render the context-sources table + detail panel within (y0, h)."""
+    # Layout: table on left (~55%), detail on right.
     table_w = int(w * 0.55)
     detail_x = table_w
     detail_w = w - table_w
@@ -6613,13 +6595,11 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
             "pct": f"{r.pct:.1f}%",
         })
 
-    table_h = h - (y0_table - y0) - 2
-    render_table(stdscr, y0_table, 0, table_h, table_w, columns, table_rows,
+    render_table(stdscr, y0, 0, h, table_w, columns, table_rows,
                  selected=state.context_selected, show_header=True)
 
-    # Detail panel: list sources in the selected category.
     current = rows[state.context_selected]
-    detail_fields = []
+    detail_fields: list[tuple[str, str]] = []
     sources_in_cat = [s for s in analysis.sources if s.category == current.category]
     sources_in_cat.sort(key=lambda s: s.estimated_tokens, reverse=True)
     for s in sources_in_cat[:20]:
@@ -6627,8 +6607,64 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
         detail_fields.append((s.name, f"{format_tokens(s.estimated_tokens)} tok{hint}"))
     if not detail_fields:
         detail_fields = [("(empty)", "—")]
-    render_detail_panel(stdscr, y0_table, detail_x, table_h, detail_w,
+    render_detail_panel(stdscr, y0, detail_x, h, detail_w,
                         title=current.label, fields=detail_fields)
+
+
+def _render_project_files_pane(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
+    """Render the per-project context file list (CLAUDE.md, settings, memory…)."""
+    _ensure_project_loaded(state)
+    items = state.project_items or []
+    safe_addnstr(stdscr, y0, 0, fit_cells(
+        f" Project files — {Path.cwd().name}  ({len(items)} files)",
+        w - 1), w - 1, CP_HDR())
+    if not items:
+        safe_addnstr(stdscr, y0 + 1, 2, "No project context files found.", w - 4, CP_DIM())
+        return
+    columns = [
+        TableColumn("name", "Name", max(20, w - 22)),
+        TableColumn("source", "Source", 8),
+        TableColumn("lines", "Lines", 6),
+    ]
+    rows_data = [{"name": i.name, "source": i.source, "lines": str(i.lines)}
+                 for i in items]
+    render_table(stdscr, y0 + 1, 0, max(1, h - 1), w, columns, rows_data,
+                 selected=state.project_selected, show_header=True)
+
+
+def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
+    _ensure_context_loaded(state)
+    analysis = state.context_analysis
+    if analysis is None:
+        safe_addnstr(stdscr, y0 + 2, 2, "Loading context…", w - 4, CP_DIM())
+        return
+
+    safe_addnstr(stdscr, y0, 0, fit_cells(
+        f" Context — {format_tokens(analysis.total_tokens)} / {format_tokens(analysis.context_window_size)} "
+        f"({analysis.used_percent:.1f}%)  model={analysis.model}",
+        w - 1), w - 1, CP_HDR())
+
+    # Rate-limit bars (5h / 7d quota) at the top so the user sees them first.
+    rl_rows = _render_rate_limit_bars(stdscr, y0 + 1, w)
+    y_body = y0 + 1 + rl_rows + 1
+
+    # Reserve 2 rows at the bottom: cost line + spacing.
+    body_h = max(1, h - (y_body - y0) - 2)
+
+    # When scope=project, split the body between sources (top) and project
+    # files (bottom). When scope=all, sources fill the whole body.
+    show_project = (state.scope_filter == "project")
+    project_h = max(6, body_h // 3) if show_project else 0
+    sources_h = max(1, body_h - project_h)
+
+    rows = _context_rows(analysis)
+    if rows:
+        _render_context_sources(stdscr, state, y_body, sources_h, w, analysis, rows)
+    else:
+        safe_addnstr(stdscr, y_body + 1, 2, "No context sources detected.", w - 4, CP_DIM())
+
+    if show_project:
+        _render_project_files_pane(stdscr, state, y_body + sources_h, project_h, w)
 
     # Cost impact line at the bottom.
     ci = analysis.cost_impact
