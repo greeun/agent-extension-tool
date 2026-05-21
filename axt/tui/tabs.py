@@ -40,11 +40,14 @@ from axt.tui.widgets import (  # noqa: F401 — wildcard skips `_`-prefixed name
 # is fine: tabs depend on domain, not the other way around.)
 from axt._core import *  # noqa: F401,F403
 from axt._core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
+    _active_plugins,
     _date_in_tz,
     _iso_now,
     _safe_listdir,
     _safe_read_text,
+    _today_in_tz,
     _ts_ms,
+    _unified_to_claude,
 )
 
 

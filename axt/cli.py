@@ -32,7 +32,10 @@ from axt._core import *  # noqa: F401,F403
 # Underscore-prefixed names are skipped by `import *`; pull them in
 # explicitly so handlers can use them.
 from axt._core import (  # noqa: F401
+    _active_plugins,
     _date_in_tz,
+    _today_in_tz,
+    _unified_to_claude,
     HOME,
     PATHS,
     AXT_CONFIG_PATH,
@@ -50,6 +53,10 @@ from axt._core import (  # noqa: F401
     C_BOLD, C_CYAN, C_DIM, C_GRAY, C_GREEN, C_RED, C_RESET, C_YELLOW,
     budget_bar, format_cost, format_tokens, render_bar,
 )
+
+# TUI entry — used by ``cli_tui`` and as the default action when ``main``
+# runs with no args. Lives in :mod:`axt.tui.loop` after C5.
+from axt.tui.loop import launch_tui, HELP_TEXT  # noqa: F401
 
 
 # ─── Subcommand implementations ──────────────────────────────────────────────
@@ -215,11 +222,9 @@ def cli_market_remove(args) -> int:
 
 
 # mcp
-
-def _active_plugins() -> list[PluginInfo]:
-    plugins = list_installed_plugins(PATHS.installed_plugins)
-    enabled = read_enabled_plugins(PATHS.settings)
-    return [p for p in plugins if enabled.get(p.id) is True]
+# (_active_plugins moved to axt/_core.py near plugin code so the curses
+# TUI in axt/tui/tabs.py can reach it too. It is re-exported here via the
+# wildcard `from axt._core import *` at the top of this module.)
 
 
 def cli_mcp_list(args) -> int:
@@ -517,27 +522,9 @@ def cli_skill_unlink(args) -> int:
 
 
 # usage
-
-def _unified_to_claude(e: UnifiedUsageEntry) -> ClaudeUsageEntry:
-    """Adapt for aggregateDaily/aggregateBySession/computeBlocks (Claude shape)."""
-    return ClaudeUsageEntry(
-        model=e.model,
-        input_tokens=e.input_tokens,
-        output_tokens=e.output_tokens,
-        cache_creation_tokens=e.cache_write_tokens,
-        cache_read_tokens=e.cache_read_tokens,
-        session_id=e.session_id,
-        project_path=e.project_path,
-        timestamp=e.timestamp,
-    )
-
-
-def _today_in_tz(tz: str) -> str:
-    try:
-        from zoneinfo import ZoneInfo
-        return datetime.now(ZoneInfo(tz)).strftime("%Y-%m-%d")
-    except Exception:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+# (_unified_to_claude and _today_in_tz moved to axt/_core.py so the curses
+# TUI in axt/tui/tabs.py can reach them too. Both are re-exported here via
+# the wildcard `from axt._core import *` at the top of this module.)
 
 
 def _shared_usage_load(args, *, since: Optional[str] = None, until: Optional[str] = None) -> list[UnifiedUsageEntry]:

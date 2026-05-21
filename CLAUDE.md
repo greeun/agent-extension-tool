@@ -24,7 +24,7 @@ pip install -e .[dev]
 # Run
 axt                  # launch TUI
 axt --help           # CLI help
-python3 axt.py       # alternative entry without the script bin
+python3 -m axt       # equivalent entry via `axt = "axt:main"` script
 
 # Test
 pytest               # full suite
@@ -32,7 +32,7 @@ pytest tests/test_vault.py        # single file
 pytest -k "marketplace"           # match name
 
 # Type check (optional, dev tool)
-mypy axt.py
+mypy axt/
 ```
 
 The entry point is `axt:main` (declared in `pyproject.toml` under `[project.scripts]`).

@@ -384,6 +384,19 @@ def get_plugin_info(ip_path: os.PathLike[str] | str, plugin_id: str) -> Optional
     return None
 
 
+def _active_plugins() -> list[PluginInfo]:
+    """Plugins that are both installed AND enabled in user settings.
+
+    Reads from the module-level ``PATHS`` so it stays in sync with
+    ``monkeypatch.setattr("axt.PATHS", ...)`` in tests. Used by both the
+    CLI (``cli_mcp_list`` / ``cli_mcp_info``) and the TUI (Extensions tab's
+    mcp sub-tab loader).
+    """
+    plugins = list_installed_plugins(PATHS.installed_plugins)
+    enabled = read_enabled_plugins(PATHS.settings)
+    return [p for p in plugins if enabled.get(p.id) is True]
+
+
 def add_installed_plugin(
     ip_path: os.PathLike[str] | str,
     *,
@@ -2405,6 +2418,24 @@ def claude_to_unified(e: ClaudeUsageEntry) -> UnifiedUsageEntry:
     )
 
 
+def _unified_to_claude(e: UnifiedUsageEntry) -> ClaudeUsageEntry:
+    """Inverse of :func:`claude_to_unified` — adapter for aggregators
+    (``aggregate_daily``, ``aggregate_by_session``, ``compute_blocks``)
+    that operate on the Claude shape. Used by the CLI usage subcommands
+    and the TUI Usage tab.
+    """
+    return ClaudeUsageEntry(
+        model=e.model,
+        input_tokens=e.input_tokens,
+        output_tokens=e.output_tokens,
+        cache_creation_tokens=e.cache_write_tokens,
+        cache_read_tokens=e.cache_read_tokens,
+        session_id=e.session_id,
+        project_path=e.project_path,
+        timestamp=e.timestamp,
+    )
+
+
 def load_unified_usage(
     *,
     claude_projects_dir: os.PathLike[str] | str,
@@ -2483,6 +2514,15 @@ def _date_in_tz(iso: str, tz: str) -> str:
         return dt.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d")
     except (ValueError, KeyError, Exception):  # noqa: BLE001
         return iso[:10]
+
+
+def _today_in_tz(tz: str) -> str:
+    """Today's date (YYYY-MM-DD) in `tz`. Falls back to UTC on errors."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(tz)).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def aggregate_daily(entries: list[ClaudeUsageEntry], timezone_name: str) -> list[DailyUsage]:
@@ -3627,355 +3667,16 @@ def budget_bar(used: float, budget: float, width: int = 25) -> str:
     return f"{_green(bar)} {_green(label)}"
 
 
-# ── Sections 11-13: TUI helpers, widgets, tabs ─────────────────────────────
+# ── Sections 11-14: TUI helpers, widgets, tabs, main loop ──────────────────
 #
-# Sections 11-12 moved to axt/tui/widgets.py; Section 13 moved to
-# axt/tui/tabs.py. Section 14 still lives below in this module — it
-# references names from both via the re-import shim immediately following
-# the imports here. The shim is transitional and disappears when C5
-# moves Section 14 out to axt/tui/loop.py.
-from axt.tui.widgets import *  # noqa: F401,F403
-from axt.tui.widgets import (  # noqa: F401 — wildcard skips `_`-prefixed names
-    _draw_cell,
-    _safe_pair,
-    _wrap_to_cells,
-)
-# tui.tabs is imported at the END of this module so Section 14 can pick up
-# Section 13 names (TuiState, TAB_RENDERERS, …). The deferred import is
-# necessary because axt/__init__.py loads axt._core before axt.tui.tabs,
-# and axt.tui.tabs in turn wildcards from axt._core — so we let the
-# wildcard fire first, then loop back to grab the tabs names below.
-
-
-# ── Section 14: TUI — Main loop ──────────────────────────────────────────────
-
-
-HELP_TEXT = """\
-axt TUI — keyboard reference
-
-Main tabs (resource axis)
-  1  Dashboard     Aggregate overview (this month so far)
-  2  Extensions    vault / plugins / skills / commands / agents / mcp / hooks / market
-  3  Context       Session context window analysis + Project files (scope=project)
-  4  Usage         Claude usage & cost
-
-Global filter (applies to every tab)
-  P             Toggle Scope filter:   Project ↔ All
-                (Scope=Project hides the per-project pane in Context tab when off.)
-
-Navigation
-  1–4           Jump to main tab (active tab has cyan background)
-  ← / →         Previous / next within the focused layer
-  ↑ / ↓         Move focus between layers (mainTab ↔ subTab ↔ content)
-  Enter         Drop focus one layer down OR confirm an action
-  [ / ]         Extensions: previous / next sub-tab
-  Shift+Tab     Extensions: previous sub-tab (alt)
-  Tab           Extensions (non-Vault): next sub-tab (alt)
-  j / ↓         Move selection down (within a list)
-  k / ↑         Move selection up
-  PgUp / PgDn   Page up / page down
-
-Vault
-  Space         Toggle PROJECT link for selected item (pending)
-  g             Toggle GLOBAL link for selected item (pending)
-  Enter         Apply pending toggles  OR  focus detail panel if no pending
-  Esc           Discard pending OR blur detail panel
-  /             Search input (type → Enter to apply, Esc to clear)
-  Tab           Cycle filter (all/skill/command/agent/plugin)
-  s             Cycle sort key (incl. `used`, most-used first)
-  i             Import a global-only item into the vault (selected row)
-  f             Toggle scan mode AND scan ALL projects (cached to disk)
-  m             Migrate ~/.claude/skills,commands,agents → vault
-  S             Sync .claude/<sub>/ symlinks with .axt-profile.json
-  r             Refresh (cheap, no cross-project walk)
-
-Extensions sub-tab actions
-  Plugins:      e=enable (global)  d=disable (global)
-                E=enable (project) D=disable (project)
-                x=uninstall (confirm)
-                Status column shows G/P: ● enabled  ○ disabled  · unset
-  Skills:       l=link new path (input)  u=unlink (confirm)
-  Marketplace:  a=add (source+name input)  s=sync (selected)  r=remove (confirm)
-  Commands/Agents: e=open source file in $EDITOR
-  Hooks:        p=preview hook execution (scrollable modal)
-
-Context
-  Enter         Context: category source list preview
-  e             Context: open first source file in $EDITOR
-
-linked vs enabled (activation mechanism)
-  skill / command / agent → "linked"   = SYMLINK at .claude/<type>s/<name>
-  plugin                  → "enabled"  = settings.json's enabledPlugins[<id>]
-  The TUI shows ● / ○ for both, with the DetailPanel labeling the kind.
-
-Vault column meanings
-  Vault   ✓        Item lives in ~/.axt/vault/
-          global*  Item only exists in ~/.claude/{type}s/ (use `i` to import)
-  Proj    ● / ○    linked/enabled in this project (* = pending toggle)
-  Glob    ● / ○    linked/enabled globally
-  Used    N proj   Count from last scan (`f` populates this column)
-
-Globals
-  ?             Show this help
-  q / Esc       Quit (Esc only quits when no pending state)
-"""
-
-
-def _render_frame(stdscr, state: TuiState) -> None:
-    h, w = stdscr.getmaxyx()
-    if h < 5 or w < 30:
-        stdscr.erase()
-        safe_addnstr(stdscr, 0, 0, "Terminal too small. Resize and try again.", w - 1, CP_ERR())
-        return
-    stdscr.erase()
-
-    # Header (tab bar + filter chips on left, cwd on right, divider).
-    render_tab_bar(stdscr, 0, 0, w, state.tab_idx, focused=(state.focused_layer == "mainTab"))
-    cwd_text = f" cwd: {Path.cwd()}"
-    cwd_w = cell_width(cwd_text)
-    if cwd_w >= w - 2:
-        cwd_text = fit_cells(cwd_text, w - 2)
-        cwd_w = cell_width(cwd_text)
-    cwd_x = max(0, w - 1 - cwd_w)
-    if cwd_w > 0:
-        safe_addnstr(stdscr, 1, cwd_x, cwd_text, cwd_w, CP_DIM())
-    chip_max_w = max(0, cwd_x - 1)
-    if chip_max_w > 0:
-        render_filter_chips(stdscr, 1, 0, chip_max_w, scope=state.scope_filter)
-    safe_addnstr(stdscr, 2, 0, "─" * (w - 1), w - 1, CP_DIM())
-
-    # Tab content.
-    body_y = 3
-    body_h = h - body_y - 1  # leave one line for status
-
-    tab_key = MAIN_TABS[state.tab_idx][0]
-    renderer = TAB_RENDERERS.get(tab_key)
-    if renderer is None:
-        render_stub_tab(stdscr, state, body_y, body_h, w,
-                        name=MAIN_TABS[state.tab_idx][2], hint="")
-    else:
-        renderer(stdscr, state, body_y, body_h, w)
-
-    # Status / shortcuts line — adjust per active tab + sub-tab.
-    if tab_key == "extensions" and state.ext_sub_tab == "vault":
-        if state.vault_searching:
-            shortcuts = "/: typing search…  Enter:apply  Esc:cancel"
-        elif state.vault_pending_project or state.vault_pending_global:
-            shortcuts = "Enter:apply pending  Esc:discard  Space:project  g:global  j/k:nav"
-        else:
-            shortcuts = (
-                "1-4:tab  [/]:sub  P:scope  j/k:nav  Space:project  g:global  "
-                "Enter:apply  Tab:filter  s:sort  /:search  i:import  f:scan  m:migrate  S:sync  r:refresh  ?:help  q:quit"
-            )
-    elif tab_key == "extensions":
-        shortcuts = "1-4:tab  [/]:sub  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
-    else:
-        shortcuts = "1-4:tab  P:scope  j/k:nav  r:refresh  ?:help  q:quit"
-    render_status_bar(stdscr, h - 1, w, shortcuts, state.status)
-
-    stdscr.refresh()
-
-
-def _tui_loop(stdscr) -> None:
-    curses.curs_set(0)
-    try:
-        curses.set_escdelay(25)  # 3.9+
-    except (AttributeError, curses.error):
-        pass
-    stdscr.keypad(True)
-    stdscr.timeout(-1)  # blocking getch
-    tui_init_colors()
-
-    state = TuiState()
-    state.stdscr_callbacks = {"stdscr": stdscr}
-    _render_frame(stdscr, state)
-
-    while True:
-        if state.show_help:
-            show_modal(stdscr, HELP_TEXT, title="axt help")
-            state.show_help = False
-            _render_frame(stdscr, state)
-            continue
-
-        try:
-            key = stdscr.getch()
-        except KeyboardInterrupt:
-            return
-
-        if key == -1:
-            continue
-
-        # Modal states that intercept input — pass key straight to the active
-        # tab handler so it can process search/pending logic without losing
-        # keystrokes to the global tab-switcher.
-        tab_key = MAIN_TABS[state.tab_idx][0]
-        modal = (
-            tab_key == "extensions"
-            and state.ext_sub_tab == "vault"
-            and (state.vault_searching
-                 or state.vault_pending_project
-                 or state.vault_pending_global
-                 or state.vault_detail_focused)
-        )
-
-        # Global keys (skipped while in a modal sub-state).
-        if not modal:
-            if key == ord("?"):
-                state.show_help = True
-                continue
-            if is_quit(key):
-                return
-            if key == curses.KEY_RESIZE:
-                _render_frame(stdscr, state)
-                continue
-            if key == ord("P"):
-                cycle_scope_filter(state, +1)
-                state.status = f"Scope: {state.scope_filter}"
-                _render_frame(stdscr, state)
-                continue
-            if ord("1") <= key <= ord("4"):
-                state.tab_idx = key - ord("1")
-                state.status = ""
-                state.focused_layer = "mainTab"
-                _render_frame(stdscr, state)
-                continue
-
-            # ── Focus-layer aware arrow navigation ──
-            # ←/→ : cycle within the focused layer (mainTab cycles tabs;
-            #       subTab cycles sub-tabs; content also cycles main tabs).
-            # ↑   : move focus up (content → subTab/mainTab → mainTab)
-            # ↓   : move focus down (mainTab → subTab/content → content)
-            # Enter from mainTab/subTab: drop into the next layer down.
-
-            if state.focused_layer == "mainTab":
-                if key in (curses.KEY_LEFT, ord("h")):
-                    state.tab_idx = (state.tab_idx - 1) % len(MAIN_TABS)
-                    _render_frame(stdscr, state)
-                    continue
-                if key in (curses.KEY_RIGHT, ord("l")):
-                    state.tab_idx = (state.tab_idx + 1) % len(MAIN_TABS)
-                    _render_frame(stdscr, state)
-                    continue
-                if key == curses.KEY_DOWN or is_enter(key):
-                    state.focused_layer = "subTab" if tab_key == "extensions" else "content"
-                    _render_frame(stdscr, state)
-                    continue
-                if key == curses.KEY_UP:
-                    # Already at the top — no-op for clarity.
-                    continue
-
-            elif state.focused_layer == "subTab":
-                if key == curses.KEY_LEFT:
-                    _cycle_sub_tab(state, -1)
-                    _render_frame(stdscr, state)
-                    continue
-                if key == curses.KEY_RIGHT:
-                    _cycle_sub_tab(state, 1)
-                    _render_frame(stdscr, state)
-                    continue
-                if key == curses.KEY_UP:
-                    state.focused_layer = "mainTab"
-                    _render_frame(stdscr, state)
-                    continue
-                if key == curses.KEY_DOWN or is_enter(key):
-                    state.focused_layer = "content"
-                    _render_frame(stdscr, state)
-                    continue
-
-            else:  # focused_layer == "content"
-                # Allow ↑ from the TOP of a list to climb back out.
-                if key == curses.KEY_UP and _at_top_of_content(state, tab_key):
-                    state.focused_layer = "subTab" if tab_key == "extensions" else "mainTab"
-                    _render_frame(stdscr, state)
-                    continue
-                # ← / → still cycle main tabs (legacy) so users without focus
-                # awareness keep working as before.
-                if key == curses.KEY_LEFT:
-                    state.tab_idx = (state.tab_idx - 1) % len(MAIN_TABS)
-                    _render_frame(stdscr, state)
-                    continue
-                if key == curses.KEY_RIGHT:
-                    state.tab_idx = (state.tab_idx + 1) % len(MAIN_TABS)
-                    _render_frame(stdscr, state)
-                    continue
-        else:
-            # In modal: still allow resize.
-            if key == curses.KEY_RESIZE:
-                _render_frame(stdscr, state)
-                continue
-
-        # When focus is mainTab/subTab, the tab body handlers should NOT
-        # consume keys (we already handled all the relevant ones above).
-        # Drop the key here.
-        if not modal and state.focused_layer != "content":
-            continue
-
-        # Tab-specific input.
-        tab_key = MAIN_TABS[state.tab_idx][0]
-        status: Optional[str] = None
-        handler = TAB_HANDLERS.get(tab_key)
-        if handler is not None:
-            status = handler(state, key)
-        else:
-            handle_stub_input(state, key)
-
-        if status is not None:
-            state.status = status
-
-        _render_frame(stdscr, state)
-
-
-def launch_tui() -> int:
-    """Public entry point — invoked from `cli_tui` and `main` with no args."""
-    try:
-        curses.wrapper(_tui_loop)
-    except curses.error as e:
-        print(_red(f"TUI failed to start: {e}"), file=sys.stderr)
-        print(_dim("This usually means the terminal is too small or doesn't support curses."), file=sys.stderr)
-        return 1
-    return 0
-
-
-# Deferred re-import of Section 13 names so Section 14's function bodies
-# (_render_frame, _tui_loop) can resolve them at call time. axt.tui.tabs
-# itself wildcards from this module, so it must run AFTER _core.py finishes
-# defining Sections 1-12; placing the import here — at the bottom of
-# _core.py — guarantees that ordering whether _core is loaded standalone
-# (e.g. `import axt._core`) or via the axt package init.
+# Sections 11-12 → axt/tui/widgets.py
+# Section 13    → axt/tui/tabs.py
+# Section 14    → axt/tui/loop.py
 #
-# IMPORTANT: this shim must NOT use `from axt.tui.tabs import *`. Wildcard
-# would pull in stale copies of every Section 1-9 name (PATHS, CLAUDE_DIR,
-# …) that tabs.py re-exported via its own wildcard from _core; under
-# ``importlib.reload(axt)`` that stale snapshot would overwrite the
-# freshly recomputed values here. List Section 13's public surface
-# explicitly. Transitional: disappears when C5 moves Section 14 out
-# to axt/tui/loop.py.
-from axt.tui.tabs import (  # noqa: E402,F401
-    EXTENSION_SUB_TABS,
-    ProjectContextItem,
-    TAB_HANDLERS,
-    TAB_RENDERERS,
-    TuiState,
-    cycle_scope_filter,
-    filter_vault_items_by_scope,
-    handle_context_input,
-    handle_dashboard_input,
-    handle_extensions_input,
-    handle_project_input,
-    handle_stub_input,
-    handle_usage_input,
-    handle_vault_input,
-    load_project_context,
-    render_bar_chart,
-    render_context_tab,
-    render_dashboard_tab,
-    render_extensions_tab,
-    render_stub_tab,
-    render_usage_tab,
-    render_vault_tab,
-    _at_top_of_content,
-    _cycle_sub_tab,
-)
+# After C5 those modules no longer need anything mirrored back into _core,
+# so the transitional re-import shims that used to live here are gone.
+# Anything tests reach via ``axt.<name>`` is provided by the package-level
+# mirror in :mod:`axt/__init__.py`, which walks the submodules in order.
 
 
 # ── Section 15: Entry Point — moved to axt/cli.py (main()) ─────────────────

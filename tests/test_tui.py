@@ -1279,3 +1279,65 @@ def test_tab_renderers_are_callable():
         assert callable(fn)
     for fn in axt.TAB_HANDLERS.values():
         assert callable(fn)
+
+
+# ─── C5 regression: helpers referenced as bare names in tabs.py ──────────────
+#
+# The C4 extraction (commit 74b50ee) moved Section 13 out of _core.py into
+# axt/tui/tabs.py. tabs.py wildcards from _core, but THREE helpers were
+# defined in cli.py, not _core.py — so the bare references in
+# tabs.py:render_usage_tab (_today_in_tz, _unified_to_claude) and
+# tabs.py:_ensure_subtab_loaded (_active_plugins) resolved to nothing once
+# tabs.py left the cli.py namespace. C5 moves the three helpers into
+# _core.py and explicitly imports them from tabs.py. These tests force the
+# code paths that trip the bare-name lookups.
+
+
+def test_render_usage_tab_with_data_does_not_raise(monkeypatch):
+    """tabs.py:render_usage_tab references _today_in_tz and _unified_to_claude.
+    Force the past-empty-data code path with a single synthetic entry."""
+    entry = axt.UnifiedUsageEntry(
+        platform="claude",
+        model="claude-sonnet-4",
+        timestamp="2026-05-21T12:00:00Z",
+        session_id="s1",
+        project_path="/tmp/proj",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_write_tokens=0,
+        cache_read_tokens=0,
+    )
+    state = axt.TuiState()
+    state.usage_entries = [entry]
+    # Bypass _ensure_usage_loaded's load_config call by pre-seeding config.
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+
+    scr = _make_stdscr(rows=40, cols=140)
+    # Must NOT raise NameError("_today_in_tz" / "_unified_to_claude").
+    axt.render_usage_tab(scr, state, y0=3, h=30, w=140)
+
+
+def test_render_extensions_tab_mcp_sub_tab_does_not_raise(monkeypatch, tmp_path):
+    """tabs.py:_ensure_subtab_loaded references _active_plugins for sub='mcp'.
+    Force the mcp sub-tab load path and confirm no NameError."""
+    import dataclasses
+    # Point PATHS at a tmp dir so list_installed_plugins / read_enabled_plugins
+    # see an empty (but non-failing) world. Paths is frozen, so build a
+    # replacement via dataclasses.replace and swap the module attr.
+    fake_settings = tmp_path / "settings.json"
+    fake_installed = tmp_path / "installed_plugins.json"
+    fake_settings.write_text("{}")
+    fake_installed.write_text('{"version":2,"plugins":{}}')
+
+    fake_paths = dataclasses.replace(
+        axt.PATHS, settings=fake_settings, installed_plugins=fake_installed
+    )
+    monkeypatch.setattr("axt.PATHS", fake_paths)
+
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.focused_layer = "content"
+
+    scr = _make_stdscr(rows=40, cols=140)
+    # Must NOT raise NameError("_active_plugins").
+    axt.render_extensions_tab(scr, state, y0=3, h=30, w=140)
