@@ -2,7 +2,7 @@
 
 A unified CLI & TUI dashboard for managing extensions, plugins, skills, MCP servers, hooks, commands, and agents — and for tracking usage costs — for **Claude Code**.
 
-> **v2.0.0: Claude-only.** Earlier v1.x versions also supported Codex / Gemini CLI / Cursor; v2 dropped them to focus on Claude depth. See [MIGRATION.md](./MIGRATION.md) (English) or [MIGRATION.ko.md](./MIGRATION.ko.md) (Korean) for upgrade notes.
+> **v1.0.0: Claude-only.** The earlier multi-platform line (Codex / Gemini CLI / Cursor) is retained as v0.2.x; v1 drops that surface to focus on Claude depth. See [MIGRATION.md](./MIGRATION.md) (English) or [MIGRATION.ko.md](./MIGRATION.ko.md) (Korean) for upgrade notes.
 
 Python + curses package, pure stdlib runtime. The older TypeScript+Ink line (v0.1.x) is preserved frozen under [`legacy-ts/`](./legacy-ts/).
 
@@ -33,7 +33,7 @@ git clone https://github.com/greeun/agent-extension-tool.git
 cd agent-extension-tool
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .[dev]
-axt --version          # axt 2.0.0
+axt --version          # axt 1.0.0
 ```
 
 For global use without manual `source`:
@@ -149,7 +149,7 @@ tests/              pytest suite, one test_*.py per domain
 DESIGN.md           rewrite rationale + Phase-C package split
 FEATURES.md         feature inventory
 SKILL.md            Claude Code skill manifest
-MIGRATION.md        Upgrade notes: v0.1.x→v1.0.0 and v1.x→v2.0.0 (EN; KO in MIGRATION.ko.md)
+MIGRATION.md        Upgrade notes: v0.1.x→v0.2.0 and v0.2.x→v1.0.0 (EN; KO in MIGRATION.ko.md)
 legacy-ts/          frozen TypeScript+Ink implementation (v0.1.x line)
 ```
 

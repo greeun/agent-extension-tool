@@ -6,9 +6,10 @@ Domain layer for axt: paths, JSON I/O, settings, plugin/skill/MCP/hook/
 command/agent management, vault, marketplace, usage parsing, pricing,
 context analysis, project usage index.
 
-v2.0.0 is Claude-only (Codex / Gemini / Cursor support was dropped after
-v1.x). See DESIGN.md (architecture) and FEATURES.md (feature inventory)
-for the canonical specification.
+v1.0.0 is Claude-only. The prior multi-platform line (Codex / Gemini /
+Cursor) is retained as v0.2.0 for historical reference. See DESIGN.md
+(architecture) and FEATURES.md (feature inventory) for the canonical
+specification.
 
 Phase-C package layout — this file (``axt/core.py``) holds Sections 1-9.
 Sections 10 and 11-14 were extracted into sibling modules:
@@ -46,7 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar
 
-__version__ = "2.0.0"
+__version__ = "1.0.0"
 
 T = TypeVar("T")
 

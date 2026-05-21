@@ -6,15 +6,15 @@ axt는 본래 TypeScript + Ink(React-for-CLI)로 작성되었다. Ink의 flexbox
 
 여러 Ink 우회 시도(구조 통일, AMBIGUOUS_SAFETY, color 기반 selected)가 모두 실패. 근본 해결을 위해 cst와 동일한 렌더 모델(curses 절대 좌표 cell-by-cell)로 v1.0.0에서 전체 재작성했다.
 
-> **v2.0.0 변경**: Codex / Gemini / Cursor 지원을 제거하고 Claude 한정으로 집중. `UnifiedUsageEntry` 어댑터 구조는 유지하되 `PLATFORMS = ("claude",)`로 좁힌다. 멀티 플랫폼 추상화를 다시 도입할 계획은 없다.
+> **v1.0.0 — Claude 전용 정리**: Codex / Gemini / Cursor 지원을 제거하고 Claude 한정으로 집중. `UnifiedUsageEntry` 어댑터 구조는 유지하되 `PLATFORMS = ("claude",)`로 좁힌다. 멀티 플랫폼 추상화를 다시 도입할 계획은 없다.
 
-> **Phase C (v2.0.0-rc.C) 변경**: 단일 파일 `axt.py`(~7,400줄)를 섹션별 모듈 패키지 `axt/`로 분리했다. 섹션 헤더(`# ── Section N:`)는 각 모듈 내부에서 그대로 보존되어 네비게이션 앵커 역할을 한다. 패키지의 `__init__.py`는 서브모듈 globals를 `axt` 네임스페이스에 미러링하여 `axt.X`/`monkeypatch.setattr("axt.X", ...)` 같은 기존 호출 규약을 그대로 유지한다.
+> **Phase C (v1.0.0-rc.C) 변경**: 단일 파일 `axt.py`(~7,400줄)를 섹션별 모듈 패키지 `axt/`로 분리했다. 섹션 헤더(`# ── Section N:`)는 각 모듈 내부에서 그대로 보존되어 네비게이션 앵커 역할을 한다. 패키지의 `__init__.py`는 서브모듈 globals를 `axt` 네임스페이스에 미러링하여 `axt.X`/`monkeypatch.setattr("axt.X", ...)` 같은 기존 호출 규약을 그대로 유지한다.
 
 ## 범위 및 결정 사항
 
 | 결정 | 선택 |
 |---|---|
-| 진행 순서 | 한 번에 전체 재작성 (v1) → v2에서 claude-only 정리 → v2.0.0-rc.C에서 섹션 모듈 분리 |
+| 진행 순서 | 한 번에 전체 재작성 (v0.2) → v1.0.0에서 claude-only 정리 → v1.0.0-rc.C에서 섹션 모듈 분리 |
 | 프로젝트 구조 | 섹션별 모듈 패키지 (`axt/core.py`, `axt/cli.py`, `axt/tui/*.py`); 섹션 헤더는 모듈 내 앵커로 보존 |
 | 언어 | Python 3.9+ (set_escdelay 등 사용) |
 | TUI | 표준 라이브러리 `curses` |
@@ -138,7 +138,7 @@ def list_vault_items(vault_dir: Path, project_dir: Path, ...) -> list[VaultItem]
 **Section 6 (Usage)** — 외부 의존: Section 1, 2; 캐싱은 mtime 기반 단순 dict
 ```python
 def load_claude_usage() -> list[UnifiedUsageEntry]
-# v2: Claude 전용. 멀티 플랫폼 로더는 v1.x 한정으로 제거됨.
+# v1.0.0: Claude 전용. 멀티 플랫폼 로더는 v0.2.x 한정으로 제거됨.
 ```
 
 **Section 11~14 (TUI)** — 외부 의존: curses, Section 1~9
@@ -243,4 +243,4 @@ version 0으로 취급해야 한다.
 
 - 본 문서는 단일 spec. 변경 사항이 생기면 본 문서를 업데이트하고 git commit.
 - 작업 도중 발견된 axt 도메인 로직의 버그·모호함은 본 문서 또는 FEATURES.md에 추가 후 진행.
-- v2.0.0에서 Codex / Gemini / Cursor 지원은 의도적으로 제거되었다. 재도입할 계획 없음.
+- v1.0.0에서 Codex / Gemini / Cursor 지원은 의도적으로 제거되었다 (이전 multi-platform 구현은 v0.2.x에서 참고). 재도입할 계획 없음.

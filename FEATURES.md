@@ -2,7 +2,7 @@
 
 본 문서는 axt가 제공하는 기능을 정리한 자료다. CLI 명령 / TUI 탭 / core 도메인 / usage·pricing·context 흐름을 한눈에 보기 위한 참조용으로 사용한다.
 
-> **v2.0.0: Claude-only.** v1.x에 있던 Codex / Gemini CLI / Cursor 지원은 제거되었다. 사용량 / 비용 / 플랜 / 컨텍스트 분석은 모두 Claude 한정.
+> **v1.0.0: Claude-only.** 이전 multi-platform (v0.2.x) 지원은 제거되었다. 사용량 / 비용 / 플랜 / 컨텍스트 분석은 모두 Claude 한정.
 
 집계 결과:
 - **CLI 명령**: 10개 그룹 × 총 35개 서브명령 (`tui` 포함)
@@ -107,7 +107,7 @@ TUI 대시보드 실행.
 - **Scope**: `Project` / `All` — 키 `P`
   - `Project` 일 때 Context 탭에 프로젝트 파일 패널이 함께 표시됨.
 
-(v1.x의 Platform 필터는 v2에서 Claude 전용이 되면서 제거됨.)
+(v0.2.x의 Platform 필터는 v1.0.0에서 Claude 전용이 되면서 제거됨.)
 
 ### 2.3 Focus Layer (3단계)
 `mainTab` ↔ `subTab` ↔ `content`. 메인탭은 `← →` 또는 숫자 1~4, 포커스 이동은 `↑ ↓ Return`.
@@ -148,7 +148,7 @@ Esc         폐기/뒤로        f           scan mode toggle (default/full)
 Claude 카드 (Cost/Input/Output/Cache) + 14일 BarChart + 월간 예산 바. 키: `r` 새로고침.
 
 ### 2.9 Usage 탭
-Today/Week/Month 카드 + 14일 BarChart + Active Block + 예산 라인. (v1.x의 platform/cursor 서브탭은 제거.)
+Today/Week/Month 카드 + 14일 BarChart + Active Block + 예산 라인. (v0.2.x의 platform/cursor 서브탭은 제거.)
 
 ### 2.10 공통 위젯
 - **Table**: prefix 4셀(`▸/space + ■/□` 또는 `▸/space + 번호`), 마지막 컬럼 자동 확장, selected는 cyan+bold (inverse 회피)

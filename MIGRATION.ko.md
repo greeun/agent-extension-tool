@@ -2,9 +2,9 @@
 
 English version: [MIGRATION.md](./MIGRATION.md).
 
-## v1.x → v2.0 — Claude 전용 전환
+## v0.2.x → v1.0.0 — Claude 전용 전환
 
-axt v2.0부터 Codex, Gemini CLI, Cursor 지원이 제거되었습니다. 이제 Claude Code
+axt v1.0.0부터 Codex, Gemini CLI, Cursor 지원이 제거되었습니다. 이제 Claude Code
 전용 도구입니다. 제거된 표면:
 
 - CLI: `axt usage --platform`, `axt codex|gemini|cursor` 하위 명령 일체.
@@ -14,18 +14,18 @@ axt v2.0부터 Codex, Gemini CLI, Cursor 지원이 제거되었습니다. 이제
 - 경로: `CODEX_HOME`, `GEMINI_CLI_HOME` 환경변수 더 이상 인식되지 않음.
 - 설정: `AxtConfig.plans`는 이제 Claude만 저장.
 
-멀티 플랫폼 동작이 필요하면 `axt==1.0.x`로 핀하거나 frozen된 `legacy-ts/`
+멀티 플랫폼 동작이 필요하면 `v0.2.0` git 태그를 체크아웃하거나 frozen된 `legacy-ts/`
 구현을 사용하세요.
 
 ---
 
-## v0.1.x → v1.0.0 — TypeScript+Ink에서 Python+curses로
+## v0.1.x → v0.2.0 — TypeScript+Ink에서 Python+curses로
 
-기존 TypeScript+Ink axt(`v0.1.x`, `bun link` 기반)에서 새 Python+curses axt(`v1.0.0`, `pip install -e .` 기반)로 갈아타는 절차입니다.
+기존 TypeScript+Ink axt(`v0.1.x`, `bun link` 기반)에서 새 Python+curses axt(`v0.2.0`, `pip install -e .` 기반)로 갈아타는 절차입니다.
 
 ## 한눈에 보기
 
-| 항목 | 이전 (v0.1.x) | 새 버전 (v1.0.0) |
+| 항목 | 이전 (v0.1.x) | 새 버전 (v0.2.0) |
 |---|---|---|
 | 언어/런타임 | TypeScript + Bun + Ink | Python 3.9+ + curses |
 | 의존성 | npm 패키지 (chalk/commander/ink/react …) | 표준 라이브러리만 |
@@ -46,7 +46,7 @@ axt v2.0부터 Codex, Gemini CLI, Cursor 지원이 제거되었습니다. 이제
 | `<project>/.axt-profile.json` | 프로젝트별 vault 프로필 |
 | `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.cursor/` | 각 플랫폼 CLI의 자체 디렉토리 (axt가 **읽기만** 함) |
 
-데이터 포맷도 동일합니다. config/vault/profile 모두 v0.1.x에서 만든 것을 v1.0.0이 그대로 읽습니다.
+데이터 포맷도 동일합니다. config/vault/profile 모두 v0.1.x에서 만든 것을 v0.2.0이 그대로 읽습니다.
 
 ---
 
@@ -93,7 +93,7 @@ Windows는 `%USERPROFILE%\.bun\bin\axt.*`에서 동일한 처리가 필요합니
 
 ---
 
-## 2. 새 버전(v1.0.0) 설치
+## 2. 새 버전(v0.2.0) 설치
 
 ### macOS / Linux
 
@@ -111,7 +111,7 @@ source .venv/bin/activate
 pip install -e .[dev]
 
 # 4) 동작 확인
-axt --version          # axt 1.0.0
+axt --version          # axt 0.2.0
 which axt              # .../agent-extension-tool/.venv/bin/axt
 ```
 
@@ -168,7 +168,7 @@ pip install -e .[dev]
 
 ## 4. (선택) Claude Skill 활성화
 
-v1.0.0부터 axt를 Claude Code skill로도 노출할 수 있습니다. 저장소 루트의 `SKILL.md`가 manifest입니다.
+v0.2.0부터 axt를 Claude Code skill로도 노출할 수 있습니다. 저장소 루트의 `SKILL.md`가 manifest입니다.
 
 ```bash
 # ~/.claude/skills/agent-extension-tool 가 이 저장소를 가리키도록
@@ -214,7 +214,7 @@ pip install -e ".[dev,windows]"
 
 ## 6. (참고) 정말 옛 TS 버전을 다시 돌려야 한다면
 
-새 저장소의 `legacy-ts/` 디렉토리에 v0.1.x가 freeze된 채로 남아 있습니다. 이전 동작이 필요하면 그 디렉토리에서 그대로 실행 가능합니다 (전역 `axt`는 새 v1.0.0이므로 충돌하지 않도록 직접 호출):
+새 저장소의 `legacy-ts/` 디렉토리에 v0.1.x가 freeze된 채로 남아 있습니다. 이전 동작이 필요하면 그 디렉토리에서 그대로 실행 가능합니다 (전역 `axt`는 새 v0.2.0이므로 충돌하지 않도록 직접 호출):
 
 ```bash
 cd legacy-ts
@@ -222,7 +222,7 @@ bun install
 bun run dev          # 또는: bun run bin/axt.ts <subcommand>
 ```
 
-`legacy-ts/`는 더 이상 갱신되지 않습니다. 이슈/기능 요청은 v1.0.0 기준으로 받습니다.
+`legacy-ts/`는 더 이상 갱신되지 않습니다. 이슈/기능 요청은 v1.0.0 (Claude 전용) 기준으로 받습니다. v0.2.x 멀티 플랫폼 라인은 유지보수되지 않습니다.
 
 ---
 

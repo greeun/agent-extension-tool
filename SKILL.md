@@ -5,7 +5,7 @@ description: Use `axt` (Agent eXtension Tool) — a Python+curses CLI/TUI — to
 
 # axt — Agent eXtension Tool
 
-`axt` is a single-file Python CLI + curses TUI (v2.0.0, Claude-only) that gives a unified view of:
+`axt` is a Python + curses CLI + TUI package (v1.0.0, Claude-only) that gives a unified view of:
 
 - **Plugins** installed via Claude marketplaces (`~/.claude/plugins/`)
 - **Skills** (`~/.claude/skills/`, `~/.agents/`, `<project>/.agents/`, plugin-bundled)
@@ -79,7 +79,7 @@ Pure stdlib runtime — no external Python deps. Windows users additionally need
 ## How to verify availability
 
 ```bash
-axt --version    # expect: axt 2.0.0 or later
+axt --version    # expect: axt 1.0.0 or later
 ```
 
 If missing, install per `README.md` (clone + `pip install -e .[dev]`).

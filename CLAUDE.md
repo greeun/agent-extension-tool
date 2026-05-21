@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is this project?
 
-**axt** (Agent eXtension Tool) is a CLI + TUI dashboard that manages extensions, plugins, skills, MCP servers, hooks, commands, agents, and usage-cost tracking for Claude Code. It reads data from `~/.claude/` and presents a unified view. **v2.0.0 onwards is Claude-only** (v1.x also supported Codex / Gemini CLI / Cursor; that surface area was removed to focus on Claude depth).
+**axt** (Agent eXtension Tool) is a CLI + TUI dashboard that manages extensions, plugins, skills, MCP servers, hooks, commands, agents, and usage-cost tracking for Claude Code. It reads data from `~/.claude/` and presents a unified view. **v1.0.0 is Claude-only.** The earlier multi-platform implementation (Codex / Gemini CLI / Cursor support) was kept as v0.2.0 for reference; that surface area was removed to focus on Claude depth.
 
 **Primary implementation**: Python + curses, packaged as `axt/`. Pure stdlib runtime.
 
@@ -39,7 +39,7 @@ The entry point is `axt:main` (declared in `pyproject.toml` under `[project.scri
 
 ## Architecture
 
-`axt/` is a Python package; section headers (`# ── Section N:`) are preserved as stable navigation anchors inside each module. Phase C (commits up to v2.0.0-rc.C) split the original single-file `axt.py` into per-section modules. The package's `__init__.py` mirrors each submodule's globals onto the `axt` namespace, so `axt.X` still resolves regardless of which submodule owns `X`.
+`axt/` is a Python package; section headers (`# ── Section N:`) are preserved as stable navigation anchors inside each module. Phase C (commits up to v1.0.0-rc.C) split the original single-file `axt.py` into per-section modules. The package's `__init__.py` mirrors each submodule's globals onto the `axt` namespace, so `axt.X` still resolves regardless of which submodule owns `X`.
 
 ```
 axt/                    → Package

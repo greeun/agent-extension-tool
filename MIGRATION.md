@@ -2,9 +2,9 @@
 
 A Korean translation is available at [MIGRATION.ko.md](./MIGRATION.ko.md).
 
-## v1.x → v2.0 — Claude-only
+## v0.2.x → v1.0.0 — Claude-only
 
-axt v2.0 drops support for Codex, Gemini CLI, and Cursor. The tool now manages
+axt v1.0.0 drops support for Codex, Gemini CLI, and Cursor. The tool now manages
 Claude Code exclusively. Removed surfaces:
 
 - CLI: `axt usage --platform`, all `axt codex|gemini|cursor` subcommands.
@@ -14,18 +14,17 @@ Claude Code exclusively. Removed surfaces:
 - Paths: `CODEX_HOME`, `GEMINI_CLI_HOME` env vars no longer honored.
 - Config: `AxtConfig.plans` only stores Claude plan now.
 
-If you still need the multi-platform behavior, pin to `axt==1.0.x` or use the
-frozen `legacy-ts/` implementation.
+If you still need the multi-platform behavior, check out the `v0.2.0` git tag or use the frozen `legacy-ts/` implementation.
 
 ---
 
-## v0.1.x → v1.0.0 — TypeScript+Ink to Python+curses
+## v0.1.x → v0.2.0 — TypeScript+Ink to Python+curses
 
-This guide walks existing users of the TypeScript+Ink axt (`v0.1.x`, installed via `bun link`) through removing the old build and installing the new Python+curses axt (`v1.0.0`, installed via `pip install -e .`).
+This guide walks existing users of the TypeScript+Ink axt (`v0.1.x`, installed via `bun link`) through removing the old build and installing the new Python+curses axt (`v0.2.0`, installed via `pip install -e .`).
 
 ## At a glance
 
-| Item | Old (v0.1.x) | New (v1.0.0) |
+| Item | Old (v0.1.x) | New (v0.2.0) |
 |---|---|---|
 | Language / runtime | TypeScript + Bun + Ink | Python 3.9+ + curses |
 | Dependencies | npm packages (chalk / commander / ink / react …) | Standard library only |
@@ -46,7 +45,7 @@ Both versions read from and write to the **same paths**. You don't need to back 
 | `<project>/.axt-profile.json` | per-project vault profile |
 | `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.cursor/` | each platform CLI's own directories (axt only **reads** these) |
 
-The on-disk format is identical too. Configs, vault contents, and project profiles created by v0.1.x are read as-is by v1.0.0.
+The on-disk format is identical too. Configs, vault contents, and project profiles created by v0.1.x are read as-is by v0.2.0.
 
 ---
 
@@ -93,7 +92,7 @@ On Windows the equivalent path is `%USERPROFILE%\.bun\bin\axt.*`.
 
 ---
 
-## 2. Install the new version (v1.0.0)
+## 2. Install the new version (v0.2.0)
 
 ### macOS / Linux
 
@@ -111,7 +110,7 @@ source .venv/bin/activate
 pip install -e .[dev]
 
 # 4) Verify
-axt --version          # axt 1.0.0
+axt --version          # axt 0.2.0
 which axt              # .../agent-extension-tool/.venv/bin/axt
 ```
 
@@ -168,7 +167,7 @@ pip install -e .[dev]
 
 ## 4. (Optional) Enable the Claude Skill
 
-Starting with v1.0.0, `axt` can also be exposed as a Claude Code skill. The `SKILL.md` at the repo root is the manifest.
+Starting with v0.2.0, `axt` can also be exposed as a Claude Code skill. The `SKILL.md` at the repo root is the manifest.
 
 ```bash
 # Point ~/.claude/skills/agent-extension-tool at this repo
@@ -214,7 +213,7 @@ The new version computes display width via `unicodedata.east_asian_width`, but t
 
 ## 6. (Reference) Running the legacy TypeScript build
 
-The frozen v0.1.x line is preserved under `legacy-ts/` in the new repo. If you ever need the old behavior, it still builds and runs from inside that directory (the global `axt` command is now v1.0.0, so invoke the legacy one explicitly to avoid confusion):
+The frozen v0.1.x line is preserved under `legacy-ts/` in the new repo. If you ever need the old behavior, it still builds and runs from inside that directory (the global `axt` command is now v0.2.0, so invoke the legacy one explicitly to avoid confusion):
 
 ```bash
 cd legacy-ts
@@ -222,7 +221,7 @@ bun install
 bun run dev          # or: bun run bin/axt.ts <subcommand>
 ```
 
-`legacy-ts/` will not receive further updates. Bug reports and feature requests target v1.0.0.
+`legacy-ts/` will not receive further updates. Bug reports and feature requests target v1.0.0 (Claude-only). The v0.2.x multi-platform line is unmaintained.
 
 ---
 
