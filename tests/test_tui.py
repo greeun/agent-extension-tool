@@ -198,6 +198,92 @@ def test_render_table_with_checked_set_uses_checkboxes():
     assert any("□" in p for p in prefixes)
 
 
+# ─── Task 3: Vault responsive detail-panel layout ────────────────────────────
+
+
+def _detail_panel_top_left(calls):
+    """Return (y, x) of the first addnstr call that draws the detail panel's
+    top border ('┌...┐'). Returns None if no such row was drawn."""
+    for args in calls:
+        # addnstr signature: (y, x, text, max_w[, attr])
+        if len(args) >= 3 and isinstance(args[2], str) and args[2].startswith("┌"):
+            return args[0], args[1]
+    return None
+
+
+def _seed_vault_for_render(s):
+    """Minimum state needed for render_vault_tab to draw the detail panel."""
+    s.vault_items = [
+        axt.VaultItem(
+            name="example-skill",
+            type="skill",
+            path="/some/long/path/to/skill/source/example-skill",
+            description="A reasonably long description that would wrap on a narrow panel.",
+        )
+    ]
+    s.refresh_token = 1  # skip the lazy _vault_load that touches disk
+    s.vault_selected = 0
+
+
+def test_render_vault_tab_uses_right_layout_when_wide():
+    """w=120: detail panel is drawn at x = int(120 * 0.62) (right side)."""
+    scr = _make_stdscr(rows=30, cols=120)
+    s = axt.TuiState()
+    _seed_vault_for_render(s)
+    axt.render_vault_tab(scr, s, y0=2, h=25, w=120)
+    top = _detail_panel_top_left(scr.calls)
+    assert top is not None, "detail panel was not rendered"
+    y, x = top
+    assert x == int(120 * 0.62), f"expected right layout at x=74, got x={x}"
+    assert y == 3, f"expected detail top y=3, got y={y}"
+
+
+def test_render_vault_tab_uses_bottom_layout_when_narrow():
+    """w=80: detail panel is drawn at x=0 and y below the table."""
+    scr = _make_stdscr(rows=30, cols=80)
+    s = axt.TuiState()
+    _seed_vault_for_render(s)
+    axt.render_vault_tab(scr, s, y0=2, h=25, w=80)
+    top = _detail_panel_top_left(scr.calls)
+    assert top is not None
+    y, x = top
+    assert x == 0, f"expected bottom layout at x=0, got x={x}"
+    assert y > 3, f"expected detail below table (y>3), got y={y}"
+
+
+def test_render_vault_tab_layout_threshold_at_100():
+    """w=99 → bottom; w=100 → right. Single threshold, no hysteresis."""
+    s = axt.TuiState()
+    _seed_vault_for_render(s)
+
+    scr99 = _make_stdscr(rows=30, cols=99)
+    axt.render_vault_tab(scr99, s, y0=2, h=25, w=99)
+    x99 = _detail_panel_top_left(scr99.calls)[1]
+    assert x99 == 0, f"w=99 must use bottom layout (x=0), got x={x99}"
+
+    scr100 = _make_stdscr(rows=30, cols=100)
+    axt.render_vault_tab(scr100, s, y0=2, h=25, w=100)
+    x100 = _detail_panel_top_left(scr100.calls)[1]
+    assert x100 == int(100 * 0.62), \
+        f"w=100 must use right layout (x={int(100 * 0.62)}), got x={x100}"
+
+
+def test_render_vault_tab_bottom_height_clamped():
+    """detail_h = clamp(int(h*0.35), 8, 16). At h=10 it clamps up to 8,
+    then the second guard collapses it to leave at least 3 list rows."""
+    s = axt.TuiState()
+    _seed_vault_for_render(s)
+    scr = _make_stdscr(rows=12, cols=80)
+    axt.render_vault_tab(scr, s, y0=0, h=10, w=80)
+    top = _detail_panel_top_left(scr.calls)
+    assert top is not None
+    y, _x = top
+    # h=10, not searching → table_h_full = 10 - 3 = 7. detail_h candidate = 8,
+    # guard = min(8, max(1, 7-3)) = 4. table_h = 7-4 = 3. table_y_top = 0+1=1.
+    # detail_y = 1 + 3 = 4.
+    assert y == 4, f"expected detail top y=4 under guard, got y={y}"
+
+
 def test_render_table_scrolls_to_keep_selection_visible():
     """Selection past the visible window should shift the viewport."""
     scr = _make_stdscr(rows=10, cols=80)

@@ -392,9 +392,29 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
 
     state.vault_selected = max(0, min(state.vault_selected, len(filtered) - 1))
 
-    table_w = int(w * 0.62)
-    detail_x = table_w
-    detail_w = w - table_w
+    # ── Layout: right panel on wide terminals, bottom panel on narrow ones.
+    # The threshold (w < 100) is chosen so an 80-column terminal — where the
+    # right panel's inner width drops to ~26 cells and long Path/Description
+    # fields wrap aggressively — switches to a full-width bottom panel.
+    bottom_layout = w < 100
+    table_y_top = y0 + (2 if state.vault_searching else 1)
+    table_h_full = h - (4 if state.vault_searching else 3)
+    if bottom_layout:
+        detail_h = max(8, min(16, int(h * 0.35)))
+        # Never let the panel eat the entire list; reserve at least 3 list rows.
+        detail_h = min(detail_h, max(1, table_h_full - 3))
+        table_w = w
+        table_h = table_h_full - detail_h
+        detail_x = 0
+        detail_w = w
+        detail_y = table_y_top + table_h
+    else:
+        table_w = int(w * 0.62)
+        table_h = table_h_full
+        detail_x = table_w
+        detail_w = w - table_w
+        detail_y = table_y_top
+        detail_h = table_h_full
 
     # Columns: # / Name / Type / Vault / Project / Global / Used in.
     # "Vault" semantics:  ✓ = item is in ~/.axt/vault/  ;  global = only in ~/.claude/{type}s/
@@ -446,12 +466,9 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
             "used": f"{used_count} proj" if used_count else "─",
         })
 
-    # Adjust table viewport for the search prompt row.
-    table_y = y0 + (2 if state.vault_searching else 1)
-    table_h = h - (4 if state.vault_searching else 3)
     render_table(
         stdscr,
-        table_y, 0, table_h, table_w,
+        table_y_top, 0, table_h, table_w,
         columns, rows,
         selected=state.vault_selected,
         checked=checked,
@@ -485,7 +502,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
             detail_fields.append(("Used in", ", ".join(p.name for p in usage.projects[:8])))
     render_detail_panel(
         stdscr,
-        table_y, detail_x, table_h, detail_w,
+        detail_y, detail_x, detail_h, detail_w,
         title=f"{current.name} ({current.type})",
         fields=detail_fields,
         scroll=state.vault_detail_scroll,
