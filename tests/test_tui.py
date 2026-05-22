@@ -2132,3 +2132,20 @@ def test_extensions_tab_delegates_to_vault_input():
     assert s.vault_detail_focused is False
     axt.handle_extensions_input(s, 9)  # Tab
     assert s.vault_detail_focused is True
+
+
+def test_render_vault_tab_bottom_layout_never_negative_table_h():
+    """At pathologically small h, the table area must collapse to 0 instead
+    of going negative — otherwise detail_y would overlap the title row."""
+    scr = _make_stdscr(rows=5, cols=80)
+    s = axt.TuiState()
+    _seed_vault_for_render(s)
+    # h=3 → table_h_full = 0; detail_h guard keeps it at 1; table_h must clamp
+    # to 0, so detail_y == table_y_top (i.e., panel starts AT the table area,
+    # not above it).
+    axt.render_vault_tab(scr, s, y0=0, h=3, w=80)
+    top = _detail_panel_top_left(scr.calls)
+    assert top is not None
+    y, _x = top
+    # table_y_top = 0 + 1 = 1; table_h clamped to 0; detail_y = 1.
+    assert y >= 1, f"detail must not be drawn above the title row, got y={y}"

@@ -404,7 +404,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         # Never let the panel eat the entire list; reserve at least 3 list rows.
         detail_h = min(detail_h, max(1, table_h_full - 3))
         table_w = w
-        table_h = table_h_full - detail_h
+        table_h = max(0, table_h_full - detail_h)
         detail_x = 0
         detail_w = w
         detail_y = table_y_top + table_h
