@@ -59,8 +59,6 @@ Navigation
   Esc           Climb one focus layer up (content → subTab → mainTab → quit)
   Enter         Drop focus one layer down OR confirm an action
   [ / ]         Extensions: previous / next sub-tab
-  Shift+Tab     Extensions: previous sub-tab (alt)
-  Tab           Extensions: next sub-tab (alt)
   j / ↓         Move selection down (within a list)
   k / ↑         Move selection up
   PgUp / PgDn   Page up / page down
@@ -70,6 +68,7 @@ Vault
   g             Toggle GLOBAL link for selected item (pending)
   Enter         Apply pending toggles (confirm y/N) OR focus detail panel
   Esc           Discard pending OR blur detail panel
+  Tab           Toggle list ↔ detail panel focus
   /             Search input (type → Enter to apply, Esc to clear)
   F             Cycle filter (all/skill/command/agent/plugin)
   s             Cycle sort key (incl. `used`, most-used first)

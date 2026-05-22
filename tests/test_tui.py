@@ -546,6 +546,14 @@ def test_help_text_documents_quit_key():
     assert "Quit" in axt.HELP_TEXT
 
 
+def test_help_text_documents_vault_tab_focus_toggle():
+    """HELP_TEXT must teach Tab as a Vault list↔detail toggle, and the
+    stale 'Extensions: ... sub-tab (alt)' lines must be gone."""
+    assert "Tab" in axt.HELP_TEXT
+    assert "Extensions: next sub-tab (alt)" not in axt.HELP_TEXT
+    assert "Extensions: previous sub-tab (alt)" not in axt.HELP_TEXT
+
+
 def test_help_text_documents_tab_navigation():
     assert "1–3" in axt.HELP_TEXT
     assert "main tab" in axt.HELP_TEXT
