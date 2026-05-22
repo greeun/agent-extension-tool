@@ -1747,22 +1747,17 @@ def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
 def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
     """Handles Extensions sub-tab switching AND delegates to active sub-tab.
 
-    Sub-tab cycling keys:
+    Sub-tab cycling keys (content layer):
       [           previous sub-tab
       ]           next sub-tab
-      Shift+Tab   previous (KEY_BTAB)
-      Tab         next
+    (Tab / Shift+Tab are reserved: Tab toggles detail focus inside Vault;
+     the canonical sub-tab navigation lives at the subTab focus layer via
+     ←/→ — see _handle_sub_tab_key in axt/tui/loop.py.)
     """
     if key == ord("["):
         _cycle_sub_tab(state, -1)
         return f"Sub-tab: {state.ext_sub_tab}"
     if key == ord("]"):
-        _cycle_sub_tab(state, 1)
-        return f"Sub-tab: {state.ext_sub_tab}"
-    if key == curses.KEY_BTAB:  # Shift+Tab
-        _cycle_sub_tab(state, -1)
-        return f"Sub-tab: {state.ext_sub_tab}"
-    if key == KEY_TAB:
         _cycle_sub_tab(state, 1)
         return f"Sub-tab: {state.ext_sub_tab}"
     if key == ord("r"):

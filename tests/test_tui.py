@@ -424,10 +424,12 @@ def test_handle_vault_input_tab_noop_when_search_active():
 
 
 def test_handle_vault_input_tab_does_not_change_filter():
-    """Regression: Tab must never advance the filter cycle (covered by F)."""
+    """Regression: Tab must never advance the filter cycle (covered by F).
+    Also confirms the no-item branch leaves focus untouched."""
     s = axt.TuiState()
     axt.handle_vault_input(s, 9)
     assert s.vault_filter == "all"
+    assert s.vault_detail_focused is False
 
 
 def test_handle_vault_input_sort_cycle():
@@ -946,30 +948,39 @@ def test_subtab_bar_shows_brackets_around_active():
     assert "Sub:" in flat
 
 
-def test_subtab_shift_tab_goes_backward():
+def test_subtab_shift_tab_no_longer_cycles():
+    """Shift+Tab no longer cycles sub-tabs at the content layer (Task 2).
+    Use Esc → subTab layer → ←/→ for canonical navigation."""
     state = axt.TuiState()
     assert state.ext_sub_tab == "vault"
-    # KEY_BTAB = Shift+Tab.
     axt.handle_extensions_input(state, curses.KEY_BTAB)
-    assert state.ext_sub_tab == "market"
+    # Sub-tab must NOT change; Tab falls through to handle_vault_input
+    # (vault_detail_focused stays False because no items are loaded).
+    assert state.ext_sub_tab == "vault"
 
 
 def test_subtab_tab_forward_on_non_vault():
+    """Tab no longer cycles sub-tabs at the content layer (Task 2).
+    On a non-vault sub-tab the key is simply inert."""
     state = axt.TuiState()
     state.ext_sub_tab = "plugins"
     axt.handle_extensions_input(state, 9)  # Tab
-    assert state.ext_sub_tab == "skills"
+    assert state.ext_sub_tab == "plugins"  # unchanged
 
 
-def test_subtab_tab_on_vault_cycles_sub_tab():
-    """Tab is unified: even on Vault it advances to the next sub-tab and
-    leaves the vault filter untouched."""
+def test_subtab_tab_on_vault_delegates_to_vault_input():
+    """Tab on the Vault sub-tab now delegates to handle_vault_input,
+    which toggles detail-panel focus rather than cycling sub-tabs."""
     state = axt.TuiState()
     state.ext_sub_tab = "vault"
+    state.vault_items = [
+        axt.VaultItem(name="v0", type="skill", path="", description="")
+    ]
     before_filter = state.vault_filter
     axt.handle_extensions_input(state, 9)  # Tab
-    assert state.ext_sub_tab != "vault"  # advanced to next sub-tab
+    assert state.ext_sub_tab == "vault"     # sub-tab NOT cycled
     assert state.vault_filter == before_filter  # filter NOT cycled
+    assert state.vault_detail_focused is True   # detail panel toggled
 
 
 def test_subtab_status_message_on_cycle():
@@ -1995,3 +2006,43 @@ def test_render_usage_tab_cache_invalidates_on_width_change(monkeypatch, tmp_pat
     axt.render_usage_tab(scr80, state, 0, 28, 80)
     axt.render_usage_tab(scr120, state, 0, 28, 120)
     assert call_count[0] == 2
+
+
+# ─── Task 2: Tab/Shift+Tab removed from extensions content layer ──────────────
+
+
+def test_extensions_tab_no_longer_cycles_subtab():
+    """Tab/Shift+Tab are no longer content-layer sub-tab shortcuts. The
+    canonical path is Esc → subTab layer → ←/→. `[` and `]` remain as
+    in-content shortcuts. Vault sub-tab forwards Tab to handle_vault_input
+    (covered by test_extensions_tab_delegates_to_vault_input below)."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"  # non-vault sub-tab so Tab is fully inert
+    axt.handle_extensions_input(s, 9)  # Tab
+    assert s.ext_sub_tab == "plugins"
+    axt.handle_extensions_input(s, curses.KEY_BTAB)  # Shift+Tab
+    assert s.ext_sub_tab == "plugins"
+
+
+def test_extensions_tab_brackets_still_cycle():
+    """`[` / `]` keep working as content-layer sub-tab shortcuts."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "vault"
+    axt.handle_extensions_input(s, ord("]"))
+    assert s.ext_sub_tab != "vault"  # advanced
+    axt.handle_extensions_input(s, ord("["))
+    assert s.ext_sub_tab == "vault"  # back
+
+
+def test_extensions_tab_delegates_to_vault_input():
+    """Integration check: pressing Tab while on the Vault sub-tab must reach
+    handle_vault_input (which toggles vault_detail_focused). This is the
+    end-to-end path the user actually exercises."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "vault"
+    s.vault_items = [
+        axt.VaultItem(name="item-0", type="skill", path="", description="")
+    ]
+    assert s.vault_detail_focused is False
+    axt.handle_extensions_input(s, 9)  # Tab
+    assert s.vault_detail_focused is True
