@@ -384,11 +384,49 @@ def test_handle_vault_input_filter_shift_f():
     assert s.vault_filter == "command"
 
 
-def test_handle_vault_input_tab_does_not_cycle_filter():
-    """Tab is reserved for sub-tab cycling at the parent level; the vault
-    handler must not consume it as a filter shortcut."""
+def test_handle_vault_input_tab_focuses_detail_panel():
+    """Tab from the list focuses the detail panel (same effect as Enter when
+    no pending toggles exist)."""
     s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name=f"item-{i}", type="skill", path="", description="")
+        for i in range(3)
+    ]
+    assert s.vault_detail_focused is False
     axt.handle_vault_input(s, 9)  # Tab
+    assert s.vault_detail_focused is True
+    assert s.vault_detail_scroll == 0
+
+
+def test_handle_vault_input_tab_blurs_when_focused():
+    """Tab from the detail panel blurs back to the list (same effect as Esc)."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="item-0", type="skill", path="", description="")
+    ]
+    s.vault_detail_focused = True
+    s.vault_detail_scroll = 5
+    axt.handle_vault_input(s, 9)  # Tab
+    assert s.vault_detail_focused is False
+    assert s.vault_detail_scroll == 0
+
+
+def test_handle_vault_input_tab_noop_when_search_active():
+    """In `/`-search mode, Tab must not steal the key — printable filtering
+    rules still apply (Tab is non-printable so it is dropped silently)."""
+    s = axt.TuiState()
+    s.vault_searching = True
+    s.vault_search = "abc"
+    axt.handle_vault_input(s, 9)  # Tab
+    assert s.vault_searching is True
+    assert s.vault_search == "abc"
+    assert s.vault_detail_focused is False
+
+
+def test_handle_vault_input_tab_does_not_change_filter():
+    """Regression: Tab must never advance the filter cycle (covered by F)."""
+    s = axt.TuiState()
+    axt.handle_vault_input(s, 9)
     assert s.vault_filter == "all"
 
 

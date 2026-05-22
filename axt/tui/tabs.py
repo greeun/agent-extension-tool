@@ -495,6 +495,20 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
 
 def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
     """Vault tab key handler. Returns a status message or None."""
+    # ── Tab: list ↔ detail focus toggle. Skipped during `/`-search input so
+    # the search field is not derailed by a stray Tab.
+    if key == KEY_TAB and not state.vault_searching:
+        if state.vault_detail_focused:
+            state.vault_detail_focused = False
+            state.vault_detail_scroll = 0
+            return None
+        filtered = _vault_filtered(state)
+        if filtered and state.vault_selected < len(filtered):
+            state.vault_detail_focused = True
+            state.vault_detail_scroll = 0
+            return "Detail focused — j/k to scroll, Esc/Tab to blur"
+        return None
+
     # ── Detail-panel focus mode: j/k scroll the panel; Esc blurs back to list.
     if state.vault_detail_focused:
         if key == KEY_ESC:
