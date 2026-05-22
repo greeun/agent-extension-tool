@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import curses
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -73,7 +74,8 @@ Vault
   F             Cycle filter (all/skill/command/agent/plugin)
   s             Cycle sort key (incl. `used`, most-used first)
   i             Import a global-only item into the vault (selected row)
-  f             Toggle scan mode AND scan ALL projects (cached to disk)
+  f             Scan ALL projects to populate `Used` (cached to disk)
+  M             Toggle scan mode (default ↔ full) and re-scan
   m             Migrate ~/.claude/skills,commands,agents → vault
   S             Sync .claude/<sub>/ symlinks with .axt-profile.json
   r             Refresh (cheap, no cross-project walk)
@@ -113,6 +115,14 @@ Globals
 
 
 def _render_frame(stdscr, state: TuiState) -> None:
+    # Auto-clear the status message after STATUS_TIMEOUT_S so the shortcut
+    # hint line becomes visible again. The polling tick in `_tui_loop`
+    # guarantees we re-enter this function while a status is shown.
+    if state.status and state.status_set_at is not None:
+        if time.monotonic() - state.status_set_at >= STATUS_TIMEOUT_S:
+            state.status = ""
+            state.status_set_at = None
+
     h, w = stdscr.getmaxyx()
     if h < 5 or w < 30:
         stdscr.erase()
@@ -153,7 +163,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
         else:
             shortcuts = (
                 "1-3:tab  [/]:sub  j/k:nav  Space:project  g:global  "
-                "Enter:apply  F:filter  s:sort  /:search  i:import  f:scan  m:migrate  S:sync  r:refresh  ?:help  q:quit"
+                "Enter:apply  F:filter  s:sort  /:search  i:import  f:scan  M:mode  m:migrate  S:sync  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
         shortcuts = "1-3:tab  [/]:sub  j/k:nav  r:refresh  ?:help  q:quit"
@@ -254,10 +264,16 @@ def _handle_layer_key(stdscr, state: TuiState, key: int, tab_key: str) -> bool:
 def _has_background_work(state: TuiState) -> bool:
     """Return True iff a background task wants the main loop to poll.
 
-    Today: only the Usage tab's loader. Centralizing here lets future
-    background work plug in without touching `_tui_loop`'s structure.
+    Cases:
+      - Usage tab's background loader is in flight.
+      - A status message is shown and waiting to auto-clear so the
+        bottom-bar shortcut hints can come back.
     """
-    return bool(state.usage_loading)
+    if state.usage_loading:
+        return True
+    if state.status and state.status_set_at is not None:
+        return True
+    return False
 
 
 _POLL_TIMEOUT_MS = 200
@@ -330,9 +346,9 @@ def _tui_loop(stdscr) -> None:
                 continue
             if key == ord("P") and tab_key == "context":
                 state.context_show_project = not state.context_show_project
-                state.status = (
+                set_status(state,
                     "Project files pane: on" if state.context_show_project
-                    else "Project files pane: off"
+                    else "Project files pane: off",
                 )
                 _render_frame(stdscr, state)
                 continue
@@ -341,7 +357,7 @@ def _tui_loop(stdscr) -> None:
             n_tabs = len(MAIN_TABS)
             if ord("1") <= key <= ord("1") + n_tabs - 1:
                 state.tab_idx = key - ord("1")
-                state.status = ""
+                set_status(state, "")
                 state.focused_layer = "mainTab"
                 _render_frame(stdscr, state)
                 continue
@@ -375,7 +391,7 @@ def _tui_loop(stdscr) -> None:
             handle_stub_input(state, key)
 
         if status is not None:
-            state.status = status
+            set_status(state, status)
 
         _render_frame(stdscr, state)
 

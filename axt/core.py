@@ -460,6 +460,7 @@ class McpServerInfo:
     command: str
     args: tuple[str, ...]
     env: tuple[tuple[str, str], ...]  # frozen, sorted
+    version: str = ""  # inherited from parent plugin
 
     @property
     def args_list(self) -> list[str]:
@@ -475,9 +476,11 @@ def list_mcp_servers(installed_plugins: list[dict[str, str]] | list[PluginInfo])
     servers: list[McpServerInfo] = []
     for plugin in installed_plugins:
         if isinstance(plugin, PluginInfo):
-            pid, install_path = plugin.id, plugin.install_path
+            pid, install_path, pver = plugin.id, plugin.install_path, plugin.version or ""
         else:
-            pid, install_path = plugin.get("id", ""), plugin.get("installPath", plugin.get("install_path", ""))
+            pid = plugin.get("id", "")
+            install_path = plugin.get("installPath", plugin.get("install_path", ""))
+            pver = str(plugin.get("version", ""))
         if not install_path:
             continue
         manifest_path = Path(install_path) / ".claude-plugin" / "plugin.json"
@@ -497,6 +500,7 @@ def list_mcp_servers(installed_plugins: list[dict[str, str]] | list[PluginInfo])
                     command=definition.get("command", ""),
                     args=tuple(str(a) for a in args) if isinstance(args, list) else (),
                     env=tuple(sorted((str(k), str(v)) for k, v in env.items())) if isinstance(env, dict) else (),
+                    version=pver,
                 )
             )
     return servers
@@ -513,6 +517,7 @@ class SkillInfo:
     source: str  # "user" | "project" | "plugin"
     target: Optional[str] = None
     plugin: Optional[str] = None
+    version: str = ""
 
 
 def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Optional[str] = None) -> list[SkillInfo]:
@@ -542,6 +547,12 @@ def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Op
             except OSError:
                 target = None
         display_name = f"{plugin}:{entry.name}" if plugin else entry.name
+        # Resolve symlinks so SKILL.md is read at the link target.
+        try:
+            skill_root = entry.resolve() if is_symlink else entry
+        except OSError:
+            skill_root = entry
+        version = _read_version_for_item(skill_root, "skill") if skill_root.is_dir() else ""
         out.append(
             SkillInfo(
                 name=display_name,
@@ -550,6 +561,7 @@ def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Op
                 source=source,
                 target=target,
                 plugin=plugin,
+                version=version,
             )
         )
     return out
@@ -614,6 +626,7 @@ class CommandInfo:
     description: str
     content: str
     plugin: Optional[str] = None
+    version: str = ""
 
 
 # Regex twins of the TS `description:` extraction.
@@ -661,12 +674,15 @@ def _scan_md_dir(
         name = entry.stem
         display_name = f"{plugin}:{name}" if plugin else name
         description = _extract_md_description(raw)
-        out.append(factory(display_name, source, str(entry), plugin, description, raw))
+        fm = _FRONTMATTER_BLOCK_RE.match(raw.replace("\r\n", "\n").replace("\r", "\n"))
+        version = parse_yaml_version(fm.group(1)) if fm else ""
+        out.append(factory(display_name, source, str(entry), plugin, description, raw, version))
     return out
 
 
-def _make_command(name, source, path, plugin, description, raw):
-    return CommandInfo(name=name, source=source, source_path=path, plugin=plugin, description=description, content=raw)
+def _make_command(name, source, path, plugin, description, raw, version):
+    return CommandInfo(name=name, source=source, source_path=path, plugin=plugin,
+                       description=description, content=raw, version=version)
 
 
 def list_commands(*, project_dir: Optional[os.PathLike[str] | str] = None) -> list[CommandInfo]:
@@ -693,10 +709,12 @@ class AgentInfo:
     source_path: str
     description: str
     plugin: Optional[str] = None
+    version: str = ""
 
 
-def _make_agent(name, source, path, plugin, description, _raw):
-    return AgentInfo(name=name, source=source, source_path=path, plugin=plugin, description=description)
+def _make_agent(name, source, path, plugin, description, _raw, version):
+    return AgentInfo(name=name, source=source, source_path=path, plugin=plugin,
+                     description=description, version=version)
 
 
 def list_all_agents(*, project_dir: Optional[os.PathLike[str] | str] = None) -> list[AgentInfo]:
@@ -759,9 +777,12 @@ class HookInfo:
     async_rewake: Optional[bool] = None
     condition: Optional[str] = None
     once: Optional[bool] = None
+    version: str = ""  # parent plugin's version when source=="plugin"
 
 
-def _extract_hooks(settings: dict[str, Any], source: str, source_path: str) -> list[HookInfo]:
+def _extract_hooks(
+    settings: dict[str, Any], source: str, source_path: str, *, version: str = "",
+) -> list[HookInfo]:
     """Pull hook definitions out of one settings/hooks.json blob."""
     raw_map = settings.get("hooks")
     if not isinstance(raw_map, dict):
@@ -801,6 +822,7 @@ def _extract_hooks(settings: dict[str, Any], source: str, source_path: str) -> l
                         async_rewake=hook.get("asyncRewake") or None,
                         condition=hook.get("if"),
                         once=hook.get("once") or None,
+                        version=version,
                     )
                 )
     return out
@@ -836,7 +858,7 @@ def list_hooks(
                 continue
             data = read_json(hooks_path, fallback={})
             if isinstance(data, dict):
-                out += _extract_hooks(data, "plugin", str(hooks_path))
+                out += _extract_hooks(data, "plugin", str(hooks_path), version=plugin.version or "")
 
     return out
 
@@ -953,6 +975,7 @@ class VaultItem:
     in_vault: Optional[bool] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    version: str = ""  # YAML frontmatter `version:` (skill/cmd/agent) or plugin manifest version
 
 
 @dataclass(frozen=True)
@@ -1028,6 +1051,7 @@ class PluginRef:
     name: str
     description: str = ""
     install_path: str = ""
+    version: str = ""
 
 
 # ─── YAML-frontmatter description parser ─────────────────────────────────────
@@ -1177,6 +1201,48 @@ def _read_description_for_item(full_path: Path, item_type: str) -> str:
     return _read_description(full_path)
 
 
+_VERSION_RE = re.compile(r"^(\s*)version:\s*(.*)$")
+
+
+def parse_yaml_version(frontmatter: str) -> str:
+    """Extract `version: ...` value. Plain or single/double-quoted scalar."""
+    for line in frontmatter.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        m = _VERSION_RE.match(line)
+        if not m:
+            continue
+        rest = m.group(2).strip()
+        if not rest:
+            return ""
+        if len(rest) >= 2 and rest[0] == rest[-1] and rest[0] in ("'", '"'):
+            return rest[1:-1]
+        return rest
+    return ""
+
+
+def _read_version(file_path: os.PathLike[str] | str) -> str:
+    p = Path(file_path)
+    try:
+        content = p.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    m = _FRONTMATTER_BLOCK_RE.match(content)
+    if not m:
+        return ""
+    return parse_yaml_version(m.group(1))
+
+
+def _read_version_for_item(full_path: Path, item_type: str) -> str:
+    """Skills probe `index.md` then `SKILL.md`; commands/agents read the file itself."""
+    if item_type == "skill":
+        for candidate in ("index.md", "SKILL.md"):
+            v = _read_version(full_path / candidate)
+            if v:
+                return v
+        return ""
+    return _read_version(full_path)
+
+
 # ─── Profile read/write ──────────────────────────────────────────────────────
 
 
@@ -1259,6 +1325,7 @@ def _scan_vault_dir(vault_dir: Path, sub: str, item_type: str) -> list[VaultItem
                 in_vault=True,
                 created_at=created,
                 updated_at=updated,
+                version=_read_version_for_item(entry, item_type),
             )
         )
     return out
@@ -1449,6 +1516,7 @@ def _list_global_non_vault_items(global_dir: Path, vault_dir: Path) -> list[Vaul
                     in_vault=False,
                     created_at=created,
                     updated_at=updated,
+                    version=_read_version_for_item(entry, item_type),
                 )
             )
     return out
@@ -1524,6 +1592,7 @@ def _list_project_non_vault_items(
                     in_vault=False,
                     created_at=created,
                     updated_at=updated,
+                    version=_read_version_for_item(entry, item_type),
                 )
             )
     return out
@@ -1686,6 +1755,7 @@ def list_vault_items_with_project_state(
                     is_global_linked=bool(global_enabled.get(p.id) is True),
                     created_at=created,
                     updated_at=updated,
+                    version=p.version,
                 )
             )
 

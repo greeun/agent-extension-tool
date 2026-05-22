@@ -56,7 +56,7 @@ def test_cycle_sub_tab_rotates_only_extensions():
     state = axt.TuiState()
     assert state.ext_sub_tab == "vault"
     axt._cycle_sub_tab(state, +1)
-    assert state.ext_sub_tab == "plugins"
+    assert state.ext_sub_tab == "skills"
 
 
 def _make_empty_context_analysis():
@@ -737,9 +737,9 @@ def test_extensions_sub_tab_cycle_forward():
     state = axt.TuiState()
     assert state.ext_sub_tab == "vault"
     axt.handle_extensions_input(state, ord("]"))
-    assert state.ext_sub_tab == "plugins"
-    axt.handle_extensions_input(state, ord("]"))
     assert state.ext_sub_tab == "skills"
+    axt.handle_extensions_input(state, ord("]"))
+    assert state.ext_sub_tab == "commands"
 
 
 def test_extensions_sub_tab_cycle_backward():
@@ -871,8 +871,13 @@ def test_vault_space_ignored_for_plugins():
     assert "plug" not in state.vault_pending_project
 
 
-def test_vault_scan_toggles_mode_and_runs(tmp_path, monkeypatch):
-    """`f` toggles scan_mode AND runs scan_project_usage."""
+def test_vault_scan_runs_without_toggling_mode(tmp_path, monkeypatch):
+    """`f` re-scans in the current mode and does NOT toggle it.
+
+    Regression: previously `f` flipped default↔full and re-scanned, which
+    silently shrank the on-disk cache (e.g. lost plugin enabledPlugins
+    entries) and made the next axt run look like it had stale usage data.
+    """
     monkeypatch.setattr("axt.PATHS", axt.Paths(
         projects=tmp_path / "projects",
         vault=tmp_path / "vault",
@@ -880,10 +885,25 @@ def test_vault_scan_toggles_mode_and_runs(tmp_path, monkeypatch):
     state = axt.TuiState()
     assert state.vault_scan_mode == "default"
     msg = axt.handle_vault_input(state, ord("f"))
-    assert state.vault_scan_mode == "full"
+    assert state.vault_scan_mode == "default"  # mode preserved
     assert msg is not None and "Scan" in msg
-    # Toggle back.
+    # Pressing `f` again still re-scans in the same mode.
     axt.handle_vault_input(state, ord("f"))
+    assert state.vault_scan_mode == "default"
+
+
+def test_vault_mode_key_toggles_scan_mode(tmp_path, monkeypatch):
+    """`M` (capital) toggles scan_mode default↔full and re-scans."""
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        projects=tmp_path / "projects",
+        vault=tmp_path / "vault",
+    ))
+    state = axt.TuiState()
+    assert state.vault_scan_mode == "default"
+    msg = axt.handle_vault_input(state, ord("M"))
+    assert state.vault_scan_mode == "full"
+    assert msg is not None and "Mode" in msg
+    axt.handle_vault_input(state, ord("M"))
     assert state.vault_scan_mode == "default"
 
 
@@ -1080,7 +1100,25 @@ def test_subtab_tab_on_vault_delegates_to_vault_input():
 def test_subtab_status_message_on_cycle():
     state = axt.TuiState()
     msg = axt.handle_extensions_input(state, ord("]"))
-    assert msg == "Sub-tab: plugins"
+    assert msg == "Sub-tab: skills"
+
+
+def test_extension_sub_tabs_order():
+    """Sub-tab order: vault first, then skills/commands/agents/mcp/hooks/plugins/market."""
+    keys = [k for k, _ in axt.EXTENSION_SUB_TABS]
+    assert keys == ["vault", "skills", "commands", "agents", "mcp", "hooks", "plugins", "market"]
+
+
+def test_set_status_records_timestamp_and_clears():
+    """set_status() arms the auto-clear timer; clearing resets the timestamp."""
+    state = axt.TuiState()
+    assert state.status_set_at is None
+    axt.set_status(state, "hello")
+    assert state.status == "hello"
+    assert state.status_set_at is not None
+    axt.set_status(state, "")
+    assert state.status == ""
+    assert state.status_set_at is None
 
 
 # ─── linked vs enabled distinction ───────────────────────────────────────────

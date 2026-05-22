@@ -73,6 +73,58 @@ def test_parse_yaml_crlf():
     assert axt.parse_yaml_description(fm) == "hello"
 
 
+# ─── parse_yaml_version ──────────────────────────────────────────────────────
+
+
+def test_parse_yaml_version_plain():
+    assert axt.parse_yaml_version("version: 1.2.3") == "1.2.3"
+
+
+def test_parse_yaml_version_quoted():
+    assert axt.parse_yaml_version('version: "0.1.0"') == "0.1.0"
+    assert axt.parse_yaml_version("version: '0.1.0'") == "0.1.0"
+
+
+def test_parse_yaml_version_missing():
+    assert axt.parse_yaml_version("name: foo\ndescription: bar") == ""
+
+
+def test_parse_yaml_version_empty():
+    assert axt.parse_yaml_version("version:") == ""
+
+
+def test_read_version_for_skill(tmp_path: Path):
+    """Skill version is read from SKILL.md frontmatter."""
+    skill_dir = tmp_path / "vault" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: d\nversion: 2.5.0\n---\nbody"
+    )
+    items = axt.list_vault_items(tmp_path / "vault")
+    assert len(items) == 1
+    assert items[0].name == "demo"
+    assert items[0].version == "2.5.0"
+
+
+def test_read_version_for_command(tmp_path: Path):
+    cmd_dir = tmp_path / "vault" / "commands"
+    cmd_dir.mkdir(parents=True)
+    (cmd_dir / "do.md").write_text(
+        "---\nname: do\ndescription: d\nversion: 0.9.1\n---\nbody"
+    )
+    items = axt.list_vault_items(tmp_path / "vault")
+    assert items[0].version == "0.9.1"
+
+
+def test_version_absent_yields_empty_string(tmp_path: Path):
+    """When the frontmatter has no `version:` line, version is "" (rendered as ─)."""
+    skill_dir = tmp_path / "vault" / "skills" / "noversion"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: noversion\ndescription: d\n---\nbody")
+    items = axt.list_vault_items(tmp_path / "vault")
+    assert items[0].version == ""
+
+
 # ─── Profile read/write ──────────────────────────────────────────────────────
 
 

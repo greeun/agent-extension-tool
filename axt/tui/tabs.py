@@ -24,6 +24,7 @@ import curses
 import os
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -67,6 +68,9 @@ class TuiState:
     focused_layer: str = "mainTab"  # "mainTab" | "subTab" | "content"
     refresh_token: int = 0          # bump to force data reload
     status: str = ""
+    # Monotonic timestamp when `status` was last set. The main loop clears
+    # `status` after STATUS_TIMEOUT_S so the shortcut hints come back.
+    status_set_at: Optional[float] = None
     show_help: bool = False
 
     # Vault-specific state.
@@ -128,12 +132,29 @@ class TuiState:
 _VAULT_FILTERS = ("all", "skill", "command", "agent", "plugin")
 _VAULT_SORTS = ("name", "type", "added", "updated", "project", "global", "used")
 
+# Seconds after which `state.status` auto-clears so shortcut hints reappear.
+STATUS_TIMEOUT_S: float = 5.0
+
+
+def set_status(state: TuiState, msg: str) -> None:
+    """Set the bottom-bar status message and start its auto-clear timer.
+
+    Pass ``""`` to clear immediately. The main loop polls and clears the
+    status after :data:`STATUS_TIMEOUT_S` seconds so the shortcut hints
+    become visible again on narrow terminals.
+    """
+    state.status = msg
+    state.status_set_at = time.monotonic() if msg else None
+
 
 def _vault_load(state: TuiState) -> None:
     """Refresh vault items from disk into state. Cheap — just reads metadata."""
     plugins = list_installed_plugins(PATHS.installed_plugins)
     plugin_refs = [
-        PluginRef(id=p.id, name=p.name, description=p.description or "", install_path=p.install_path)
+        PluginRef(
+            id=p.id, name=p.name, description=p.description or "",
+            install_path=p.install_path, version=p.version or "",
+        )
         for p in plugins
     ]
     state.vault_items = list_vault_items_with_project_state(
@@ -416,7 +437,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         detail_y = table_y_top
         detail_h = table_h_full
 
-    # Columns: # / Name / Type / Vault / Project / Global / Used in.
+    # Columns: # / Name / Ver / Type / Vault / Project / Global / Used in.
     # "Vault" semantics:  ✓ = item is in ~/.axt/vault/  ;  global = only in ~/.claude/{type}s/
     # "Project" / "Global" show the *intended* state after applying pending toggles.
     no_w = max(3, len(str(len(filtered))) + 1)
@@ -425,14 +446,16 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     glob_w = 6  # "Glob"
     type_w = 6  # "Type"
     vault_w = 7  # "Vault"
+    ver_w = 8   # "Ver" header + "1.2.3" data ≤ 8
     # _draw_cell renders each column at `col.width + 2` cells (per-column
-    # gap). With 7 columns + 4-cell prefix the gap cost is 4 + 2*7 = 18. We
+    # gap). With 8 columns + 4-cell prefix the gap cost is 4 + 2*8 = 20. We
     # subtract a few more cells of safety so wrap can't eat the last column.
-    cols_fixed = no_w + type_w + vault_w + proj_w + glob_w + used_w
-    name_w = max(10, table_w - cols_fixed - (4 + 2 * 7) - 4)
+    cols_fixed = no_w + ver_w + type_w + vault_w + proj_w + glob_w + used_w
+    name_w = max(10, table_w - cols_fixed - (4 + 2 * 8) - 4)
     columns = [
         TableColumn("no", "#", no_w),
         TableColumn("name", "Name", name_w),
+        TableColumn("ver", "Ver", ver_w),
         TableColumn("type", "Type", type_w),
         TableColumn("vault", "Vault", vault_w),
         TableColumn("project", "Proj", proj_w),
@@ -459,6 +482,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         rows.append({
             "no": str(i + 1),
             "name": item.name,
+            "ver": item.version or "─",
             "type": item.type,
             "vault": vault_cell,
             "project": proj_cell,
@@ -487,6 +511,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     detail_fields: list[tuple[str, str]] = [
         ("Name", current.name),
         ("Type", current.type),
+        ("Version", current.version or "—"),
         ("Path", current.path),
         ("Description", current.description or "—"),
         ("Added", _fmt_date(current.created_at)),
@@ -658,12 +683,26 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         except (OSError, ValueError, FileExistsError) as e:
             return f"Import failed: {e}"
     elif key == ord("f"):
-        # Toggle scan mode AND immediately re-scan (the slow op).
-        state.vault_scan_mode = "full" if state.vault_scan_mode == "default" else "default"
+        # Re-scan in the current mode and persist to disk. Does NOT toggle
+        # mode: a previous bug had `f` flip default↔full, which silently
+        # shrank the index (e.g. lost plugin enabledPlugins entries) and
+        # made it look like the cache was missing on the next axt run.
         try:
             _vault_scan(state)
             return (
                 f"Scan ({state.vault_scan_mode}): "
+                f"{format_scan_summary(state.vault_usage_index, style='toast')}  "
+                f"(total {len(state.vault_usage_index)})"
+            )
+        except OSError as e:
+            return f"Scan failed: {e}"
+    elif key == ord("M"):
+        # Explicit mode toggle (default↔full) + re-scan + persist.
+        state.vault_scan_mode = "full" if state.vault_scan_mode == "default" else "default"
+        try:
+            _vault_scan(state)
+            return (
+                f"Mode → {state.vault_scan_mode}: "
                 f"{format_scan_summary(state.vault_usage_index, style='toast')}  "
                 f"(total {len(state.vault_usage_index)})"
             )
@@ -813,7 +852,7 @@ def _kick_usage_reload(state: TuiState) -> None:
     if state.usage_loading:
         return
     state.usage_loading = True
-    state.status = "Loading Claude usage…"
+    set_status(state, "Loading Claude usage…")
 
     def _worker() -> None:
         try:
@@ -837,7 +876,7 @@ def _kick_usage_reload(state: TuiState) -> None:
             state.usage_config = config
             state.usage_entries = entries
             if state.status == "Loading Claude usage…":
-                state.status = ""
+                set_status(state, "")
         finally:
             state.usage_loading = False
 
@@ -1496,12 +1535,12 @@ def handle_project_input(state: TuiState, key: int) -> Optional[str]:
 
 EXTENSION_SUB_TABS: tuple[tuple[str, str], ...] = (
     ("vault", "Vault"),
-    ("plugins", "Plugins"),
     ("skills", "Skills"),
     ("commands", "Commands"),
     ("agents", "Agents"),
     ("mcp", "MCP"),
     ("hooks", "Hooks"),
+    ("plugins", "Plugins"),
     ("market", "Market"),
 )
 
@@ -1620,13 +1659,15 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
 
     elif sub == "skills":
         cols = [
-            TableColumn("name", "Skill", max(25, w - 50)),
+            TableColumn("name", "Skill", max(25, w - 58)),
+            TableColumn("ver", "Ver", 8),
             TableColumn("source", "Source", 9),
             TableColumn("type", "Type", 8),
             TableColumn("path", "Path", 30),
         ]
         rows = [{
             "name": s.name,
+            "ver": s.version or "─",
             "source": s.source,
             "type": "symlink" if s.is_symlink else "dir",
             "path": (s.target or s.path)[:60],
@@ -1634,36 +1675,42 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
 
     elif sub == "commands":
         cols = [
-            TableColumn("name", "Command", max(20, w - 60)),
+            TableColumn("name", "Command", max(20, w - 68)),
+            TableColumn("ver", "Ver", 8),
             TableColumn("source", "Source", 9),
             TableColumn("desc", "Description", 50),
         ]
         rows = [{
             "name": f"/{c.name}",
+            "ver": c.version or "─",
             "source": c.source,
             "desc": (c.description or "")[:80],
         } for c in data]
 
     elif sub == "agents":
         cols = [
-            TableColumn("name", "Agent", max(20, w - 60)),
+            TableColumn("name", "Agent", max(20, w - 68)),
+            TableColumn("ver", "Ver", 8),
             TableColumn("source", "Source", 9),
             TableColumn("desc", "Description", 50),
         ]
         rows = [{
             "name": a.name,
+            "ver": a.version or "─",
             "source": a.source,
             "desc": (a.description or "")[:80],
         } for a in data]
 
     elif sub == "mcp":
         cols = [
-            TableColumn("name", "Server", max(20, w - 60)),
+            TableColumn("name", "Server", max(20, w - 68)),
+            TableColumn("ver", "Ver", 8),
             TableColumn("plugin", "Plugin", 25),
             TableColumn("cmd", "Command", 30),
         ]
         rows = [{
             "name": s.name,
+            "ver": s.version or "─",
             "plugin": s.plugin_id,
             "cmd": " ".join([s.command, *s.args_list])[:60],
         } for s in data]
@@ -1671,12 +1718,14 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     elif sub == "hooks":
         cols = [
             TableColumn("event", "Event", 22),
+            TableColumn("ver", "Ver", 8),
             TableColumn("type", "Type", 10),
             TableColumn("source", "Source", 10),
-            TableColumn("detail", "Detail", max(20, w - 70)),
+            TableColumn("detail", "Detail", max(20, w - 78)),
         ]
         rows = [{
             "event": h.event,
+            "ver": h.version or "─",
             "type": h.type,
             "source": h.source,
             "detail": get_hook_detail(h)[:80],
@@ -1684,13 +1733,15 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
 
     elif sub == "market":
         cols = [
-            TableColumn("name", "Marketplace", max(20, w - 70)),
+            TableColumn("name", "Marketplace", max(20, w - 78)),
+            TableColumn("ver", "Ver", 8),
             TableColumn("kind", "Source", 10),
             TableColumn("loc", "Location", 30),
             TableColumn("updated", "Updated", 12),
         ]
         rows = [{
             "name": m.name,
+            "ver": "─",  # marketplace has no per-source version concept
             "kind": m.source.kind,
             "loc": m.install_location[:50],
             "updated": m.last_updated[:10],
