@@ -799,6 +799,24 @@ def test_active_tab_has_colored_background_when_unfocused():
         assert active_attr != inactive_attr
 
 
+def test_vault_search_captures_r_via_extensions_dispatcher():
+    """Regression: Extensions tab dispatcher reserves `r` for sub-tab refresh,
+    but in Vault `/`-search mode the printable key must reach the search field
+    instead of triggering refresh."""
+    state = axt.TuiState()
+    state.ext_sub_tab = "vault"
+    state.vault_searching = True
+    state.vault_search = ""
+    axt.handle_extensions_input(state, ord("r"))
+    assert state.vault_searching is True
+    assert state.vault_search == "r"
+    # `[` and `]` are also reserved by the dispatcher — same exemption.
+    axt.handle_extensions_input(state, ord("["))
+    axt.handle_extensions_input(state, ord("]"))
+    assert state.vault_search == "r[]"
+    assert state.ext_sub_tab == "vault"  # no sub-tab cycle
+
+
 def test_vault_search_mode_enter_and_capture(tmp_path, monkeypatch):
     """`/` enters search mode; ASCII keys append to vault_search."""
     state = axt.TuiState()
@@ -1310,6 +1328,80 @@ def test_vault_detail_focus_esc_blurs():
     axt.handle_vault_input(state, 27)  # Esc
     assert state.vault_detail_focused is False
     assert state.vault_detail_scroll == 0
+
+
+def test_vault_detail_focus_esc_preserves_search():
+    """Esc from detail panel only blurs back to the filtered list — the
+    search filter stays intact. Clearing the filter is reserved for a
+    follow-up Esc pressed on the list (see test_vault_list_esc_clears_search)."""
+    state = axt.TuiState()
+    state.vault_items = [axt.VaultItem(name="alpha", type="skill", path="", description="")]
+    state.vault_detail_focused = True
+    state.vault_detail_scroll = 3
+    state.vault_search = "alp"
+    msg = axt.handle_vault_input(state, 27)  # Esc
+    assert state.vault_detail_focused is False
+    assert state.vault_detail_scroll == 0
+    assert state.vault_search == "alp"
+    assert msg is None
+
+
+def test_vault_list_esc_clears_search():
+    """First Esc on the filtered list clears vault_search and resets the
+    selection. focused_layer is owned by the loop dispatcher and is not
+    touched by handle_vault_input."""
+    state = axt.TuiState()
+    state.vault_items = [axt.VaultItem(name="alpha", type="skill", path="", description="")]
+    state.vault_search = "alp"
+    state.vault_selected = 2
+    msg = axt.handle_vault_input(state, 27)  # Esc
+    assert state.vault_search == ""
+    assert state.vault_selected == 0
+    assert msg == "Search cleared"
+
+
+def test_vault_content_esc_with_search_does_not_climb():
+    """When focus is on the Vault content layer and a search filter is
+    active, the content-layer handler must NOT consume Esc — it has to
+    fall through to handle_vault_input so the first Esc can clear the
+    filter (the second Esc, with vault_search empty, then climbs)."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "vault"
+    state.focused_layer = "content"
+    state.vault_search = "alp"
+    scr = _make_stdscr()
+    consumed = axt._handle_content_layer_key(scr, state, 27, "extensions")
+    assert consumed is False
+    assert state.focused_layer == "content"  # unchanged
+
+
+def test_vault_content_esc_without_search_climbs_to_sub_tab():
+    """With no search filter, the standard climb behavior is preserved:
+    content-layer Esc moves focus up to the sub-tab bar."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "vault"
+    state.focused_layer = "content"
+    state.vault_search = ""
+    scr = _make_stdscr()
+    consumed = axt._handle_content_layer_key(scr, state, 27, "extensions")
+    assert consumed is True
+    assert state.focused_layer == "subTab"
+
+
+def test_vault_list_esc_pending_takes_priority_over_search():
+    """Pending toggles are the closer-to-action state, so an Esc with both
+    pending + search active discards the pending changes first. A second
+    Esc would then clear the search."""
+    state = axt.TuiState()
+    state.vault_items = [axt.VaultItem(name="alpha", type="skill", path="", description="")]
+    state.vault_search = "alp"
+    state.vault_pending_project.add("alpha")
+    msg = axt.handle_vault_input(state, 27)
+    assert state.vault_pending_project == set()
+    assert state.vault_search == "alp"  # search preserved on this Esc
+    assert msg == "Discarded pending changes"
 
 
 # ─── Subtab actions (Plugin enable / disable / Skill / Marketplace / Hook) ───

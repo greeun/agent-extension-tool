@@ -400,9 +400,12 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         title_parts.append(f"pending={pending}")
     safe_addnstr(stdscr, y0, 0, fit_cells("  ".join(title_parts), w - 1), w - 1, CP_HDR())
 
-    # Search-mode prompt (overrides the second row).
-    if state.vault_searching:
-        prompt = f" /search: {state.vault_search}_"
+    # Search-mode prompt: keep visible whenever a search filter is active so
+    # the user can see what they typed even after pressing Enter. The trailing
+    # cursor (`_`) is only drawn while the field is actively capturing input.
+    if state.vault_searching or state.vault_search:
+        cursor = "_" if state.vault_searching else ""
+        prompt = f" /search: {state.vault_search}{cursor}"
         safe_addnstr(stdscr, y0 + 1, 0, fit_cells(prompt, w - 1), w - 1, CP_INFO() | curses.A_BOLD)
 
     filtered = _vault_filtered(state)
@@ -418,8 +421,9 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # right panel's inner width drops to ~26 cells and long Path/Description
     # fields wrap aggressively — switches to a full-width bottom panel.
     bottom_layout = w < 100
-    table_y_top = y0 + (2 if state.vault_searching else 1)
-    table_h_full = h - (4 if state.vault_searching else 3)
+    has_search_row = state.vault_searching or bool(state.vault_search)
+    table_y_top = y0 + (2 if has_search_row else 1)
+    table_h_full = h - (4 if has_search_row else 3)
     if bottom_layout:
         detail_h = max(8, min(16, int(h * 0.35)))
         # Never let the panel eat the entire list; reserve at least 3 list rows.
@@ -664,6 +668,13 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         state.vault_pending_project.clear()
         state.vault_pending_global.clear()
         return "Discarded pending changes"
+    elif key == KEY_ESC and state.vault_search:
+        # First Esc on the filtered list clears the search filter. A second
+        # Esc (with no filter left) climbs up to the sub-tab — handled by
+        # the layer dispatcher in axt/tui/loop.py.
+        state.vault_search = ""
+        state.vault_selected = 0
+        return "Search cleared"
     elif key == ord("i") and current and not current.in_vault:
         was_project_local = (not current.is_global_linked) and current.is_linked
         try:
@@ -1822,6 +1833,12 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
      the canonical sub-tab navigation lives at the subTab focus layer via
      ←/→ — see _handle_sub_tab_key in axt/tui/loop.py.)
     """
+    # Vault `/`-search mode swallows every printable key so the user can
+    # type names containing reserved letters (`r`, `[`, `]`, …). Delegate
+    # before applying the sub-tab-level shortcuts.
+    if state.ext_sub_tab == "vault" and state.vault_searching:
+        return handle_vault_input(state, key)
+
     if key == ord("["):
         _cycle_sub_tab(state, -1)
         return f"Sub-tab: {state.ext_sub_tab}"

@@ -68,7 +68,7 @@ Vault
   Space         Toggle PROJECT link for selected item (pending)
   g             Toggle GLOBAL link for selected item (pending)
   Enter         Apply pending toggles (confirm y/N) OR focus detail panel
-  Esc           Discard pending OR blur detail panel
+  Esc           Discard pending → clear search → blur detail panel (in that order)
   Tab           Toggle list ↔ detail panel focus
   /             Search input (type → Enter to apply, Esc to clear)
   F             Cycle filter (all/skill/command/agent/plugin)
@@ -245,6 +245,18 @@ def _handle_content_layer_key(stdscr, state: TuiState, key: int, tab_key: str) -
     climb = key == KEY_ESC or (
         key == curses.KEY_UP and _at_top_of_content(state, tab_key)
     )
+    # Vault exception: when a search filter is active, the first Esc clears
+    # the filter (handled by handle_vault_input) before climbing out. The
+    # second Esc then proceeds with the normal climb because vault_search
+    # will be empty by then.
+    if (
+        key == KEY_ESC
+        and tab_key == "extensions"
+        and state.ext_sub_tab == "vault"
+        and state.vault_search
+        and not state.vault_detail_focused
+    ):
+        climb = False
     if climb:
         state.focused_layer = "subTab" if tab_has_sub_tab(tab_key) else "mainTab"
         _render_frame(stdscr, state)
