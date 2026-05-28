@@ -1973,7 +1973,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                     return f"Unlink failed: {exc}"
             return "Cancelled"
 
-    # ── Marketplace: a=add (2-step), s=sync (selected), r=remove (confirmed)
+    # ── Marketplace: a=add (2-step), s=sync (selected), x=remove (confirmed)
     if sub == "market" and stdscr:
         if key == ord("a"):
             source_str = text_input_modal(
@@ -2014,7 +2014,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                 return f"Synced {m.name}: {result.before} → {result.after}" if result.updated else f"{m.name} up to date"
             except (RuntimeError, KeyError) as exc:
                 return f"Sync failed: {exc}"
-        if key == ord("r"):
+        if key == ord("x"):
             if confirm_modal(stdscr, f"Remove marketplace {m.name}?\nThis deletes {m.install_location}.",
                              title="Confirm remove"):
                 try:

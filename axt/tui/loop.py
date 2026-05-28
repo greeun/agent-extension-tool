@@ -86,7 +86,7 @@ Extensions sub-tab actions
                 x=uninstall (confirm)
                 Status column shows G/P: ● enabled  ○ disabled  · unset
   Skills:       l=link new path (input)  u=unlink (confirm)
-  Marketplace:  a=add (source+name input)  s=sync (selected)  r=remove (confirm)
+  Marketplace:  a=add (source+name input)  s=sync (selected)  x=remove (confirm)
   Commands/Agents: e=open source file in $EDITOR
   Hooks:        p=preview hook execution (scrollable modal)
 
