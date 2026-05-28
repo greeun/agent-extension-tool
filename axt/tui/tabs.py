@@ -147,6 +147,17 @@ def set_status(state: TuiState, msg: str) -> None:
     state.status_set_at = time.monotonic() if msg else None
 
 
+def _invalidate_context(state: TuiState) -> None:
+    """Mark Context analysis stale so the next Context/Usage paint re-runs
+    ``analyze_context()``. Call from any branch that mutates filesystem
+    state observed by the analyzer: plugin enable/disable/uninstall, skill
+    link/unlink, vault link/unlink/import/migrate/sync, marketplace
+    add/remove. Pure cache invalidation — the re-analysis itself happens
+    lazily inside ``_ensure_context_loaded`` / ``_kick_usage_reload``.
+    """
+    state.context_analysis = None
+
+
 def _vault_load(state: TuiState) -> None:
     """Refresh vault items from disk into state. Cheap — just reads metadata."""
     plugins = list_installed_plugins(PATHS.installed_plugins)
@@ -304,6 +315,8 @@ def _vault_apply_pending(state: TuiState) -> str:
             errors += 1
         state.vault_pending_global.discard(name)
     _vault_load(state)
+    if applied:
+        _invalidate_context(state)
     return f"Applied {applied}" + (f", {errors} errors" if errors else "")
 
 
@@ -689,6 +702,7 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
                 profile = profile.with_added(sub, current.name)
                 write_profile(Path.cwd(), profile)
             _vault_load(state)
+            _invalidate_context(state)
             origin = "project-local" if was_project_local else "global"
             return f"Imported {current.name!r} ({origin}) to vault"
         except (OSError, ValueError, FileExistsError) as e:
@@ -723,6 +737,8 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         try:
             result = migrate_to_vault(PATHS.claude_dir, PATHS.vault)
             _vault_load(state)
+            if result.moved:
+                _invalidate_context(state)
             return f"Migrated: +{len(result.moved)} skipped {len(result.skipped)} err {len(result.errors)}"
         except OSError as e:
             return f"Migrate failed: {e}"
@@ -730,6 +746,8 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         try:
             result = sync_project(Path.cwd(), PATHS.vault)
             _vault_load(state)
+            if result.linked or result.unlinked:
+                _invalidate_context(state)
             return f"Sync: +{len(result.linked)} -{len(result.unlinked)} err {len(result.errors)}"
         except OSError as e:
             return f"Sync failed: {e}"
@@ -1904,6 +1922,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
             try:
                 set_plugin_enabled(PATHS.settings, plugin.id, True)
                 state.ext_cache.pop("plugins", None)
+                _invalidate_context(state)
                 return f"Enabled {plugin.id} (global)"
             except OSError as exc:
                 return f"Enable failed: {exc}"
@@ -1911,6 +1930,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
             try:
                 set_plugin_enabled(PATHS.settings, plugin.id, False)
                 state.ext_cache.pop("plugins", None)
+                _invalidate_context(state)
                 return f"Disabled {plugin.id} (global)"
             except OSError as exc:
                 return f"Disable failed: {exc}"
@@ -1918,6 +1938,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
             try:
                 set_plugin_enabled(project_settings_path(), plugin.id, True)
                 state.ext_cache.pop("plugins", None)
+                _invalidate_context(state)
                 return f"Enabled {plugin.id} (project)"
             except OSError as exc:
                 return f"Enable failed: {exc}"
@@ -1925,6 +1946,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
             try:
                 set_plugin_enabled(project_settings_path(), plugin.id, False)
                 state.ext_cache.pop("plugins", None)
+                _invalidate_context(state)
                 return f"Disabled {plugin.id} (project)"
             except OSError as exc:
                 return f"Disable failed: {exc}"
@@ -1936,6 +1958,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                     remove_installed_plugin(PATHS.installed_plugins, plugin.id)
                     remove_plugin_from_settings(PATHS.settings, plugin.id)
                     state.ext_cache.pop("plugins", None)
+                    _invalidate_context(state)
                     return f"Uninstalled {plugin.id}"
                 except OSError as exc:
                     return f"Uninstall failed: {exc}"
@@ -1955,6 +1978,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
             try:
                 link_skill(PATHS.skills, target.strip())
                 state.ext_cache.pop("skills", None)
+                _invalidate_context(state)
                 return f"Linked {target}"
             except (OSError, ValueError) as exc:
                 return f"Link failed: {exc}"
@@ -1968,6 +1992,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                 try:
                     unlink_skill(PATHS.skills, skill.name)
                     state.ext_cache.pop("skills", None)
+                    _invalidate_context(state)
                     return f"Unlinked {skill.name}"
                 except (OSError, ValueError) as exc:
                     return f"Unlink failed: {exc}"
