@@ -62,3 +62,22 @@ def test_list_mcp_servers_missing_manifest_skipped(tmp_path: Path):
     # No manifest file at all.
     servers = axt.list_mcp_servers([{"id": "p@m", "installPath": str(tmp_path / "nowhere")}])
     assert servers == []
+
+
+def test_list_mcp_servers_skips_plugin_without_install_path():
+    """A plugin entry lacking installPath is skipped (can't locate manifest)."""
+    assert axt.list_mcp_servers([{"id": "p@m"}]) == []
+
+
+def test_list_mcp_servers_skips_non_dict_server_definition(tmp_path: Path):
+    """A non-dict server definition inside mcpServers is ignored; valid ones
+    are still collected."""
+    install = tmp_path / "plug"
+    _make_plugin(install, {"mcpServers": {
+        "bad": "not-a-dict",
+        "good": {"command": "node", "args": ["s.js"]},
+    }})
+    servers = axt.list_mcp_servers([{"id": "p@m", "installPath": str(install)}])
+    names = [s.name for s in servers]
+    assert "good" in names
+    assert "bad" not in names

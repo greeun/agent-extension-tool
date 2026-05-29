@@ -4364,3 +4364,964 @@ def test_handle_vault_input_mode_scan_failure(monkeypatch, tmp_path):
     assert msg is not None and "Scan failed" in msg
     # Mode still toggled despite the scan failure.
     assert s.vault_scan_mode == "full"
+
+
+# ─── Coverage push: widgets.py deep branches ─────────────────────────────────
+
+
+def test_cp_mark_returns_pair_or_zero():
+    """CP_MARK() returns a color attr (or 0 when start_color is unavailable),
+    never raising — exercises the magenta `_safe_pair(6)` shortcut."""
+    val = axt.CP_MARK()
+    assert isinstance(val, int)
+
+
+def test_is_quit_recognizes_q_and_esc():
+    assert axt.is_quit(ord("q")) is True
+    assert axt.is_quit(ord("Q")) is True
+    assert axt.is_quit(27) is True  # Esc
+    assert axt.is_quit(ord("a")) is False
+
+
+def test_render_table_scrolls_up_when_selected_above_window():
+    """When `selected` is above the current top_offset window, render_table
+    rewinds visible_start to the selection (the `selected < visible_start`
+    arm). Row 0's prefix must appear since selection 0 forces the window up."""
+    scr = _make_stdscr(rows=30, cols=80)
+    cols = [axt.TableColumn("name", "Name", 20)]
+    rows = [{"name": f"row{i}"} for i in range(20)]
+    # avail = h(5) - header(2) = 3 visible rows. top_offset=10 puts the window
+    # well below selection 0, so the up-scroll branch must fire.
+    axt.render_table(scr, 0, 0, 5, 80, cols, rows,
+                     selected=0, show_header=True, top_offset=10)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    # The first data row's selected prefix `▸ 1` proves window rewound to row 0.
+    assert "row0" in flat
+    assert "row10" not in flat
+
+
+def test_wrap_to_cells_nonpositive_width_returns_text_as_single_line():
+    """_wrap_to_cells with max_cells <= 0 short-circuits, returning [text]."""
+    assert axt._wrap_to_cells("abc", 0) == ["abc"]
+    assert axt._wrap_to_cells("xyz", -3) == ["xyz"]
+
+
+def test_text_input_modal_curs_set_errors_are_swallowed(monkeypatch):
+    """text_input_modal must not raise when curses.curs_set raises on entry
+    (line 468-469) and on the finally exit (line 494-495). Esc returns None."""
+    scr = _make_stdscr(rows=24, cols=100)
+    win = MagicMock()
+    win.getch.return_value = 27  # Esc → return None immediately
+    monkeypatch.setattr("curses.newwin", lambda *a: win)
+    monkeypatch.setattr("curses.curs_set",
+                        lambda *a: (_ for _ in ()).throw(curses.error("no cursor")))
+    out = axt.text_input_modal(scr, "prompt", title="t")
+    assert out is None
+
+
+def test_open_in_editor_curs_set_error_swallowed(monkeypatch, tmp_path):
+    """open_in_editor swallows a curses.error from curs_set after the editor
+    returns (lines 585-586) and still reports success on rc==0."""
+    monkeypatch.setattr("subprocess.call", lambda *a, **kw: 0)
+    monkeypatch.setattr("curses.endwin", lambda: None)
+    monkeypatch.setattr("curses.curs_set",
+                        lambda *a: (_ for _ in ()).throw(curses.error("no cursor")))
+    scr = _make_stdscr()
+    f = tmp_path / "file.txt"
+    f.write_text("x")
+    assert axt.open_in_editor(scr, f) is True
+
+
+# ─── Coverage push: tabs.py deep branches ────────────────────────────────────
+
+
+def test_save_scan_cache_swallows_oserror(monkeypatch):
+    """_save_scan_cache best-effort: a write error is caught (lines 242-243)."""
+    monkeypatch.setattr("axt.tui.tabs.write_json_atomic",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")))
+    # Should not raise.
+    axt._save_scan_cache({}, "default")
+
+
+def test_load_scan_cache_non_dict_payload(monkeypatch, tmp_path):
+    """_load_scan_cache returns the default tuple when the cache file is not a
+    dict (line 253)."""
+    monkeypatch.setattr("axt.tui.tabs.read_json", lambda *a, **kw: ["not", "a", "dict"])
+    index, mode = axt._load_scan_cache()
+    assert index == {}
+    assert mode == "default"
+
+
+def test_load_scan_cache_non_dict_entries(monkeypatch):
+    """When `entries` is not a dict, _load_scan_cache returns default (line 256)."""
+    monkeypatch.setattr("axt.tui.tabs.read_json",
+                        lambda *a, **kw: {"mode": "full", "entries": ["bad"]})
+    index, mode = axt._load_scan_cache()
+    assert index == {}
+    assert mode == "default"
+
+
+def test_load_scan_cache_skips_non_dict_entry_value(monkeypatch):
+    """A non-dict value inside `entries` is skipped (line 260 `continue`)."""
+    monkeypatch.setattr("axt.tui.tabs.read_json", lambda *a, **kw: {
+        "mode": "full",
+        "entries": {"skill:bad": "not-a-dict",
+                    "skill:good": {"type": "skill", "name": "good", "projects": []}},
+    })
+    index, mode = axt._load_scan_cache()
+    assert "skill:bad" not in index
+    assert "skill:good" in index
+    assert mode == "full"
+
+
+def test_usage_index_drop_missing_entry_is_noop():
+    """_usage_index_drop returns early when the key is absent (line 293)."""
+    index = {}
+    axt._usage_index_drop(index, "skill", "ghost", "/p")
+    assert index == {}
+
+
+def test_vault_apply_pending_skips_plugin_items():
+    """A plugin in the pending sets is discarded without a link attempt
+    (lines 312-313 for project, 326-328 for global)."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="plug", type="plugin", path="", description=""),
+    ]
+    s.vault_pending_project.add("plug")
+    s.vault_pending_global.add("plug")
+    s.vault_pending_project.add("ghost-removed")  # not in items → also discarded
+    msg = axt._vault_apply_pending(s)
+    assert "Applied 0" in msg
+    assert not s.vault_pending_project
+    assert not s.vault_pending_global
+
+
+def test_vault_apply_pending_project_link_error_counted(monkeypatch):
+    """A link_to_project raising OSError increments the error count (line 322-323)."""
+    monkeypatch.setattr("axt.tui.tabs.link_to_project",
+                        lambda cwd, item: (_ for _ in ()).throw(OSError("boom")))
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="sk", type="skill", path="", description="", is_linked=False),
+    ]
+    s.vault_pending_project.add("sk")
+    msg = axt._vault_apply_pending(s)
+    assert "1 errors" in msg
+
+
+def test_vault_apply_pending_global_link_and_unlink(monkeypatch):
+    """Exercises the global link path (line 334) and the global-unlink path
+    (line 332) plus its error arm (lines 336-338)."""
+    linked = []
+    monkeypatch.setattr("axt.tui.tabs.link_to_global",
+                        lambda claude_dir, item: linked.append(item.name))
+    monkeypatch.setattr("axt.tui.tabs.unlink_from_global",
+                        lambda claude_dir, item: (_ for _ in ()).throw(OSError("nope")))
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="newg", type="skill", path="", description="",
+                      is_global_linked=False),
+        axt.VaultItem(name="oldg", type="skill", path="", description="",
+                      is_global_linked=True),
+    ]
+    s.vault_pending_global.add("newg")
+    s.vault_pending_global.add("oldg")
+    msg = axt._vault_apply_pending(s)
+    assert "newg" in linked
+    assert "1 errors" in msg  # the unlink raise
+
+
+def test_vault_filtered_sort_added():
+    """Sort by `added` orders newest-first using created_at (line 358)."""
+    import datetime as _dt
+    old = _dt.datetime(2020, 1, 1, tzinfo=_dt.timezone.utc)
+    new = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
+    s = axt.TuiState()
+    s.vault_sort = "added"
+    s.vault_items = [
+        axt.VaultItem(name="older", type="skill", path="", description="", created_at=old),
+        axt.VaultItem(name="newer", type="skill", path="", description="", created_at=new),
+    ]
+    names = [i.name for i in axt._vault_filtered(s)]
+    assert names == ["newer", "older"]
+
+
+def test_vault_filtered_sort_updated():
+    """Sort by `updated` orders newest-first using updated_at (line 360)."""
+    import datetime as _dt
+    s = axt.TuiState()
+    s.vault_sort = "updated"
+    s.vault_items = [
+        axt.VaultItem(name="a", type="skill", path="", description="",
+                      updated_at=_dt.datetime(2021, 5, 5, tzinfo=_dt.timezone.utc)),
+        axt.VaultItem(name="b", type="skill", path="", description="",
+                      updated_at=_dt.datetime(2025, 5, 5, tzinfo=_dt.timezone.utc)),
+    ]
+    names = [i.name for i in axt._vault_filtered(s)]
+    assert names == ["b", "a"]
+
+
+def test_vault_filtered_sort_project():
+    """Sort by `project` puts linked items first (line 362)."""
+    s = axt.TuiState()
+    s.vault_sort = "project"
+    s.vault_items = [
+        axt.VaultItem(name="unlinked", type="skill", path="", description="", is_linked=False),
+        axt.VaultItem(name="linked", type="skill", path="", description="", is_linked=True),
+    ]
+    names = [i.name for i in axt._vault_filtered(s)]
+    assert names == ["linked", "unlinked"]
+
+
+def test_vault_filtered_sort_global():
+    """Sort by `global` puts globally-linked items first (line 364)."""
+    s = axt.TuiState()
+    s.vault_sort = "global"
+    s.vault_items = [
+        axt.VaultItem(name="local", type="skill", path="", description="", is_global_linked=False),
+        axt.VaultItem(name="glob", type="skill", path="", description="", is_global_linked=True),
+    ]
+    names = [i.name for i in axt._vault_filtered(s)]
+    assert names == ["glob", "local"]
+
+
+def test_vault_g_toggle_removes_existing_global_pending():
+    """`g` on an already-pending global item removes it (line 666)."""
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(name="alpha", type="skill", path="", description="")]
+    s.vault_pending_global.add("alpha")
+    axt.handle_vault_input(s, ord("g"))
+    assert "alpha" not in s.vault_pending_global
+
+
+def test_vault_apply_confirm_modal_skips_missing_item(monkeypatch):
+    """The confirm-message builder skips a pending name with no matching item
+    (line 684 `continue`), still showing the apply prompt and applying on yes."""
+    seen = {}
+    monkeypatch.setattr("axt.confirm_modal",
+                        lambda stdscr, msg, title="Confirm": seen.setdefault("msg", msg) or True)
+    applied = []
+    monkeypatch.setattr("axt.tui.tabs._vault_apply_pending",
+                        lambda state: applied.append(True) or "Applied 1")
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(name="real", type="skill", path="", description="")]
+    s.vault_pending_project.add("real")
+    s.vault_pending_project.add("phantom")  # no item → skipped in _lines
+    s.vault_pending_global.add("realg")      # builds the Global section (694-695)
+    s.vault_items.append(axt.VaultItem(name="realg", type="skill", path="", description=""))
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt.handle_vault_input(s, 10)  # Enter → confirm apply
+    assert applied == [True]
+    assert "Global" in seen["msg"]
+    assert "phantom" not in seen["msg"]
+
+
+def test_vault_import_records_project_local_profile(tmp_path, monkeypatch):
+    """`i` on a project-local-only item imports it and writes the profile entry
+    (lines 724-727)."""
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        claude_dir=tmp_path / "claude", vault=tmp_path / "vault"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("axt.tui.tabs.import_to_vault", lambda cd, vd, item: None)
+    monkeypatch.setattr("axt.tui.tabs._vault_load", lambda state: None)
+    written = {}
+    monkeypatch.setattr("axt.tui.tabs.write_profile",
+                        lambda cwd, profile: written.setdefault("done", True))
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(
+        name="loc", type="skill", path="", description="",
+        in_vault=False, is_linked=True, is_global_linked=False)]
+    s.vault_selected = 0
+    msg = axt.handle_vault_input(s, ord("i"))
+    assert msg is not None and "project-local" in msg
+    assert written.get("done") is True
+
+
+def test_vault_migrate_failure(monkeypatch):
+    """`m` migrate raising OSError returns a 'Migrate failed' message (767-768)."""
+    monkeypatch.setattr("axt.tui.tabs.migrate_to_vault",
+                        lambda cd, vd: (_ for _ in ()).throw(OSError("mig boom")))
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(name="x", type="skill", path="", description="")]
+    msg = axt.handle_vault_input(s, ord("m"))
+    assert msg is not None and "Migrate failed" in msg
+
+
+def test_vault_migrate_success_with_moves_invalidates_context(monkeypatch):
+    """`m` migrate with at least one moved item hits _invalidate_context
+    (line 765) and returns the summary line."""
+    monkeypatch.setattr("axt.tui.tabs.migrate_to_vault",
+                        lambda cd, vd: axt.MigrateResult(moved=["a"], skipped=[], errors=[]))
+    monkeypatch.setattr("axt.tui.tabs._vault_load", lambda state: None)
+    invalidated = []
+    monkeypatch.setattr("axt.tui.tabs._invalidate_context",
+                        lambda state: invalidated.append(True))
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(name="x", type="skill", path="", description="")]
+    msg = axt.handle_vault_input(s, ord("m"))
+    assert msg is not None and "Migrated: +1" in msg
+    assert invalidated == [True]
+
+
+def test_vault_sync_failure(monkeypatch):
+    """`S` sync raising OSError returns a 'Sync failed' message (776-777)."""
+    monkeypatch.setattr("axt.tui.tabs.sync_project",
+                        lambda cwd, vd: (_ for _ in ()).throw(OSError("sync boom")))
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(name="x", type="skill", path="", description="")]
+    msg = axt.handle_vault_input(s, ord("S"))
+    assert msg is not None and "Sync failed" in msg
+
+
+def test_vault_sync_success_invalidates_context(monkeypatch):
+    """`S` sync with linked changes hits the _invalidate_context branch (line 774)."""
+    monkeypatch.setattr("axt.tui.tabs.sync_project",
+                        lambda cwd, vd: axt.SyncResult(linked=["a"], unlinked=[], errors=[]))
+    monkeypatch.setattr("axt.tui.tabs._vault_load", lambda state: None)
+    invalidated = []
+    monkeypatch.setattr("axt.tui.tabs._invalidate_context",
+                        lambda state: invalidated.append(True))
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(name="x", type="skill", path="", description="")]
+    msg = axt.handle_vault_input(s, ord("S"))
+    assert msg is not None and "Sync" in msg
+    assert invalidated == [True]
+
+
+def test_bar_chart_lines_empty_returns_empty_list():
+    """_bar_chart_lines with no data returns [] (line 838)."""
+    assert axt._bar_chart_lines([], 60) == []
+
+
+def test_daily_costs_invalid_timezone_falls_back(monkeypatch):
+    """_daily_costs with an unresolvable tz hits the `except Exception: pass`
+    fallback (lines 887-888) and still returns one label per day."""
+    out = axt._daily_costs([], days=3, tz="Not/AReal_Zone")
+    assert len(out) == 3
+    # Each tuple is (MM-DD label, cost) and cost is 0.0 with no entries.
+    assert all(c == 0.0 for _label, c in out)
+
+
+def test_render_rate_limit_bars_no_reset_shows_dash(tmp_path, monkeypatch):
+    """A rate-limit entry with no reset_at renders the em-dash ETA (line 1327)."""
+    import json
+    snap = tmp_path / "snap.json"
+    snap.write_text(json.dumps({
+        "five_hour": {"used_percentage": 50},  # no resets_at
+        "updated_at": "2099-01-01T00:00:00Z",
+    }))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(usage_snapshot=snap))
+    scr = _make_stdscr(rows=30, cols=120)
+    used = axt._render_rate_limit_bars(scr, 0, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert used >= 1
+    assert "reset in —" in flat
+
+
+def test_render_rate_limit_bars_reset_now_and_minutes(tmp_path, monkeypatch):
+    """reset_at in the past → 'now' (line 1331); within the hour → minutes
+    (line 1333)."""
+    import json
+    snap = tmp_path / "snap.json"
+    snap.write_text(json.dumps({
+        "five_hour": {"used_percentage": 95, "resets_at": "2000-01-01T00:00:00Z"},  # past → now
+        "seven_day": {"used_percentage": 30, "resets_at": "2099-01-01T00:00:00Z"},
+        "updated_at": "2099-01-01T00:00:00Z",
+    }))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(usage_snapshot=snap))
+    scr = _make_stdscr(rows=30, cols=120)
+    axt._render_rate_limit_bars(scr, 0, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "reset in now" in flat
+
+
+def test_render_rate_limit_minutes_eta(monkeypatch):
+    """Directly exercise the <3600s minutes branch (line 1333) via fmt_eta by
+    rendering with a near-future reset."""
+    import json
+    import datetime as _dt
+    soon = (_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(minutes=30)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Build a snapshot dict file on the fly.
+    import tempfile, os as _os
+    fd, path = tempfile.mkstemp(suffix=".json")
+    with _os.fdopen(fd, "w") as fh:
+        json.dump({"five_hour": {"used_percentage": 20, "resets_at": soon},
+                   "updated_at": "2099-01-01T00:00:00Z"}, fh)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(usage_snapshot=Path(path)))
+    scr = _make_stdscr(rows=30, cols=120)
+    axt._render_rate_limit_bars(scr, 0, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    _os.unlink(path)
+    assert "reset in 29m" in flat or "reset in 30m" in flat
+
+
+def test_render_context_sources_empty_category_detail(monkeypatch, tmp_path):
+    """A selected category row whose sources list is empty after filtering
+    renders the `(empty)` detail field (line 1394)."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    # Analysis has a single `memory` source.
+    src = axt.ContextSource(
+        name="x", category="memory", estimated_tokens=10, percentage=1.0,
+        path="", hint="", chars=40, actionable=True)
+    analysis = axt.ContextAnalysis(
+        total_tokens=10, context_window_size=200_000, used_percent=0.1,
+        model="m", sources=[src],
+        cost_impact=axt.CostImpact(
+            model="m", cache_write_cost=0.0, cache_read_cost_per_turn=0.0,
+            avg_turns_per_session=1, avg_sessions_per_day=1,
+            per_session_cost=0.0, monthly_cost=0.0))
+    # Hand-craft a row whose category (`rules`) has NO matching source, so the
+    # per-category filter in _render_context_sources yields nothing.
+    rows = [axt._ContextCategoryRow(
+        category="rules", label="Rules", items=0, tokens=0, pct=0.0)]
+    scr = _make_stdscr(rows=40, cols=140)
+    state = axt.TuiState()
+    state.context_selected = 0
+    axt._render_context_sources(scr, state, 3, 20, 140, analysis, rows)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "(empty)" in flat
+
+
+def test_render_context_tab_loading_when_analysis_none(tmp_path, monkeypatch):
+    """render_context_tab shows 'Loading context…' when analysis is None
+    (lines 1424-1425). Prevent _ensure_context_loaded from populating it."""
+    monkeypatch.setattr("axt.tui.tabs._ensure_context_loaded", lambda state: None)
+    scr = _make_stdscr(rows=30, cols=120)
+    state = axt.TuiState()
+    state.context_analysis = None
+    axt.render_context_tab(scr, state, 0, 26, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Loading context" in flat
+
+
+def test_load_project_context_skips_non_md_memory(tmp_path, monkeypatch):
+    """A non-.md file in the project memory dir is skipped (line 1541 continue);
+    a readable .md memory file is included (lines 1546-1550)."""
+    monkeypatch.setattr("axt.HOME", tmp_path / "home")
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    settings_dir_name = str(proj).replace("/", "-")
+    mem = tmp_path / "home" / ".claude" / "projects" / settings_dir_name / "memory"
+    mem.mkdir(parents=True)
+    (mem / "notes.md").write_text("# memory note\nbody\n")
+    (mem / "skipme.txt").write_text("ignored")
+    items = axt.load_project_context(proj)
+    names = [i.name for i in items]
+    assert any("Memory: notes" in n for n in names)
+    assert not any("skipme" in n for n in names)
+
+
+def test_load_project_context_skips_unreadable_md_memory(tmp_path, monkeypatch):
+    """A .md memory file that can't be read (content is None) is skipped via
+    the `continue` at line 1545 — no Memory item is produced for it."""
+    monkeypatch.setattr("axt.HOME", tmp_path / "home")
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    settings_dir_name = str(proj).replace("/", "-")
+    mem = tmp_path / "home" / ".claude" / "projects" / settings_dir_name / "memory"
+    mem.mkdir(parents=True)
+    bad = mem / "broken.md"
+    bad.write_text("x")
+    # Force _safe_read_text to return None for the memory .md file (simulating
+    # a read error) while leaving other candidate reads to the real function.
+    real_read = axt.tui.tabs._safe_read_text
+    monkeypatch.setattr("axt.tui.tabs._safe_read_text",
+                        lambda p: None if str(p).endswith("broken.md") else real_read(p))
+    items = axt.load_project_context(proj)
+    assert not any("Memory: broken" in i.name for i in items)
+
+
+def test_handle_project_input_k_resets_scroll():
+    """`k` in the project pane moves selection up and resets scroll (1567-1568)."""
+    s = axt.TuiState()
+    s.project_items = [
+        axt.ProjectContextItem(name="a", source="user", path="/a", content="x", lines=1),
+        axt.ProjectContextItem(name="b", source="user", path="/b", content="y", lines=1),
+    ]
+    s.project_selected = 1
+    s.project_scroll = 7
+    axt.handle_project_input(s, ord("k"))
+    assert s.project_selected == 0
+    assert s.project_scroll == 0
+
+
+def test_ensure_subtab_loaded_commands(tmp_path, monkeypatch):
+    """_ensure_subtab_loaded populates the commands cache (line 1642)."""
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    axt._ensure_subtab_loaded(s, "commands")
+    assert "commands" in s.ext_cache
+    assert isinstance(s.ext_cache["commands"], list)
+
+
+def test_ensure_subtab_loaded_agents(tmp_path, monkeypatch):
+    """_ensure_subtab_loaded populates the agents cache (line 1644)."""
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    axt._ensure_subtab_loaded(s, "agents")
+    assert "agents" in s.ext_cache
+    assert isinstance(s.ext_cache["agents"], list)
+
+
+def test_ensure_subtab_loaded_hooks(tmp_path, monkeypatch):
+    """_ensure_subtab_loaded populates the hooks cache (line 1648)."""
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    axt._ensure_subtab_loaded(s, "hooks")
+    assert "hooks" in s.ext_cache
+    assert isinstance(s.ext_cache["hooks"], list)
+
+
+def test_ensure_subtab_loaded_market(tmp_path, monkeypatch):
+    """_ensure_subtab_loaded populates the market cache (line 1654)."""
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    axt._ensure_subtab_loaded(s, "market")
+    assert "market" in s.ext_cache
+    assert isinstance(s.ext_cache["market"], list)
+
+
+def test_tab_has_focusable_content_extensions_and_context():
+    """Extensions and Context are always focusable (lines 1830, 1832)."""
+    s = axt.TuiState()
+    assert axt.tab_has_focusable_content(s, "extensions") is True
+    assert axt.tab_has_focusable_content(s, "context") is True
+
+
+def test_tab_has_focusable_content_usage_loading_false():
+    """Usage tab while loading is NOT focusable (lines 1834-1835); empty entries
+    likewise (line 1836 → bool([]) == False)."""
+    s = axt.TuiState()
+    s.usage_loading = True
+    assert axt.tab_has_focusable_content(s, "usage") is False
+    s.usage_loading = False
+    s.usage_entries = []
+    assert axt.tab_has_focusable_content(s, "usage") is False
+
+
+def test_tab_has_focusable_content_usage_with_entries_true():
+    """Usage tab with loaded entries IS focusable (line 1836-1837 → True)."""
+    s = axt.TuiState()
+    s.usage_loading = False
+    s.usage_entries = [_usage_entry_now()]
+    assert axt.tab_has_focusable_content(s, "usage") is True
+
+
+def test_tab_has_focusable_content_unknown_tab_false():
+    """An unrecognized tab key falls through to the final `return False`."""
+    s = axt.TuiState()
+    assert axt.tab_has_focusable_content(s, "nope") is False
+
+
+def test_at_top_of_content_unknown_tab_true():
+    """An unknown tab key falls through to the default `return True` (line 1865)."""
+    s = axt.TuiState()
+    assert axt._at_top_of_content(s, "nonexistent") is True
+
+
+def test_handle_extensions_r_refresh_vault_resets_items():
+    """`r` on the Vault sub-tab clears vault_items and resets refresh_token
+    (lines 1894-1895)."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "vault"
+    s.vault_items = [axt.VaultItem(name="a", type="skill", path="", description="")]
+    s.refresh_token = 5
+    msg = axt.handle_extensions_input(s, ord("r"))
+    assert msg == "Refreshed"
+    assert s.vault_items == []
+    assert s.refresh_token == 0
+
+
+def test_subtab_action_plugin_disable_global_failure(tmp_path, monkeypatch):
+    """`d` disable (global) raising OSError → 'Disable failed' (lines 1959-1960)."""
+    import json
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "settings.json"))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
+                             "installedAt": "", "lastUpdated": ""}]},
+    }))
+    monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("x")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    s.ext_selected["plugins"] = 0
+    s.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(s, "plugins", ord("d"))
+    assert msg is not None and "Disable failed" in msg
+
+
+def test_subtab_action_plugin_project_enable_failure(tmp_path, monkeypatch):
+    """`E` enable (project) raising OSError → 'Enable failed' (lines 1967-1968)."""
+    import json
+    proj = tmp_path / "proj"
+    (proj / ".claude").mkdir(parents=True)
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "settings.json"))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
+                             "installedAt": "", "lastUpdated": ""}]},
+    }))
+    monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("x")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    s.ext_selected["plugins"] = 0
+    s.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(s, "plugins", ord("E"))
+    assert msg is not None and "Enable failed" in msg
+
+
+def test_subtab_action_plugin_project_disable_failure(tmp_path, monkeypatch):
+    """`D` disable (project) raising OSError → 'Disable failed' (lines 1975-1976)."""
+    import json
+    proj = tmp_path / "proj"
+    (proj / ".claude").mkdir(parents=True)
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "settings.json"))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
+                             "installedAt": "", "lastUpdated": ""}]},
+    }))
+    monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("x")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    s.ext_selected["plugins"] = 0
+    s.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(s, "plugins", ord("D"))
+    assert msg is not None and "Disable failed" in msg
+
+
+def test_subtab_action_plugin_uninstall_failure(tmp_path, monkeypatch):
+    """`x` uninstall where remove_installed_plugin raises → 'Uninstall failed'
+    (lines 1987-1988)."""
+    import json
+    install_path = tmp_path / "myplugin"
+    install_path.mkdir()
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "settings.json"))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": str(install_path),
+                             "version": "1", "installedAt": "", "lastUpdated": ""}]},
+    }))
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: True)
+    monkeypatch.setattr("axt.tui.tabs.remove_installed_plugin",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("rm boom")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    s.ext_selected["plugins"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "plugins", ord("x"))
+    assert msg is not None and "Uninstall failed" in msg
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks unsupported on Windows")
+def test_subtab_action_skill_link_failure(monkeypatch):
+    """`l` link where link_skill raises ValueError → 'Link failed' (2007-2008)."""
+    monkeypatch.setattr("axt.tui.tabs.is_symlink_supported", lambda: True)
+    monkeypatch.setattr("axt.text_input_modal",
+                        lambda *a, **kw: "/some/path")
+    monkeypatch.setattr("axt.tui.tabs.link_skill",
+                        lambda skills, target: (_ for _ in ()).throw(ValueError("bad path")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "skills", ord("l"))
+    assert msg is not None and "Link failed" in msg
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks unsupported on Windows")
+def test_subtab_action_skill_unlink_none_selected(monkeypatch):
+    """`u` with no selected skill returns None (line 2012)."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = []
+    s.ext_selected["skills"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(s, "skills", ord("u")) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks unsupported on Windows")
+def test_subtab_action_skill_unlink_failure(monkeypatch):
+    """`u` confirmed where unlink_skill raises OSError → 'Unlink failed'
+    (lines 2021-2022)."""
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: True)
+    monkeypatch.setattr("axt.tui.tabs.unlink_skill",
+                        lambda skills, name: (_ for _ in ()).throw(OSError("unlink boom")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name="mylink", path="/p", is_symlink=True, source="user",
+                      target="/src")
+    ]
+    s.ext_selected["skills"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "skills", ord("u"))
+    assert msg is not None and "Unlink failed" in msg
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks unsupported on Windows")
+def test_subtab_action_skill_unlink_cancelled(monkeypatch):
+    """`u` where confirm_modal returns False → 'Cancelled' (line 2023)."""
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: False)
+    unlinked = []
+    monkeypatch.setattr("axt.tui.tabs.unlink_skill",
+                        lambda skills, name: unlinked.append(name))
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name="mylink", path="/p", is_symlink=True, source="user",
+                      target="/src")
+    ]
+    s.ext_selected["skills"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "skills", ord("u"))
+    assert msg == "Cancelled"
+    assert unlinked == []  # confirm declined → no unlink attempted
+
+
+def test_subtab_action_market_add_github_default_name(monkeypatch):
+    """`a` add with a github source derives the default name from the repo
+    tail (line 2040)."""
+    initials = []
+    inputs = iter(["github:acme/cool-market", None])  # 2nd input None → cancel name
+    def fake_modal(*a, **kw):
+        initials.append(kw.get("initial"))
+        return next(inputs)
+    monkeypatch.setattr("axt.text_input_modal", fake_modal)
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.stdscr_callbacks = {"stdscr": object()}
+    # Name input returns None → aborts at line 2049 after computing default.
+    assert axt._handle_subtab_action(s, "market", ord("a")) is None
+    # Second prompt (the name input) received the github-derived default.
+    assert initials[1] == "cool-market"
+
+
+def test_subtab_action_market_add_git_default_name(monkeypatch):
+    """`a` add with a git: source (neither github nor directory) uses the
+    'custom' default name (line 2044)."""
+    initials = []
+    inputs = iter(["git:https://example.com/x.git", None])
+    def fake_modal(*a, **kw):
+        initials.append(kw.get("initial"))
+        return next(inputs)
+    monkeypatch.setattr("axt.text_input_modal", fake_modal)
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(s, "market", ord("a")) is None
+    assert initials[1] == "custom"
+
+
+def test_subtab_action_market_add_name_cancelled(monkeypatch):
+    """`a` add where the name input is cancelled returns None (line 2049)."""
+    inputs = iter(["dir:/some/path", None])
+    monkeypatch.setattr("axt.text_input_modal", lambda *a, **kw: next(inputs))
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(s, "market", ord("a")) is None
+
+
+def test_subtab_action_market_add_failure(monkeypatch):
+    """`a` add where add_marketplace raises RuntimeError → 'Add failed'
+    (lines 2054-2055)."""
+    inputs = iter(["dir:/some/path", "mname"])
+    monkeypatch.setattr("axt.text_input_modal", lambda *a, **kw: next(inputs))
+    monkeypatch.setattr("axt.tui.tabs.add_marketplace",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("clone failed")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "market", ord("a"))
+    assert msg is not None and "Add failed" in msg
+
+
+def test_subtab_action_market_remove_failure(monkeypatch):
+    """`x` remove confirmed where remove_marketplace raises KeyError →
+    'Remove failed' (lines 2073-2074)."""
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: True)
+    monkeypatch.setattr("axt.tui.tabs.remove_marketplace",
+                        lambda *a, **kw: (_ for _ in ()).throw(KeyError("missing")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [
+        axt.MarketplaceInfo(name="m1",
+                            source=axt.MarketplaceSource(kind="directory", path="/p"),
+                            install_location="/loc", last_updated="2026-01-01")
+    ]
+    s.ext_selected["market"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "market", ord("x"))
+    assert msg is not None and "Remove failed" in msg
+
+
+def test_subtab_action_market_remove_cancelled(monkeypatch):
+    """`x` remove where confirm_modal returns False → 'Cancelled' (line 2075)."""
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: False)
+    removed = []
+    monkeypatch.setattr("axt.tui.tabs.remove_marketplace",
+                        lambda *a, **kw: removed.append(True))
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [
+        axt.MarketplaceInfo(name="m1",
+                            source=axt.MarketplaceSource(kind="directory", path="/p"),
+                            install_location="/loc", last_updated="2026-01-01")
+    ]
+    s.ext_selected["market"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "market", ord("x"))
+    assert msg == "Cancelled"
+    assert removed == []
+
+
+def test_subtab_action_hook_preview_failure(monkeypatch):
+    """`p` preview where preview_hook raises OSError → 'Preview failed'
+    (lines 2085-2086)."""
+    monkeypatch.setattr("axt.tui.tabs.preview_hook",
+                        lambda hook: (_ for _ in ()).throw(OSError("exec boom")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "hooks"
+    s.ext_cache["hooks"] = [
+        axt.HookInfo(event="PreToolUse", matcher="*", source="user",
+                     source_path="/s.json", type="command", command="echo hi")
+    ]
+    s.ext_selected["hooks"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "hooks", ord("p"))
+    assert msg is not None and "Preview failed" in msg
+
+
+def test_subtab_action_hook_preview_includes_stderr(monkeypatch):
+    """A preview result with a non-empty `error` appends a stderr section
+    (line 2097)."""
+    captured = []
+    monkeypatch.setattr("axt.preview_modal",
+                        lambda stdscr, content, title="Preview": captured.append(content))
+    monkeypatch.setattr("axt.tui.tabs.preview_hook",
+                        lambda hook: axt.HookPreviewResult(
+                            type="command", summary="ran", output="",
+                            error="boom on stderr", exit_code=1))
+    s = axt.TuiState()
+    s.ext_sub_tab = "hooks"
+    s.ext_cache["hooks"] = [
+        axt.HookInfo(event="PreToolUse", matcher="*", source="user",
+                     source_path="/s.json", type="command", command="echo hi")
+    ]
+    s.ext_selected["hooks"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    axt._handle_subtab_action(s, "hooks", ord("p"))
+    assert captured
+    assert "stderr" in captured[0]
+    assert "boom on stderr" in captured[0]
+
+
+def test_subtab_action_unhandled_sub_returns_none():
+    """An action key that no sub-tab branch handles falls to the final
+    `return None` (line 2109)."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "mcp"  # mcp has no action keys in _handle_subtab_action
+    s.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(s, "mcp", ord("z")) is None
+
+
+# ─── Coverage push: loop.py deep branches ────────────────────────────────────
+
+
+def test_tui_loop_set_escdelay_attributeerror_swallowed(monkeypatch, tmp_path):
+    """If curses.set_escdelay is missing (older Python) the AttributeError is
+    swallowed (lines 298-299) and the loop still runs to quit."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda: None)
+    monkeypatch.delattr("curses.set_escdelay", raising=False)
+    scr = _loop_stdscr([ord("q")])
+    assert axt._tui_loop(scr) is None
+
+
+def test_tui_loop_keyboard_interrupt_on_getch_returns(monkeypatch, tmp_path):
+    """A KeyboardInterrupt raised by getch is caught and returns cleanly
+    (lines 321-322)."""
+    monkeypatch.chdir(tmp_path)
+    _quiet_curses(monkeypatch)
+    scr = _make_stdscr()
+    def boom():
+        raise KeyboardInterrupt
+    scr.getch.side_effect = boom
+    assert axt._tui_loop(scr) is None
+
+
+def test_tui_loop_drops_key_when_not_content_layer(monkeypatch, tmp_path):
+    """A non-navigation key (e.g. 'j') while focus is still on mainTab is
+    dropped without reaching the tab handler (line 393-394 `continue`)."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    _quiet_curses(monkeypatch)
+    handler_calls = []
+    real = axt.handle_context_input
+    def spy(state, key):
+        handler_calls.append(key)
+        return real(state, key)
+    monkeypatch.setattr("axt.tui.loop.TAB_HANDLERS",
+                        {**axt.tui.loop.TAB_HANDLERS, "context": spy})
+    # '2' → Context tab (focus stays mainTab); 'j' should be DROPPED (mainTab);
+    # 'q' quits. So the handler must never see 'j'.
+    scr = _loop_stdscr([ord("2"), ord("j"), ord("q")])
+    axt._tui_loop(scr)
+    assert ord("j") not in handler_calls
+
+
+def test_tui_loop_stub_tab_handler_path(monkeypatch, tmp_path):
+    """When the active tab has no entry in TAB_HANDLERS, the loop calls
+    handle_stub_input (line 403). We register a stub tab to force this."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    _quiet_curses(monkeypatch)
+    # Add a 4th main tab with a renderer but NO handler so the else-branch runs.
+    monkeypatch.setattr("axt.tui.loop.MAIN_TABS",
+                        axt.MAIN_TABS + (("stub", "Stub", "Stub"),))
+    monkeypatch.setattr("axt.tui.loop.TAB_RENDERERS",
+                        {**axt.tui.loop.TAB_RENDERERS})  # 'stub' absent → render_stub_tab
+    stub_calls = []
+    real_stub = axt.handle_stub_input
+    def spy_stub(state, key):
+        stub_calls.append(key)
+        return real_stub(state, key)
+    monkeypatch.setattr("axt.tui.loop.handle_stub_input", spy_stub)
+    # '4' jumps to the stub tab. tab_has_focusable_content returns False for
+    # 'stub', so KEY_DOWN won't descend — force content focus another way:
+    # since the stub tab has no sub-tab and is not focusable, we instead set
+    # focus to content directly via a spy on _render_frame is not enough.
+    # Simpler: the handler path runs only when focused_layer == 'content'. Use
+    # a tab whose focusable check is True. 'stub' isn't, so drive through the
+    # modal=False, focused_layer!=content guard. To reach line 403 we need
+    # focused_layer == content with a stub tab. Patch tab_has_focusable_content.
+    monkeypatch.setattr("axt.tui.loop.tab_has_focusable_content",
+                        lambda state, key: True)
+    scr = _loop_stdscr([ord("4"), curses.KEY_DOWN, ord("z"), ord("q")])
+    axt._tui_loop(scr)
+    assert ord("z") in stub_calls
+
+
+def test_launch_tui_returns_0_on_clean_exit(monkeypatch):
+    """launch_tui returns 0 when curses.wrapper completes without error
+    (line 419)."""
+    monkeypatch.setattr("curses.wrapper", lambda fn: None)
+    assert axt.launch_tui() == 0

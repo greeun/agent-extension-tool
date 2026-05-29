@@ -451,6 +451,80 @@ def test_migrate_to_vault_preserves_symlinked_global(tmp_path: Path):
     assert (vault / "skills" / "linked").is_symlink()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_project_rejects_real_file_collision(tmp_path: Path):
+    """If a REAL (non-symlink) file already occupies the link path, linking
+    must raise rather than clobber it."""
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    real = proj / ".claude" / "skills" / "myskill"
+    real.mkdir(parents=True)
+    (real / "real.txt").write_text("not a symlink")
+    with pytest.raises(FileExistsError):
+        axt.link_to_project(proj, skill)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_project_replaces_stale_symlink(tmp_path: Path):
+    """A pre-existing symlink at the target is replaced (not an error)."""
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    sub = proj / ".claude" / "skills"
+    sub.mkdir(parents=True)
+    os.symlink(tmp_path / "somewhere-else", sub / "myskill")  # stale link
+    axt.link_to_project(proj, skill)  # should unlink stale + relink
+    assert (sub / "myskill").is_symlink()
+    assert os.readlink(sub / "myskill") == skill.path
+
+
+def test_link_to_global_rejects_plugin(tmp_path: Path):
+    item = axt.VaultItem(name="p", type="plugin", path="", description="")
+    with pytest.raises(ValueError):
+        axt.link_to_global(tmp_path, item)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_sync_project_reports_missing_vault_item(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    axt.write_profile(proj, axt.AxtProfile(skills=("ghost",)))  # not in vault
+    result = axt.sync_project(proj, vault)
+    assert any("ghost" in e for e in result.errors)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_sync_project_removes_orphaned_symlink(tmp_path: Path):
+    """A vault-pointing symlink not declared in the profile is unlinked."""
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    sub = proj / ".claude" / "skills"
+    sub.mkdir(parents=True)
+    axt.write_profile(proj, axt.AxtProfile())  # declares nothing
+    os.symlink(vault / "skills" / "myskill", sub / "myskill")  # orphan into vault
+    result = axt.sync_project(proj, vault)
+    assert any("myskill" in u for u in result.unlinked)
+    assert not (sub / "myskill").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_sync_project_leaves_foreign_symlink(tmp_path: Path):
+    """A symlink that does NOT point into the vault is left untouched."""
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    sub = proj / ".claude" / "skills"
+    sub.mkdir(parents=True)
+    foreign_target = tmp_path / "elsewhere"
+    foreign_target.mkdir()
+    axt.write_profile(proj, axt.AxtProfile())
+    os.symlink(foreign_target, sub / "external")
+    result = axt.sync_project(proj, vault)
+    assert all("external" not in u for u in result.unlinked)
+    assert (sub / "external").is_symlink()  # untouched
+
+
 def test_migrate_to_vault_skips_hidden_and_wrong_type(tmp_path: Path):
     """migrate ignores dotfiles, non-dir entries under skills/, and non-.md
     entries under commands/ — only well-formed items move."""
@@ -584,3 +658,44 @@ def test_import_to_vault_from_project_source(tmp_path: Path):
     # Original project location must now be a symlink pointing at vault.
     assert src.is_symlink()
     assert Path(os.readlink(src)) == dest
+
+
+# ─── AxtProfile / description / version parser edges ─────────────────────────
+
+
+def test_profile_from_json_non_dict_is_empty():
+    p = axt.AxtProfile.from_json("not-a-dict")
+    assert p.skills == () and p.commands == () and p.agents == () and p.plugins == ()
+
+
+def test_profile_from_json_non_dict_extensions_is_empty():
+    p = axt.AxtProfile.from_json({"extensions": "bad"})
+    assert p.skills == () and p.plugins == ()
+
+
+def test_profile_with_added_present_returns_self():
+    p = axt.AxtProfile(skills=("a",))
+    assert p.with_added("skills", "a") is p  # no-op short-circuit
+
+
+def test_profile_with_removed_absent_returns_self():
+    p = axt.AxtProfile(skills=("a",))
+    assert p.with_removed("skills", "ghost") is p  # no-op short-circuit
+
+
+def test_parse_yaml_single_quoted_multiline():
+    """A single-quoted scalar spanning lines joins with a space."""
+    fm = "description: 'line one\n  line two'"
+    assert axt.parse_yaml_description(fm) == "line one line two"
+
+
+def test_read_description_for_item_skill_without_md_returns_empty(tmp_path: Path):
+    d = tmp_path / "skill"
+    d.mkdir()  # no index.md / SKILL.md
+    assert axt._read_description_for_item(d, "skill") == ""
+
+
+def test_read_version_without_frontmatter_returns_empty(tmp_path: Path):
+    f = tmp_path / "x.md"
+    f.write_text("no frontmatter at all\n")
+    assert axt._read_version(f) == ""

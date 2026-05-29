@@ -98,6 +98,25 @@ def test_list_marketplaces_skips_malformed(tmp_path: Path):
     assert [i.name for i in items] == ["good"]
 
 
+def test_list_marketplaces_skips_entry_with_non_dict_source(tmp_path: Path):
+    # Entry is a dict, but its `source` field is not a dict -> skipped (line 1883).
+    km = tmp_path / "km.json"
+    km.write_text(json.dumps({
+        "good": {
+            "source": {"source": "github", "repo": "o/r"},
+            "installLocation": "/x",
+            "lastUpdated": "",
+        },
+        "broken": {
+            "source": "github:o/r",  # string, not the expected object
+            "installLocation": "/y",
+            "lastUpdated": "",
+        },
+    }))
+    items = axt.list_marketplaces(km)
+    assert [i.name for i in items] == ["good"]
+
+
 # ─── is_git_repo / read_sha_file ─────────────────────────────────────────────
 
 
@@ -274,6 +293,38 @@ def test_get_local_version_unknown_no_git_no_sha(tmp_path: Path):
         }
     }))
     assert axt.get_local_version(km, "x") == "unknown"
+
+
+def test_get_local_version_missing_entry(tmp_path: Path):
+    # Name not present in registry -> entry is None (not a dict) -> "?" (line 2002).
+    km = tmp_path / "km.json"
+    km.write_text("{}")
+    assert axt.get_local_version(km, "absent") == "?"
+
+
+def test_get_local_version_non_dict_entry(tmp_path: Path):
+    # Entry present but not a dict -> "?" (line 2002).
+    km = tmp_path / "km.json"
+    km.write_text(json.dumps({"x": "not-an-object"}))
+    assert axt.get_local_version(km, "x") == "?"
+
+
+def test_get_local_version_git_repo_short_hash(tmp_path: Path, monkeypatch):
+    # installLocation is a git repo -> _git_short_hash result is returned (line 2008-2009).
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+    monkeypatch.setattr(axt, "_git", lambda args, cwd=None: (0, "feed1234\n", ""))
+    assert axt.get_local_version(tmp_path / "km.json", "x") == "feed1234"
+
+
+def test_get_local_version_git_repo_short_hash_error(tmp_path: Path, monkeypatch):
+    # git repo but rev-parse fails -> RuntimeError swallowed -> "error" (line 2010-2011).
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+    monkeypatch.setattr(axt, "_git", lambda args, cwd=None: (1, "", "fatal: bad object"))
+    assert axt.get_local_version(tmp_path / "km.json", "x") == "error"
 
 
 def test_get_marketplace_version_missing(tmp_path: Path):

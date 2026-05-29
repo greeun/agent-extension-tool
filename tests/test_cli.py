@@ -357,6 +357,20 @@ def test_render_bar_clamps_filled():
     assert axt.render_bar(-5, 10) == "░░░░░░░░░░"
 
 
+def test_color_enabled_respects_no_color(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert axt._color_enabled() is False
+
+
+def test_budget_bar_zero_budget_is_empty():
+    assert axt.budget_bar(50.0, 0) == ""
+
+
+def test_budget_bar_warning_and_over_budget():
+    assert "⚠" in axt.budget_bar(85.0, 100.0)    # 85% → warning band
+    assert "⛔" in axt.budget_bar(150.0, 100.0)   # over budget → stop
+
+
 # ─── Gap helpers ─────────────────────────────────────────────────────────────
 
 
@@ -857,6 +871,169 @@ def test_vault_migrate_moves_global_skill(tmp_path: Path, monkeypatch):
     assert code == 0
     assert "myglobal" in out
     assert (paths.vault / "skills" / "myglobal").exists()
+
+
+def test_market_add_github_uses_repo_name(tmp_path: Path, monkeypatch):
+    # add_marketplace would clone over the network; stub it so we test the
+    # name-derivation branch (repo basename) hermetically.
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=tmp_path / "km.json", marketplaces=tmp_path / "mks"))
+    monkeypatch.setattr("axt.add_marketplace", lambda *a, **k: None)
+    code, out, _ = _run(["market", "add", "github:owner/my-repo"])
+    assert code == 0
+    assert "my-repo" in out
+
+
+def test_market_add_git_uses_custom_name(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=tmp_path / "km.json", marketplaces=tmp_path / "mks"))
+    monkeypatch.setattr("axt.add_marketplace", lambda *a, **k: None)
+    code, out, _ = _run(["market", "add", "git:https://example.com/x.git"])
+    assert code == 0
+    assert "custom-marketplace" in out
+
+
+def test_market_list_reports_version_errors(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=tmp_path / "km.json", marketplaces=tmp_path / "mks"))
+    target = tmp_path / "mk"
+    target.mkdir()
+    _run(["market", "add", f"dir:{target}"])
+
+    def boom(*a, **k):
+        raise RuntimeError("version probe failed")
+    monkeypatch.setattr("axt.get_marketplace_version", boom)
+    code, out, _ = _run(["market", "list"])
+    assert code == 0
+    assert "error(s)" in out  # the pooled-error section rendered
+
+
+def test_market_sync_named_updated(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=tmp_path / "km.json", marketplaces=tmp_path / "mks"))
+    target = tmp_path / "mk"
+    target.mkdir()
+    _run(["market", "add", f"dir:{target}"])
+    monkeypatch.setattr("axt.sync_marketplace",
+                        lambda *a, **k: axt.SyncMarketplaceResult(before="1.0", after="1.1", updated=True))
+    code, out, _ = _run(["market", "sync", "mk"])
+    assert code == 0
+    assert "1.0" in out and "1.1" in out
+
+
+def test_market_sync_named_up_to_date(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=tmp_path / "km.json", marketplaces=tmp_path / "mks"))
+    target = tmp_path / "mk"
+    target.mkdir()
+    _run(["market", "add", f"dir:{target}"])
+    monkeypatch.setattr("axt.sync_marketplace",
+                        lambda *a, **k: axt.SyncMarketplaceResult(before="1.0", after="1.0", updated=False))
+    code, out, _ = _run(["market", "sync", "mk"])
+    assert code == 0
+    assert "up to date" in out
+
+
+def test_market_sync_unknown_name_errors_via_main(tmp_path: Path, monkeypatch):
+    """A handler raising (KeyError 'not found') is caught by main → exit 1 +
+    stderr ✗ message (covers the top-level error handler)."""
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=tmp_path / "km.json", marketplaces=tmp_path / "mks"))
+    code, out, err = _run(["market", "sync", "ghost"])
+    assert code == 1
+    assert "✗" in err
+
+
+def test_plan_overview_over_budget_warns(tmp_path: Path, monkeypatch):
+    """When projected cost exceeds the plan budget, overview shows the overage
+    warning branch."""
+    big = axt.UnifiedUsageEntry(
+        platform="claude", model="claude-opus-4-7", timestamp="2026-05-01T00:00:00Z",
+        session_id="s", project_path="p", input_tokens=0, output_tokens=5_000_000,
+        cache_write_tokens=0, cache_read_tokens=0)
+    monkeypatch.setattr("axt.load_unified_usage", lambda **kw: [big])
+    monkeypatch.setattr("axt.AXT_CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(projects=tmp_path / "projects"))
+    code, out, _ = _run(["plan", "overview"])
+    assert code == 0
+    assert "초과" in out  # over-budget warning
+
+
+def test_plugin_info_enabled_and_disabled_states(tmp_path: Path, monkeypatch):
+    ip, _ = _install_plugin(tmp_path)
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"enabledPlugins": {"myplug@official": True}}))
+    proj = tmp_path / "proj"
+    (proj / ".claude").mkdir(parents=True)
+    (proj / ".claude" / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"myplug@official": False}}))
+    monkeypatch.chdir(proj)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(installed_plugins=ip, settings=settings))
+    code, out, _ = _run(["plugin", "info", "myplug@official"])
+    assert code == 0
+    assert "enabled" in out and "disabled" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin on Windows")
+def test_project_sync_links_profile_entries(tmp_path: Path, monkeypatch):
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault)
+    monkeypatch.setattr("axt.PATHS", paths)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    axt.write_profile(proj, axt.AxtProfile(skills=("alpha",)))
+    code, out, _ = _run(["project", "sync"])
+    assert code == 0
+    assert "+" in out  # alpha linked
+    assert (proj / ".claude" / "skills" / "alpha").is_symlink()
+
+
+def test_skill_link_handler_rejects_unsupported_platform(tmp_path: Path, monkeypatch):
+    """The link/unlink subcommands are only built when symlinks are supported,
+    so the handler's own platform guard is tested by calling it directly."""
+    import argparse
+    monkeypatch.setattr("axt.PATHS", axt.Paths(skills=tmp_path / "skills"))
+    monkeypatch.setattr("axt.is_symlink_supported", lambda: False)
+    code = axt.cli_skill_link(argparse.Namespace(path=str(tmp_path), name=None))
+    assert code == 1
+
+
+def test_skill_unlink_handler_rejects_unsupported_platform(tmp_path: Path, monkeypatch):
+    import argparse
+    monkeypatch.setattr("axt.PATHS", axt.Paths(skills=tmp_path / "skills"))
+    monkeypatch.setattr("axt.is_symlink_supported", lambda: False)
+    code = axt.cli_skill_unlink(argparse.Namespace(name="whatever"))
+    assert code == 1
+
+
+def test_usage_today_model_filter(tmp_path: Path, monkeypatch):
+    """--model filters entries; a non-matching filter yields the no-data path."""
+    _stub_usage(tmp_path, monkeypatch, day="2026-05-20")
+    code, out, _ = _run(["usage", "today", "--timezone", "UTC", "--model", "no-such-model"])
+    assert code == 0
+    assert "No usage data" in out  # filtered out → empty
+
+
+def test_usage_blocks_active_filter(tmp_path: Path, monkeypatch):
+    _stub_usage(tmp_path, monkeypatch, day="2026-05-20")
+    code, out, _ = _run(["usage", "blocks", "--timezone", "UTC", "--active"])
+    assert code == 0
+    assert "Block" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault unsupported on Windows")
+def test_vault_migrate_reports_skipped(tmp_path: Path, monkeypatch):
+    """A global item already present in the vault is reported as skipped."""
+    paths = _vault_paths(tmp_path)
+    # same-named skill in BOTH global and vault → migrate skips it
+    for base in (paths.claude_dir / "skills" / "dup", paths.vault / "skills" / "dup"):
+        base.mkdir(parents=True)
+        (base / "SKILL.md").write_text("---\ndescription: x\n---\n")
+    monkeypatch.setattr("axt.PATHS", paths)
+    code, out, _ = _run(["vault", "migrate"])
+    assert code == 0
+    assert "already in vault" in out  # skipped branch
 
 
 def test_vault_install_success(tmp_path: Path, monkeypatch):

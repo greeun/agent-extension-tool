@@ -82,3 +82,26 @@ def test_unlink_skill_refuses_real_directory(tmp_path: Path):
 
 def test_is_symlink_supported_matches_platform():
     assert axt.is_symlink_supported() is (sys.platform != "win32")
+
+
+def test_link_skill_rejects_on_windows(tmp_path: Path, monkeypatch):
+    """The Windows guard raises regardless of host (IS_WINDOWS forced True)."""
+    monkeypatch.setattr("axt.IS_WINDOWS", True)
+    with pytest.raises(OSError):
+        axt.link_skill(tmp_path / "skills", tmp_path / "src")
+
+
+def test_unlink_skill_rejects_on_windows(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.IS_WINDOWS", True)
+    with pytest.raises(OSError):
+        axt.unlink_skill(tmp_path / "skills", "whatever")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin on Windows")
+def test_unlink_skill_rejects_non_symlink(tmp_path: Path):
+    """Unlinking a real directory (not a symlink) must refuse, to avoid
+    accidentally deleting real content."""
+    skills = tmp_path / "skills"
+    (skills / "realdir").mkdir(parents=True)
+    with pytest.raises(ValueError):
+        axt.unlink_skill(skills, "realdir")

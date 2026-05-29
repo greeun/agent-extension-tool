@@ -323,3 +323,31 @@ def test_list_installed_plugins_non_dict_top_level(tmp_path: Path):
     ip = tmp_path / "ip.json"
     ip.write_text(json.dumps(["not", "a", "dict"]))
     assert axt.list_installed_plugins(ip) == []
+
+
+# ─── add/remove against a malformed (non-dict) registry ──────────────────────
+
+
+def test_add_installed_plugin_resets_non_dict_registry(tmp_path: Path):
+    # Existing file is a JSON list (not a dict): add must discard it and start
+    # a fresh {version, plugins} structure rather than crash.
+    ip = tmp_path / "ip.json"
+    ip.write_text(json.dumps(["garbage"]))
+    axt.add_installed_plugin(ip, plugin_id="x@y", version="3.1", install_path="/opt/x", scope="user")
+    data = json.loads(ip.read_text())
+    assert isinstance(data, dict)
+    assert data["version"] == 2
+    assert data["plugins"]["x@y"][0]["version"] == "3.1"
+    assert data["plugins"]["x@y"][0]["installPath"] == "/opt/x"
+
+
+def test_remove_installed_plugin_resets_non_dict_registry(tmp_path: Path):
+    # Removing from a malformed (list) registry should not raise and leaves an
+    # empty plugins map behind.
+    ip = tmp_path / "ip.json"
+    ip.write_text(json.dumps(["garbage"]))
+    axt.remove_installed_plugin(ip, "anything@m")
+    data = json.loads(ip.read_text())
+    assert isinstance(data, dict)
+    assert data["version"] == 2
+    assert data["plugins"] == {}

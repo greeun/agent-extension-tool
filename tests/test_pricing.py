@@ -258,3 +258,166 @@ def test_parse_date_variants():
     assert axt._parse_date(0) is None
     d = axt._parse_date("2026-04-29T10:00:00Z")
     assert d is not None and d.year == 2026 and d.month == 4
+
+
+def test_parse_date_overflowing_numeric_returns_none():
+    """A numeric value so large that datetime.fromtimestamp overflows is
+    tolerated and returns None (lines 2514-2515)."""
+    assert axt._parse_date(1e300) is None
+
+
+def test_parse_date_unix_seconds_scaled_to_ms():
+    """A value <= 1e12 is treated as seconds and scaled by 1000."""
+    # 2026-04-29T10:00:00Z = 1777456800 seconds.
+    d = axt._parse_date(1777456800)
+    assert d is not None
+    assert d.year == 2026 and d.month == 4 and d.day == 29
+
+
+def test_parse_date_unix_millis_used_directly():
+    """A value > 1e12 is already in milliseconds."""
+    d = axt._parse_date(1777456800000)
+    assert d is not None and d.year == 2026 and d.month == 4
+
+
+def test_parse_percent_int_and_float_paths():
+    """Ints and floats flow through the float() conversion (the surviving
+    body of _parse_percent) and clamp/round as expected."""
+    assert axt._parse_percent(33) == 33
+    assert axt._parse_percent(33.6) == 34   # rounds
+    assert axt._parse_percent(0) == 0
+    assert axt._parse_percent(100) == 100
+
+
+# ─── pricing table loading branches ──────────────────────────────────────────
+
+
+def test_pricing_table_skips_non_dict_entries(tmp_path: Path, monkeypatch):
+    """A models entry whose value is not a dict is skipped (line 2870), and
+    reload_pricing_table clears the cache (line 2885)."""
+    import axt.core as core
+
+    pf = tmp_path / "pricing.json"
+    pf.write_text(json.dumps({"models": {
+        "good-model": {
+            "input": 1.0, "output": 2.0,
+            "cacheWrite": 3.0, "cacheRead": 4.0, "contextWindow": 12345,
+        },
+        "bad-model": "not-a-dict",  # skipped
+        "no-window": {"input": 5.0, "output": 6.0},  # contextWindow absent → None
+    }}))
+    monkeypatch.setattr(core, "_PRICING_FILE", pf)
+    core.reload_pricing_table()  # line 2885: cache reset to None
+    try:
+        table = core._pricing_table()
+        assert "bad-model" not in table  # line 2870 hit
+        assert table["good-model"].context_window == 12345
+        assert table["good-model"].cache_write == 3.0
+        assert table["no-window"].context_window is None
+    finally:
+        # Restore the real shipped pricing table for other tests.
+        monkeypatch.undo()
+        core.reload_pricing_table()
+
+
+def test_calculate_cost_each_token_type_contributes():
+    """Each token type contributes its own per-million rate independently."""
+    p = axt.get_model_pricing("claude-opus-4-7")
+    assert p is not None
+    # input only
+    only_in = axt.calculate_cost(axt.TokenUsage(input_tokens=1_000_000, output_tokens=0), "claude-opus-4-7")
+    assert only_in == pytest.approx(p.input)
+    # output only
+    only_out = axt.calculate_cost(axt.TokenUsage(input_tokens=0, output_tokens=1_000_000), "claude-opus-4-7")
+    assert only_out == pytest.approx(p.output)
+    # cache write only
+    only_cw = axt.calculate_cost(
+        axt.TokenUsage(input_tokens=0, output_tokens=0, cache_creation_tokens=1_000_000),
+        "claude-opus-4-7",
+    )
+    assert only_cw == pytest.approx(p.cache_write)
+    # cache read only
+    only_cr = axt.calculate_cost(
+        axt.TokenUsage(input_tokens=0, output_tokens=0, cache_read_tokens=1_000_000),
+        "claude-opus-4-7",
+    )
+    assert only_cr == pytest.approx(p.cache_read)
+
+
+# ─── billing-period month boundaries ─────────────────────────────────────────
+
+
+def test_get_days_in_billing_period_january_rolls_back_to_december():
+    """When `now` is in January before billing_start, the cycle rolls back into
+    the previous December (line 2993)."""
+    now = datetime(2026, 1, 5, 0, 0, 0, tzinfo=timezone.utc)
+    # billing_start 15 → cycle is 2025-12-15 .. 2026-01-15.
+    elapsed, total = axt.get_days_in_billing_period(15, now)
+    assert elapsed == 21  # Dec 15 → Jan 5
+    assert total == 31    # Dec 15 → Jan 15
+
+
+def test_get_days_in_billing_period_december_cycle_end_crosses_year():
+    """A cycle that starts in December ends in the following January
+    (line 2998)."""
+    now = datetime(2025, 12, 20, 0, 0, 0, tzinfo=timezone.utc)
+    # billing_start 15 → cycle is 2025-12-15 .. 2026-01-15.
+    elapsed, total = axt.get_days_in_billing_period(15, now)
+    assert elapsed == 5   # Dec 15 → Dec 20
+    assert total == 31    # Dec 15 → Jan 15
+
+
+# ─── plan JSON conversion ────────────────────────────────────────────────────
+
+
+def test_plan_from_json_non_dict_returns_none():
+    """A non-dict plan payload yields None (line 3025)."""
+    assert axt._plan_from_json("not-a-dict") is None
+    assert axt._plan_from_json(None) is None
+    assert axt._plan_from_json(42) is None
+
+
+def test_plan_from_json_parses_full_payload():
+    p = axt._plan_from_json({
+        "plan": "max-20x", "monthlyCost": 200,
+        "billingCycleStart": 7, "dailyRequestLimit": 500,
+    })
+    assert p is not None
+    assert p.plan == "max-20x"
+    assert p.monthly_cost == 200.0
+    assert p.billing_cycle_start == 7
+    assert p.daily_request_limit == 500
+
+
+def test_plan_to_json_includes_daily_request_limit_when_set():
+    """The optional dailyRequestLimit is emitted only when present (line 3041)."""
+    pc = axt.PlanConfig(plan="max-5x", monthly_cost=100, billing_cycle_start=1, daily_request_limit=500)
+    d = axt._plan_to_json(pc)
+    assert d["dailyRequestLimit"] == 500
+    assert d["plan"] == "max-5x"
+
+
+def test_plan_to_json_omits_daily_request_limit_when_none():
+    pc = axt.PlanConfig(plan="max-5x", monthly_cost=100, billing_cycle_start=1)
+    d = axt._plan_to_json(pc)
+    assert "dailyRequestLimit" not in d
+
+
+def test_load_config_non_dict_payload_falls_back_to_defaults(tmp_path: Path):
+    """A config.json that is a JSON array (not an object) is ignored and the
+    defaults are returned (line 3049)."""
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps([1, 2, 3]))
+    config = axt.load_config(p)
+    assert config.currency == ("usd", "krw")
+    assert config.exchange_rate == 1400
+    assert config.plans["claude"].plan == "max-5x"
+
+
+def test_load_config_ignores_non_dict_plans_section(tmp_path: Path):
+    """A `plans` key that is not a dict leaves the default plan intact."""
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"exchangeRate": 1300, "plans": "oops"}))
+    config = axt.load_config(p)
+    assert config.exchange_rate == 1300
+    assert config.plans["claude"].plan == "max-5x"  # default preserved

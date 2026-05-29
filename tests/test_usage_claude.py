@@ -245,3 +245,201 @@ def test_filter_by_date_string():
     ]
     filtered = axt.filter_by_date_string(entries, "2026-04-30", "2026-04-30")
     assert [e.session_id for e in filtered] == ["b"]
+
+
+def test_filter_by_date_string_no_bounds_returns_all():
+    """No since/until → early return of the same list (line 2334)."""
+    entries = [_entry("a", "2026-04-29T01:00:00Z"), _entry("b", "2026-04-30T01:00:00Z")]
+    out = axt.filter_by_date_string(entries, None, None)
+    assert out is entries
+
+
+def test_filter_by_timestamp_ms_skips_unparseable(monkeypatch):
+    """An entry whose timestamp won't parse is dropped, not crashed on
+    (line 2316)."""
+    entries = [
+        _entry("good", "2026-04-30T01:00:00Z"),
+        _entry("bad", "totally-not-a-timestamp"),
+    ]
+    since = axt._ts_ms("2026-04-30T00:00:00Z")
+    until = axt._ts_ms("2026-04-30T23:59:59Z")
+    filtered = axt.filter_by_timestamp_ms(entries, since, until)
+    assert [e.session_id for e in filtered] == ["good"]
+
+
+# ─── _ts_ms edge cases ───────────────────────────────────────────────────────
+
+
+def test_ts_ms_empty_string_returns_none():
+    """Empty input short-circuits to None (line 2251)."""
+    assert axt._ts_ms("") is None
+
+
+def test_ts_ms_malformed_returns_none():
+    """Unparseable ISO string hits the except branch (lines 2258-2259)."""
+    assert axt._ts_ms("not-an-iso-timestamp") is None
+
+
+def test_ts_ms_roundtrip_with_z_suffix():
+    # Sanity: a valid Z-suffixed timestamp parses to a positive epoch ms.
+    ms = axt._ts_ms("2026-04-29T00:00:00Z")
+    assert ms == 1777420800000
+
+
+# ─── parse_claude_jsonl extra branches ───────────────────────────────────────
+
+
+def test_parse_claude_jsonl_skips_blank_lines_and_non_dict_message(tmp_path: Path):
+    """Blank lines (2272) and a record whose `message` is not a dict (2281)
+    are both skipped without raising."""
+    f = tmp_path / "proj" / "sess.jsonl"
+    f.parent.mkdir(parents=True)
+    f.write_text(
+        "\n"  # blank line → line 2272 continue
+        "   \n"  # whitespace-only line → also 2272
+        + json.dumps({"type": "assistant", "message": "a string not a dict"})  # 2281
+        + "\n"
+        + json.dumps({
+            "type": "assistant",
+            "sessionId": "s1",
+            "timestamp": "2026-04-29T10:00:00Z",
+            "message": {"model": "m", "usage": {"input_tokens": 7}},
+        })
+        + "\n"
+    )
+    entries = axt.parse_claude_jsonl(f)
+    assert len(entries) == 1
+    assert entries[0].input_tokens == 7
+
+
+# ─── Cache helpers ───────────────────────────────────────────────────────────
+
+
+def test_file_mtime_ms_missing_file_returns_zero(tmp_path: Path):
+    """A nonexistent path returns 0.0 instead of raising (lines 2359-2360)."""
+    assert axt._file_mtime_ms(tmp_path / "no-such-file") == 0.0
+
+
+def test_file_mtime_ms_existing_file_is_positive(tmp_path: Path):
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    assert axt._file_mtime_ms(f) > 0
+
+
+def test_is_cache_valid_bad_last_updated_returns_false():
+    """An unparseable lastUpdated is treated as invalid (line 2381)."""
+    assert axt.is_cache_valid({"lastUpdated": "garbage"}) is False
+
+
+def test_is_cache_valid_missing_last_updated_returns_false():
+    assert axt.is_cache_valid({}) is False
+
+
+def test_is_cache_valid_fresh_timestamp_is_valid():
+    from datetime import datetime, timezone
+    fresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    assert axt.is_cache_valid({"lastUpdated": fresh}) is True
+
+
+def test_load_all_claude_usage_empty_dir_no_jsonl(tmp_path: Path, monkeypatch):
+    """A projects dir that exists but has no `*/*.jsonl` returns [] (line 2453)."""
+    monkeypatch.setattr("axt.CACHE_DIR_FOR_USAGE", tmp_path / "cache")
+    projects = tmp_path / "projects"
+    (projects / "empty").mkdir(parents=True)  # dir exists, no jsonl inside
+    assert axt.load_all_claude_usage(projects) == []
+
+
+def test_load_all_claude_usage_per_file_cache_hit_skips_reparse(tmp_path: Path, monkeypatch):
+    """On a second pass within the same projectsDir but force_refresh (so the
+    whole-cache validity gate is bypassed), an unchanged file is skipped via
+    its mtime (line 2465: `continue`)."""
+    monkeypatch.setattr("axt.CACHE_DIR_FOR_USAGE", tmp_path / "cache")
+    projects = tmp_path / "projects"
+    f = projects / "proj" / "s.jsonl"
+    _write_jsonl(f, [{
+        "type": "assistant", "sessionId": "1", "timestamp": "2026-04-29T10:00:00Z",
+        "message": {"model": "m", "usage": {"input_tokens": 5}},
+    }])
+    first = axt.load_all_claude_usage(projects, force_refresh=True)
+    assert len(first) == 1
+    # force_refresh again: whole-cache gate skipped, but the file's mtime is
+    # unchanged so parse_claude_jsonl is NOT re-run — the cached entry is used.
+    second = axt.load_all_claude_usage(projects, force_refresh=True)
+    assert len(second) == 1
+    assert second[0].input_tokens == 5
+
+
+# ─── Unified loader + adapter ────────────────────────────────────────────────
+
+
+def test_claude_to_unified_and_back_roundtrip():
+    ce = _entry("s9", "2026-04-29T10:00:00Z", input=10, output=20, cw=30, cr=40)
+    uni = axt.claude_to_unified(ce)
+    assert uni.platform == "claude"
+    assert uni.cache_write_tokens == 30
+    assert uni.cache_read_tokens == 40
+    back = axt._unified_to_claude(uni)
+    assert back == ce
+
+
+def test_load_unified_usage_sorts_and_normalizes(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.CACHE_DIR_FOR_USAGE", tmp_path / "cache")
+    projects = tmp_path / "projects"
+    _write_jsonl(projects / "p" / "s.jsonl", [
+        {"type": "assistant", "sessionId": "late", "timestamp": "2026-04-30T10:00:00Z",
+         "message": {"model": "m", "usage": {"input_tokens": 2}}},
+        {"type": "assistant", "sessionId": "early", "timestamp": "2026-04-29T10:00:00Z",
+         "message": {"model": "m", "usage": {"input_tokens": 1}}},
+    ])
+    out = axt.load_unified_usage(claude_projects_dir=projects)
+    assert [e.session_id for e in out] == ["early", "late"]
+    assert all(e.platform == "claude" for e in out)
+
+
+def test_load_unified_usage_swallows_oserror(tmp_path: Path, monkeypatch):
+    """If the underlying loader raises OSError, load_unified_usage returns []
+    rather than propagating (lines 2621-2622)."""
+    monkeypatch.setattr("axt.CACHE_DIR_FOR_USAGE", tmp_path / "cache")
+
+    def boom(*args, **kwargs):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr("axt.load_all_claude_usage", boom)
+    assert axt.load_unified_usage(claude_projects_dir=tmp_path) == []
+
+
+# ─── compute_blocks extra branches ───────────────────────────────────────────
+
+
+def test_compute_blocks_skips_entry_with_bad_timestamp():
+    """An entry whose timestamp is unparseable is dropped; only the good
+    entry forms a block (line 2785)."""
+    good = _entry("s", "2026-04-29T12:30:00Z", input=50)
+    bad = _entry("s", "broken-timestamp", input=999)
+    blocks = axt.compute_blocks([good, bad], "UTC")
+    assert len(blocks) == 1
+    assert blocks[0].total_tokens == 50
+
+
+def test_compute_blocks_active_block_has_burn_rate():
+    """An entry inside the current 5-hour window yields an active block with a
+    positive burn rate (lines 2810-2811)."""
+    from datetime import datetime, timedelta, timezone
+    ten_min_ago = datetime.now(timezone.utc) - timedelta(minutes=10)
+    iso = ten_min_ago.isoformat().replace("+00:00", "Z")
+    e = _entry("s", iso, input=600)
+    blocks = axt.compute_blocks([e], "UTC")
+    assert len(blocks) == 1
+    b = blocks[0]
+    assert b.is_active is True
+    assert b.burn_rate_per_min is not None
+    assert b.burn_rate_per_min > 0
+    assert b.total_tokens == 600
+
+
+def test_compute_blocks_inactive_block_has_no_burn_rate():
+    """A historical window is inactive and reports no burn rate."""
+    e = _entry("s", "2020-01-01T12:30:00Z", input=100)
+    blocks = axt.compute_blocks([e], "UTC")
+    assert blocks[0].is_active is False
+    assert blocks[0].burn_rate_per_min is None
