@@ -200,3 +200,61 @@ def test_read_rate_limits_unix_seconds_timestamp(tmp_path: Path):
     }))
     rl = axt.read_rate_limits(p)
     assert rl is not None and rl.five_hour == 25
+
+
+# ─── rate-limit snapshot robustness ──────────────────────────────────────────
+
+
+def test_read_rate_limits_malformed_json(tmp_path: Path):
+    p = tmp_path / "snap.json"
+    p.write_text("{ not valid json")
+    assert axt.read_rate_limits(p) is None
+
+
+def test_read_rate_limits_non_dict_json(tmp_path: Path):
+    p = tmp_path / "snap.json"
+    p.write_text("[1, 2, 3]")
+    assert axt.read_rate_limits(p) is None
+
+
+def test_read_rate_limits_missing_updated_at(tmp_path: Path):
+    p = tmp_path / "snap.json"
+    p.write_text(json.dumps({"five_hour": {"used_percentage": 10}}))
+    assert axt.read_rate_limits(p) is None
+
+
+def test_read_rate_limits_no_percentages_returns_none(tmp_path: Path):
+    now = datetime.now(timezone.utc).isoformat()
+    p = tmp_path / "snap.json"
+    p.write_text(json.dumps({"updated_at": now}))  # fresh but no percentages
+    assert axt.read_rate_limits(p) is None
+
+
+def test_read_rate_limits_invalid_reset_date_tolerated(tmp_path: Path):
+    """A bad `resets_at` must not discard the whole snapshot — the percentage
+    is still reported, with reset time left as None."""
+    now = datetime.now(timezone.utc).isoformat()
+    p = tmp_path / "snap.json"
+    p.write_text(json.dumps({
+        "updated_at": now,
+        "five_hour": {"used_percentage": 30, "resets_at": "not-a-date"},
+    }))
+    rl = axt.read_rate_limits(p)
+    assert rl is not None
+    assert rl.five_hour == 30
+    assert rl.five_hour_reset_at is None
+
+
+def test_parse_percent_clamps_and_rejects():
+    assert axt._parse_percent(150) == 100        # clamp high
+    assert axt._parse_percent(-5) == 0            # clamp low
+    assert axt._parse_percent("notnum") is None   # non-numeric
+    assert axt._parse_percent(float("nan")) is None  # NaN guard
+
+
+def test_parse_date_variants():
+    assert axt._parse_date("not-a-date") is None
+    assert axt._parse_date("") is None
+    assert axt._parse_date(0) is None
+    d = axt._parse_date("2026-04-29T10:00:00Z")
+    assert d is not None and d.year == 2026 and d.month == 4

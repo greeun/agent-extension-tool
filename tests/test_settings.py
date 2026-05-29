@@ -127,6 +127,13 @@ def test_read_extra_marketplaces_missing(tmp_path: Path):
     assert axt.read_extra_marketplaces(tmp_path / "nope.json") == {}
 
 
+def test_read_extra_marketplaces_non_dict_value_returns_empty(tmp_path: Path):
+    """A truthy-but-non-dict extraKnownMarketplaces (e.g. a list) yields {}."""
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"extraKnownMarketplaces": ["not", "a", "dict"]}))
+    assert axt.read_extra_marketplaces(p) == {}
+
+
 def test_read_extra_marketplaces_filters_non_dict_entries(tmp_path: Path):
     p = tmp_path / "settings.json"
     p.write_text(

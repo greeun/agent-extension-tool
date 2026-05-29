@@ -59,6 +59,20 @@ def test_parse_yaml_block_dedents_to_common():
     assert axt.parse_yaml_description(fm) == "deep deep two"
 
 
+def test_parse_yaml_block_stops_at_following_key():
+    """A block scalar must terminate at the next same-indent key — it must not
+    swallow `name:` into the description value."""
+    fm = "description: |\n  body line\nname: foo\n"
+    assert axt.parse_yaml_description(fm) == "body line"
+
+
+def test_parse_yaml_block_empty_yields_empty():
+    """A block-scalar header with no indented body (immediately followed by
+    another key) yields an empty description, not a crash or the next key."""
+    fm = "description: |\nname: foo\n"
+    assert axt.parse_yaml_description(fm) == ""
+
+
 def test_parse_yaml_empty_value():
     assert axt.parse_yaml_description("description:") == ""
     assert axt.parse_yaml_description("description: ") == ""
@@ -391,6 +405,69 @@ def test_list_with_project_state_includes_plugins(tmp_path: Path):
     assert len(plugin_items) == 1
     assert plugin_items[0].name == "p"
     assert plugin_items[0].description == "P plugin"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_list_with_project_state_global_dir_enrichment(tmp_path: Path):
+    """Passing global_dir enriches items with global-link state, reads global
+    enabledPlugins, and merges in global-only (non-vault) items."""
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    gd = tmp_path / "global"
+    gd.mkdir()
+    # vault skill linked into the global dir → is_global_linked True
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    axt.link_to_global(gd, skill)
+    # a global skill that is NOT in the vault → should be merged in
+    extra = gd / "skills" / "global-only"
+    extra.mkdir(parents=True)
+    (extra / "SKILL.md").write_text("---\ndescription: g\n---\n")
+    # global enabledPlugins settings
+    (gd / "settings.json").write_text(json.dumps({"enabledPlugins": {"p@m": True}}))
+    plugin = axt.PluginRef(id="p@m", name="p", description="P")
+    enriched = axt.list_vault_items_with_project_state(
+        vault, proj, installed_plugins=[plugin], global_dir=gd)
+    myskill = next(i for i in enriched if i.name == "myskill")
+    assert myskill.is_global_linked is True
+    plug = next(i for i in enriched if i.type == "plugin")
+    assert plug.is_global_linked is True
+    assert any(i.name == "global-only" and i.in_vault is False for i in enriched)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_migrate_to_vault_preserves_symlinked_global(tmp_path: Path):
+    """A global entry that is already a symlink is migrated as a symlink to the
+    same target (not copied), preserving the link relationship."""
+    global_dir = tmp_path / "global"
+    vault = tmp_path / "vault"
+    real = tmp_path / "real-skill"
+    real.mkdir()
+    (real / "SKILL.md").write_text("---\ndescription: x\n---\n")
+    (global_dir / "skills").mkdir(parents=True)
+    os.symlink(real, global_dir / "skills" / "linked")
+    result = axt.migrate_to_vault(global_dir, vault)
+    assert "skill:linked" in result.moved
+    assert (vault / "skills" / "linked").is_symlink()
+
+
+def test_migrate_to_vault_skips_hidden_and_wrong_type(tmp_path: Path):
+    """migrate ignores dotfiles, non-dir entries under skills/, and non-.md
+    entries under commands/ — only well-formed items move."""
+    global_dir = tmp_path / "global"
+    vault = tmp_path / "vault"
+    (global_dir / "skills").mkdir(parents=True)
+    (global_dir / "skills" / ".hidden").mkdir()         # dotfile → skip
+    (global_dir / "skills" / "stray.txt").write_text("x")  # skill must be a dir → skip
+    (global_dir / "commands").mkdir(parents=True)
+    (global_dir / "commands" / "notmd.txt").write_text("x")  # not .md → skip
+    good = global_dir / "skills" / "good"
+    good.mkdir()
+    (good / "SKILL.md").write_text("---\ndescription: x\n---\n")
+    result = axt.migrate_to_vault(global_dir, vault)
+    assert "skill:good" in result.moved
+    assert all("hidden" not in m and "stray" not in m and "notmd" not in m
+               for m in result.moved)
 
 
 # ─── Project-local import candidates ─────────────────────────────────────────

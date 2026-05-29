@@ -2395,3 +2395,1972 @@ def test_render_vault_tab_bottom_layout_never_negative_table_h():
     y, _x = top
     # table_y_top = 0 + 1 = 1; table_h clamped to 0; detail_y = 1.
     assert y >= 1, f"detail must not be drawn above the title row, got y={y}"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Coverage-raising additions
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _make_modal_win(keys, rows=24, cols=80):
+    """Mock curses window that records addnstr calls and returns `keys` from
+    getch() one by one. Returns (win, calls)."""
+    win = MagicMock()
+    calls: list = []
+    def addnstr(*args):
+        calls.append(args)
+    win.addnstr.side_effect = addnstr
+    win.getmaxyx.return_value = (rows, cols)
+    seq = iter(keys)
+    win.getch.side_effect = lambda: next(seq)
+    win.calls = calls
+    return win, calls
+
+
+# ─── tui_init_colors / color helpers ─────────────────────────────────────────
+
+
+def test_tui_init_colors_swallows_errors(monkeypatch):
+    """tui_init_colors must not raise even when curses color setup fails
+    (no real terminal in tests)."""
+    monkeypatch.setattr("curses.use_default_colors",
+                        lambda: (_ for _ in ()).throw(curses.error("no color")))
+    monkeypatch.setattr("curses.init_pair",
+                        lambda *a: (_ for _ in ()).throw(curses.error("no pair")))
+    # Should complete without raising.
+    axt.tui_init_colors()
+
+
+def test_tui_init_colors_initializes_eight_pairs(monkeypatch):
+    """All eight palette pairs are initialized when curses cooperates."""
+    monkeypatch.setattr("curses.use_default_colors", lambda: None)
+    seen = []
+    monkeypatch.setattr("curses.init_pair", lambda n, fg, bg: seen.append(n))
+    axt.tui_init_colors()
+    assert seen == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_color_pair_helpers_degrade_without_color(monkeypatch):
+    """When color_pair raises (no start_color), the CP_* helpers return just
+    the extra attribute bits instead of crashing."""
+    monkeypatch.setattr("curses.color_pair",
+                        lambda n: (_ for _ in ()).throw(curses.error("no color")))
+    # CP_SEL keeps its A_BOLD|A_REVERSE extras even without color.
+    assert axt.CP_SEL() == (curses.A_BOLD | curses.A_REVERSE)
+    # CP_DIM keeps A_DIM.
+    assert axt.CP_DIM() == curses.A_DIM
+    # CP_OK has no extra → degrades to 0.
+    assert axt.CP_OK() == 0
+
+
+def test_color_pair_helpers_use_color_when_available(monkeypatch):
+    """When color_pair works, the bit is OR-ed into the returned attribute."""
+    monkeypatch.setattr("curses.color_pair", lambda n: 0x100 << n)
+    assert axt.CP_HDR() & (0x100 << 2)
+    assert axt.CP_HDR() & curses.A_BOLD
+    assert axt.CP_INFO() == (0x100 << 4)
+
+
+# ─── safe_addnstr error handling + guards ────────────────────────────────────
+
+
+def test_safe_addnstr_swallows_curses_error():
+    """A curses.error from addnstr (e.g. writing the bottom-right cell) must
+    be swallowed silently."""
+    scr = MagicMock()
+    scr.addnstr.side_effect = curses.error("boundary")
+    # No exception should escape.
+    axt.safe_addnstr(scr, 0, 0, "x", 5)
+    assert scr.addnstr.called
+
+
+def test_safe_addnstr_guards_negative_coords():
+    """Negative y/x or non-positive width is a no-op — addnstr never called."""
+    scr = MagicMock()
+    axt.safe_addnstr(scr, -1, 0, "x", 5)
+    axt.safe_addnstr(scr, 0, -1, "x", 5)
+    axt.safe_addnstr(scr, 0, 0, "x", 0)
+    assert not scr.addnstr.called
+
+
+# ─── _wrap_to_cells / fit_cells edge branches via render_detail_panel ─────────
+
+
+def test_render_detail_panel_zero_width_returns_zero():
+    scr = _make_stdscr()
+    assert axt.render_detail_panel(scr, 0, 0, 10, 0, "t", []) == 0
+
+
+def test_render_detail_panel_tiny_inner_width_returns_zero():
+    """w=4 → inner_w = 0 → early return 0 (no content drawn)."""
+    scr = _make_stdscr()
+    assert axt.render_detail_panel(scr, 0, 0, 10, 4, "t", [("A", "1")]) == 0
+
+
+def test_render_detail_panel_wraps_on_newline():
+    """A value containing '\\n' splits into multiple wrapped lines."""
+    scr = _make_stdscr()
+    axt.render_detail_panel(scr, 0, 0, 12, 40, "T", [("Body", "line1\nline2\nline3")])
+    flat = "\n".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "line1" in flat
+    assert "line2" in flat
+    assert "line3" in flat
+
+
+def test_render_detail_panel_no_title_skips_title_row():
+    """title=None must not draw a header line, but fields still render."""
+    scr = _make_stdscr()
+    axt.render_detail_panel(scr, 0, 0, 10, 30, None, [("Key", "Val")])
+    flat = " ".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Key:" in flat
+    assert "Val" in flat
+
+
+def test_render_detail_panel_single_row_height_skips_bottom_border():
+    """h=1 → only top border drawn (the `if h >= 2` guard skips the bottom)."""
+    scr = _make_stdscr()
+    axt.render_detail_panel(scr, 0, 0, 1, 30, "T", [])
+    texts = [c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str)]
+    assert any(t.startswith("┌") for t in texts)
+    assert not any(t.startswith("└") for t in texts)
+
+
+# ─── render_table edge branches ──────────────────────────────────────────────
+
+
+def test_render_table_zero_height_returns_zero():
+    scr = _make_stdscr()
+    cols = [axt.TableColumn("name", "Name", 10)]
+    assert axt.render_table(scr, 0, 0, 0, 80, cols, [{"name": "a"}], selected=0) == 0
+
+
+def test_render_table_no_room_for_rows_returns_zero():
+    """h=2 with header → header eats both rows, avail <= 0 → 0 data rows."""
+    scr = _make_stdscr()
+    cols = [axt.TableColumn("name", "Name", 10)]
+    rows = [{"name": "a"}, {"name": "b"}]
+    drawn = axt.render_table(scr, 0, 0, 2, 80, cols, rows, selected=0, show_header=True)
+    assert drawn == 0
+
+
+def test_render_table_no_header_draws_all_visible_rows():
+    """show_header=False uses the full height for data rows."""
+    scr = _make_stdscr()
+    cols = [axt.TableColumn("name", "Name", 10)]
+    rows = [{"name": f"r{i}"} for i in range(3)]
+    drawn = axt.render_table(scr, 0, 0, 5, 80, cols, rows, selected=0, show_header=False)
+    assert drawn == 3
+    # No "Name" header label should have been drawn.
+    flat = " ".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "r0" in flat and "r1" in flat and "r2" in flat
+
+
+def test_render_table_wide_east_asian_values():
+    """Korean values must render without splitting wide chars across cells."""
+    scr = _make_stdscr()
+    cols = [axt.TableColumn("name", "이름", 12)]
+    rows = [{"name": "한글스킬"}]
+    drawn = axt.render_table(scr, 0, 0, 10, 80, cols, rows, selected=0)
+    assert drawn == 1
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "한글" in flat
+
+
+def test_render_table_narrow_width_truncates_columns():
+    """A width too small to fit all columns must still draw rows without error
+    (the inner `cursor - x >= w` break fires)."""
+    scr = _make_stdscr()
+    cols = [axt.TableColumn(f"c{i}", f"Col{i}", 20) for i in range(5)]
+    rows = [{f"c{i}": "value" for i in range(5)}]
+    drawn = axt.render_table(scr, 0, 0, 10, 12, cols, rows, selected=0)
+    assert drawn == 1
+
+
+def test_render_table_unchecked_row_uses_box_glyph():
+    """A non-selected unchecked row uses the ' □ ' prefix; checked uses ' ■ '."""
+    scr = _make_stdscr()
+    cols = [axt.TableColumn("name", "Name", 10)]
+    rows = [{"name": f"r{i}"} for i in range(3)]
+    axt.render_table(scr, 0, 0, 10, 80, cols, rows, selected=0, checked={2})
+    prefixes = [c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str)]
+    # Selected row (0) unchecked → "▸□ "; checked row (2) non-selected → " ■ ".
+    assert any("▸□" in p for p in prefixes)
+    assert any(" ■ " in p for p in prefixes)
+
+
+# ─── _draw_cell zero-width guard (via a 1-cell table) ────────────────────────
+
+
+def test_draw_cell_zero_max_width_returns_zero():
+    assert axt._draw_cell(_make_stdscr(), 0, 0, "x", 4, 0, 0) == 0
+
+
+# ─── render_status_bar ───────────────────────────────────────────────────────
+
+
+def test_render_status_bar_shortcuts_only():
+    scr = _make_stdscr()
+    axt.render_status_bar(scr, 0, 80, "q:quit  ?:help")
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "q:quit" in flat
+
+
+def test_render_status_bar_with_status_prefixes_shortcuts():
+    """When a status fits, it is shown before the shortcuts joined by '│'."""
+    scr = _make_stdscr()
+    axt.render_status_bar(scr, 0, 120, "q:quit", status="Saved!")
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Saved!" in flat
+    assert "│" in flat
+
+
+def test_render_status_bar_long_status_drops_shortcuts():
+    """If status + shortcuts won't fit the width, only the status is shown."""
+    scr = _make_stdscr()
+    long_status = "X" * 50
+    axt.render_status_bar(scr, 0, 30, "q:quit  ?:help  r:refresh", status=long_status)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    # The status text is present; the shortcut tail is dropped.
+    assert "X" in flat
+    assert "r:refresh" not in flat
+
+
+# ─── confirm_modal interactive paths ─────────────────────────────────────────
+
+
+def test_confirm_modal_yes_on_y(monkeypatch):
+    scr = _make_stdscr(rows=24, cols=80)
+    win, _calls = _make_modal_win([ord("y")])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    assert axt.confirm_modal(scr, "Delete this?") is True
+    # The window content should include the prompt and the y/n hint.
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Delete this?" in flat
+    assert "Yes" in flat
+
+
+def test_confirm_modal_no_on_esc(monkeypatch):
+    scr = _make_stdscr()
+    win, _calls = _make_modal_win([27])  # Esc
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    assert axt.confirm_modal(scr, "Remove?") is False
+
+
+def test_confirm_modal_enter_confirms(monkeypatch):
+    scr = _make_stdscr()
+    win, _calls = _make_modal_win([10])  # Enter
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    assert axt.confirm_modal(scr, "Confirm?") is True
+
+
+def test_confirm_modal_ignores_unrelated_keys_then_n(monkeypatch):
+    """Keys other than y/Y/n/N/Enter/Esc loop until a decision key arrives."""
+    scr = _make_stdscr()
+    win, _calls = _make_modal_win([ord("x"), ord("z"), ord("n")])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    assert axt.confirm_modal(scr, "Sure?") is False
+
+
+# ─── text_input_modal interactive paths ──────────────────────────────────────
+
+
+def test_text_input_modal_types_and_enter(monkeypatch):
+    scr = _make_stdscr()
+    win, _calls = _make_modal_win([ord("a"), ord("b"), ord("c"), 10])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    assert axt.text_input_modal(scr, "Name?") == "abc"
+
+
+def test_text_input_modal_esc_returns_none(monkeypatch):
+    scr = _make_stdscr()
+    win, _calls = _make_modal_win([ord("a"), 27])  # type then Esc
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    assert axt.text_input_modal(scr, "Name?") is None
+
+
+def test_text_input_modal_backspace_deletes(monkeypatch):
+    scr = _make_stdscr()
+    win, _calls = _make_modal_win([ord("a"), ord("b"), 127, 10])  # ab, bksp, enter
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    assert axt.text_input_modal(scr, "Name?") == "a"
+
+
+def test_text_input_modal_uses_initial_value(monkeypatch):
+    scr = _make_stdscr()
+    win, _calls = _make_modal_win([ord("X"), 10])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    assert axt.text_input_modal(scr, "Name?", initial="seed") == "seedX"
+
+
+def test_text_input_modal_newwin_failure_returns_none(monkeypatch):
+    scr = _make_stdscr()
+    monkeypatch.setattr("curses.newwin",
+                        lambda *a, **kw: (_ for _ in ()).throw(curses.error("too small")))
+    assert axt.text_input_modal(scr, "Name?") is None
+
+
+# ─── preview_modal interactive paths ─────────────────────────────────────────
+
+
+def test_preview_modal_quit_on_q(monkeypatch):
+    scr = _make_stdscr()
+    win, _calls = _make_modal_win([ord("q")])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, "line one\nline two", title="My Preview")
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "My Preview" in flat
+    assert "line one" in flat
+
+
+def test_preview_modal_scrolls_then_quits(monkeypatch):
+    scr = _make_stdscr()
+    content = "\n".join(f"row {i}" for i in range(200))
+    # j, G (bottom), g (top), PgDn, PgUp, k, then Esc.
+    win, _calls = _make_modal_win([
+        ord("j"), ord("G"), ord("g"),
+        curses.KEY_NPAGE, curses.KEY_PPAGE, ord("k"), 27,
+    ])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, content, title="Big")
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "row 0" in flat
+
+
+def test_preview_modal_newwin_failure_is_silent(monkeypatch):
+    scr = _make_stdscr()
+    monkeypatch.setattr("curses.newwin",
+                        lambda *a, **kw: (_ for _ in ()).throw(curses.error("nope")))
+    # Should return without raising.
+    axt.preview_modal(scr, "anything")
+
+
+# ─── open_in_editor success path ─────────────────────────────────────────────
+
+
+def test_open_in_editor_success_returns_true(monkeypatch):
+    monkeypatch.setenv("EDITOR", "true")
+    monkeypatch.setattr("subprocess.call", lambda *a, **kw: 0)
+    monkeypatch.setattr("curses.endwin", lambda: None)
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    scr = _make_stdscr()
+    assert axt.open_in_editor(scr, "/tmp/file.txt") is True
+    assert scr.clear.called
+    assert scr.refresh.called
+
+
+def test_open_in_editor_nonzero_exit_returns_false(monkeypatch):
+    monkeypatch.setattr("subprocess.call", lambda *a, **kw: 1)
+    monkeypatch.setattr("curses.endwin", lambda: None)
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    scr = _make_stdscr()
+    assert axt.open_in_editor(scr, "/tmp/file.txt") is False
+
+
+# ─── render_tab_bar narrow break branch ──────────────────────────────────────
+
+
+def test_render_tab_bar_unfocused_uses_underline_on_active():
+    """Unfocused active tab uses A_UNDERLINE (no solid chip)."""
+    scr = _make_stdscr()
+    axt.render_tab_bar(scr, 0, 0, 120, active_idx=0, focused=False)
+    for call in scr.calls:
+        if len(call) >= 5 and isinstance(call[2], str) and "Extensions" in call[2]:
+            assert call[4] & curses.A_UNDERLINE
+            return
+    pytest.fail("active tab cell not drawn")
+
+
+# ─── _render_subtab_bar break branch (narrow) ────────────────────────────────
+
+
+def test_render_subtab_bar_narrow_truncates():
+    """A narrow width must stop drawing sub-tab cells without error."""
+    scr = _make_stdscr()
+    axt._render_subtab_bar(scr, 0, 20, active_key="vault", focused=True)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Sub:" in flat
+
+
+# ─── _render_frame branches ──────────────────────────────────────────────────
+
+
+def test_render_frame_too_small_shows_resize_message():
+    scr = _make_stdscr(rows=3, cols=20)
+    state = axt.TuiState()
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Terminal too small" in flat
+
+
+def test_render_frame_extensions_vault_shortcuts(tmp_path, monkeypatch):
+    """The status bar for the Extensions/Vault tab includes the full vault
+    shortcut hint line."""
+    monkeypatch.chdir(tmp_path)
+    scr = _make_stdscr(rows=30, cols=140)
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "vault"
+    state.refresh_token = 1  # avoid disk
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "F:filter" in flat
+    assert "Space:project" in flat
+
+
+def test_render_frame_vault_search_shortcuts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    scr = _make_stdscr(rows=30, cols=140)
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "vault"
+    state.refresh_token = 1
+    state.vault_searching = True
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "typing search" in flat
+
+
+def test_render_frame_vault_pending_shortcuts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    scr = _make_stdscr(rows=30, cols=140)
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "vault"
+    state.refresh_token = 1
+    state.vault_pending_project = {"x"}
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "apply pending" in flat
+
+
+def test_render_frame_extensions_nonvault_shortcuts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json",
+        settings=tmp_path / "s.json",
+        vault=tmp_path / "vault",
+        claude_dir=tmp_path / "claude",
+    ))
+    scr = _make_stdscr(rows=30, cols=140)
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "plugins"
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "[/]:sub" in flat
+    # The vault-specific F:filter hint must NOT be present on a non-vault sub-tab.
+    assert "F:filter" not in flat
+
+
+def test_render_frame_context_shortcuts(tmp_path, monkeypatch):
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    scr = _make_stdscr(rows=30, cols=140)
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("context")
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "P:project pane" in flat
+
+
+def test_render_frame_usage_shortcuts(tmp_path, monkeypatch):
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", lambda **kw: [])
+    scr = _make_stdscr(rows=30, cols=140)
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("usage")
+    state.usage_entries = []
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    # Generic shortcut line for tabs without sub-tabs.
+    assert "1-3:tab" in flat
+    assert "j/k:nav" in flat
+
+
+def test_render_frame_auto_clears_expired_status(tmp_path, monkeypatch):
+    """A status older than STATUS_TIMEOUT_S is cleared during the frame render."""
+    import time as _time
+    monkeypatch.chdir(tmp_path)
+    scr = _make_stdscr(rows=30, cols=140)
+    state = axt.TuiState()
+    state.status = "stale message"
+    state.status_set_at = _time.monotonic() - (axt.STATUS_TIMEOUT_S + 5)
+    axt._render_frame(scr, state)
+    assert state.status == ""
+    assert state.status_set_at is None
+
+
+def test_render_frame_keeps_fresh_status(tmp_path, monkeypatch):
+    import time as _time
+    monkeypatch.chdir(tmp_path)
+    scr = _make_stdscr(rows=30, cols=140)
+    state = axt.TuiState()
+    state.status = "fresh"
+    state.status_set_at = _time.monotonic()
+    axt._render_frame(scr, state)
+    assert state.status == "fresh"
+
+
+def test_render_frame_truncates_long_cwd(tmp_path, monkeypatch):
+    """A cwd wider than the terminal must be fit_cells-truncated, not crash."""
+    monkeypatch.chdir(tmp_path)
+    scr = _make_stdscr(rows=30, cols=40)  # narrow so cwd overflows
+    state = axt.TuiState()
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "cwd:" in flat
+
+
+# ─── _has_background_work status branch ──────────────────────────────────────
+
+
+def test_has_background_work_true_for_pending_status():
+    import time as _time
+    state = axt.TuiState()
+    state.status = "doing something"
+    state.status_set_at = _time.monotonic()
+    assert axt._has_background_work(state) is True
+
+
+# ─── _render_frame stub-renderer fallback ────────────────────────────────────
+
+
+def test_render_frame_uses_stub_when_renderer_missing(monkeypatch, tmp_path):
+    """When a tab has no registered renderer, _render_frame falls back to
+    render_stub_tab."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setitem(axt.TAB_RENDERERS, "usage", None)
+    # Use the patched dict but None means renderer is None → stub path.
+    # Restore is handled by monkeypatch.
+    scr = _make_stdscr(rows=30, cols=120)
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("usage")
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "not yet implemented" in flat
+
+
+# ─── render_stub_tab + handle_stub_input ─────────────────────────────────────
+
+
+def test_render_stub_tab_draws_name_and_hint():
+    scr = _make_stdscr()
+    state = axt.TuiState()
+    axt.render_stub_tab(scr, state, 0, 20, 80, name="Foo", hint="some hint here")
+    flat = "\n".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Foo" in flat
+    assert "some hint here" in flat
+    assert "axt foo --help" in flat
+
+
+def test_handle_stub_input_returns_none():
+    assert axt.handle_stub_input(axt.TuiState(), ord("x")) is None
+
+
+# ─── Vault input: navigation + paging branches ───────────────────────────────
+
+
+def test_handle_vault_input_pgdn_pgup():
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name=f"i{i}", type="skill", path="", description="")
+        for i in range(30)
+    ]
+    axt.handle_vault_input(s, curses.KEY_NPAGE)
+    assert s.vault_selected == 10
+    axt.handle_vault_input(s, curses.KEY_PPAGE)
+    assert s.vault_selected == 0
+
+
+def test_handle_vault_input_detail_scroll_pgdn_pgup():
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(name="a", type="skill", path="", description="")]
+    s.vault_detail_focused = True
+    axt.handle_vault_input(s, curses.KEY_NPAGE)
+    assert s.vault_detail_scroll == 10
+    axt.handle_vault_input(s, curses.KEY_PPAGE)
+    assert s.vault_detail_scroll == 0
+
+
+def test_handle_vault_input_search_enter_empty_returns_none():
+    """Applying an empty search returns None (no status toast)."""
+    s = axt.TuiState()
+    s.vault_searching = True
+    s.vault_search = ""
+    assert axt.handle_vault_input(s, 10) is None
+    assert s.vault_searching is False
+
+
+def test_handle_vault_input_search_nonprintable_ignored():
+    """A non-printable key during search input is dropped without effect."""
+    s = axt.TuiState()
+    s.vault_searching = True
+    s.vault_search = "ab"
+    axt.handle_vault_input(s, curses.KEY_F5)  # arbitrary non-printable
+    assert s.vault_search == "ab"
+    assert s.vault_searching is True
+
+
+def test_handle_vault_input_enter_pending_without_stdscr_applies():
+    """With pending toggles and no stdscr (headless), Enter applies directly."""
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(name="a", type="skill", path="", description="")]
+    s.vault_pending_project.add("a")
+    s.stdscr_callbacks = None
+    msg = axt.handle_vault_input(s, 10)
+    # _vault_apply_pending returns an "Applied"/error message, not "Cancelled".
+    assert msg is not None
+    assert "Cancelled" not in msg
+
+
+def test_handle_vault_input_refresh_resets_token():
+    s = axt.TuiState()
+    s.vault_items = [axt.VaultItem(name="a", type="skill", path="", description="")]
+    s.refresh_token = 1
+    msg = axt.handle_vault_input(s, ord("r"))
+    assert msg == "Refreshed"
+
+
+# ─── Vault `i` import path ────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault import unsupported on Windows")
+def test_handle_vault_input_import_global_only_item(tmp_path, monkeypatch):
+    """`i` on a global-only item imports it into the vault."""
+    claude = tmp_path / "claude"
+    vault = tmp_path / "vault"
+    (claude / "skills" / "gskill").mkdir(parents=True)
+    (claude / "skills" / "gskill" / "SKILL.md").write_text("---\ndescription: g\n---")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=vault, installed_plugins=tmp_path / "ip.json", claude_dir=claude,
+    ))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+
+    item = axt.VaultItem(name="gskill", type="skill",
+                         path=str(claude / "skills" / "gskill"),
+                         description="g", in_vault=False, is_global_linked=True)
+    s = axt.TuiState()
+    s.vault_items = [item]
+    s.refresh_token = 1
+    msg = axt.handle_vault_input(s, ord("i"))
+    assert msg is not None and "Imported" in msg
+    assert (vault / "skills" / "gskill").exists()
+
+
+def test_handle_vault_input_import_failure_returns_error(tmp_path, monkeypatch):
+    """If import_to_vault raises, `i` returns an 'Import failed' status."""
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=tmp_path / "vault", installed_plugins=tmp_path / "ip.json",
+        claude_dir=tmp_path / "claude",
+    ))
+    monkeypatch.setattr("axt.tui.tabs.import_to_vault",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("boom")))
+    item = axt.VaultItem(name="x", type="skill", path="/nope",
+                         description="", in_vault=False, is_global_linked=True)
+    s = axt.TuiState()
+    s.vault_items = [item]
+    s.refresh_token = 1
+    msg = axt.handle_vault_input(s, ord("i"))
+    assert msg is not None and "Import failed" in msg
+
+
+def test_handle_vault_input_migrate(tmp_path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=tmp_path / "vault", installed_plugins=tmp_path / "ip.json",
+        claude_dir=tmp_path / "claude",
+    ))
+    monkeypatch.chdir(tmp_path)
+    s = axt.TuiState()
+    s.refresh_token = 1
+    msg = axt.handle_vault_input(s, ord("m"))
+    assert msg is not None and "Migrated" in msg
+
+
+def test_handle_vault_input_sync(tmp_path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=tmp_path / "vault", installed_plugins=tmp_path / "ip.json",
+        claude_dir=tmp_path / "claude",
+    ))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    s = axt.TuiState()
+    s.refresh_token = 1
+    msg = axt.handle_vault_input(s, ord("S"))
+    assert msg is not None and "Sync" in msg
+
+
+# ─── handle_context_input branches ───────────────────────────────────────────
+
+
+def _seed_context_analysis_with_sources():
+    src = axt.ContextSource(
+        name="CLAUDE.md", category="memory", estimated_tokens=1000,
+        percentage=5.0, path="/tmp/CLAUDE.md", hint="project",
+        chars=4000, actionable=True,
+    )
+    return axt.ContextAnalysis(
+        total_tokens=1000, context_window_size=200_000, used_percent=0.5,
+        model="claude-sonnet", sources=[src],
+        cost_impact=axt.CostImpact(
+            model="claude-sonnet", cache_write_cost=0.0,
+            cache_read_cost_per_turn=0.0, avg_turns_per_session=10,
+            avg_sessions_per_day=1, per_session_cost=0.0, monthly_cost=0.0,
+        ),
+    )
+
+
+def test_handle_context_input_navigation():
+    s = axt.TuiState()
+    s.context_analysis = _seed_context_analysis_with_sources()
+    # Only one category, so down clamps at 0.
+    axt.handle_context_input(s, ord("j"))
+    assert s.context_selected == 0
+    axt.handle_context_input(s, ord("k"))
+    assert s.context_selected == 0
+
+
+def test_handle_context_input_refresh_clears_analysis():
+    s = axt.TuiState()
+    s.context_analysis = _seed_context_analysis_with_sources()
+    msg = axt.handle_context_input(s, ord("r"))
+    assert msg == "Refreshed"
+    assert s.context_analysis is None
+
+
+def test_handle_context_input_enter_opens_preview(monkeypatch):
+    called = []
+    monkeypatch.setattr("axt.preview_modal",
+                        lambda stdscr, content, title="Preview": called.append((title, content)))
+    s = axt.TuiState()
+    s.context_analysis = _seed_context_analysis_with_sources()
+    s.stdscr_callbacks = {"stdscr": object()}
+    s.context_selected = 0
+    axt.handle_context_input(s, 10)  # Enter
+    assert called
+    assert "CLAUDE.md" in called[0][1]
+
+
+def test_handle_context_input_e_opens_editor(monkeypatch):
+    called = []
+    monkeypatch.setattr("axt.open_in_editor",
+                        lambda stdscr, path: called.append(path) or True)
+    s = axt.TuiState()
+    s.context_analysis = _seed_context_analysis_with_sources()
+    s.stdscr_callbacks = {"stdscr": object()}
+    s.context_selected = 0
+    msg = axt.handle_context_input(s, ord("e"))
+    assert called == ["/tmp/CLAUDE.md"]
+    assert msg is not None and "Opened" in msg
+
+
+def test_handle_context_input_e_no_file_in_category(monkeypatch):
+    """A category whose sources have no path returns the no-file status."""
+    src = axt.ContextSource(
+        name="rules", category="rules", estimated_tokens=10,
+        percentage=0.1, path="", hint="", chars=40, actionable=False,
+    )
+    s = axt.TuiState()
+    s.context_analysis = axt.ContextAnalysis(
+        total_tokens=10, context_window_size=200_000, used_percent=0.0,
+        model="m", sources=[src],
+        cost_impact=axt.CostImpact(
+            model="m", cache_write_cost=0.0, cache_read_cost_per_turn=0.0,
+            avg_turns_per_session=1, avg_sessions_per_day=1,
+            per_session_cost=0.0, monthly_cost=0.0,
+        ),
+    )
+    s.stdscr_callbacks = {"stdscr": object()}
+    s.context_selected = 0
+    msg = axt.handle_context_input(s, ord("e"))
+    assert msg == "No file to edit in this category"
+
+
+# ─── handle_project_input paging branches ────────────────────────────────────
+
+
+def test_handle_project_input_pgdn_pgup_scroll():
+    s = axt.TuiState()
+    s.project_items = [
+        axt.ProjectContextItem(name=f"f{i}", source="project",
+                               path=f"/p/f{i}", content="x", lines=1)
+        for i in range(5)
+    ]
+    axt.handle_project_input(s, curses.KEY_NPAGE)
+    assert s.project_scroll == 10
+    axt.handle_project_input(s, curses.KEY_PPAGE)
+    assert s.project_scroll == 0
+
+
+def test_handle_project_input_nav_resets_scroll():
+    s = axt.TuiState()
+    s.project_items = [
+        axt.ProjectContextItem(name=f"f{i}", source="project",
+                               path=f"/p/f{i}", content="x", lines=1)
+        for i in range(3)
+    ]
+    s.project_scroll = 5
+    axt.handle_project_input(s, ord("j"))
+    assert s.project_selected == 1
+    assert s.project_scroll == 0
+
+
+def test_handle_project_input_refresh():
+    s = axt.TuiState()
+    s.project_items = [axt.ProjectContextItem(
+        name="f", source="project", path="/p/f", content="x", lines=1)]
+    msg = axt.handle_project_input(s, ord("r"))
+    assert msg == "Refreshed"
+    assert s.project_items is None
+
+
+# ─── handle_extensions_input: list nav on non-vault sub-tabs ──────────────────
+
+
+def test_handle_extensions_input_list_navigation():
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = [
+        axt.PluginInfo(id=f"p{i}@m", name=f"p{i}", marketplace="m",
+                       version="1", install_path=f"/p{i}", scope="user",
+                       installed_at="", last_updated="")
+        for i in range(5)
+    ]
+    axt.handle_extensions_input(s, ord("j"))
+    assert s.ext_selected["plugins"] == 1
+    axt.handle_extensions_input(s, curses.KEY_NPAGE)
+    assert s.ext_selected["plugins"] == 4  # clamped at n-1
+    axt.handle_extensions_input(s, curses.KEY_PPAGE)
+    assert s.ext_selected["plugins"] == 0
+    axt.handle_extensions_input(s, ord("k"))
+    assert s.ext_selected["plugins"] == 0
+
+
+def test_handle_extensions_input_refresh_non_vault_clears_cache():
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = ["dummy"]
+    msg = axt.handle_extensions_input(s, ord("r"))
+    assert msg == "Refreshed"
+    assert "plugins" not in s.ext_cache
+
+
+# ─── _selected_item ──────────────────────────────────────────────────────────
+
+
+def test_selected_item_out_of_range_returns_none():
+    s = axt.TuiState()
+    s.ext_cache["plugins"] = []
+    s.ext_selected["plugins"] = 0
+    assert axt._selected_item(s, "plugins") is None
+
+
+def test_selected_item_returns_row():
+    s = axt.TuiState()
+    p = axt.PluginInfo(id="p@m", name="p", marketplace="m", version="1",
+                       install_path="/p", scope="user",
+                       installed_at="", last_updated="")
+    s.ext_cache["plugins"] = [p]
+    s.ext_selected["plugins"] = 0
+    assert axt._selected_item(s, "plugins") is p
+
+
+# ─── _handle_subtab_action: plugin E/D project, uninstall ─────────────────────
+
+
+def test_subtab_action_plugin_project_enable_disable(tmp_path, monkeypatch):
+    import json
+    proj = tmp_path / "proj"
+    (proj / ".claude").mkdir(parents=True)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json",
+        settings=tmp_path / "settings.json",
+    ))
+    monkeypatch.chdir(proj)
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
+                             "installedAt": "", "lastUpdated": ""}]},
+    }))
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    s.ext_selected["plugins"] = 0
+    s.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(s, "plugins", ord("E"))
+    assert "Enabled" in (msg or "") and "project" in (msg or "")
+    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    msg = axt._handle_subtab_action(s, "plugins", ord("D"))
+    assert "Disabled" in (msg or "") and "project" in (msg or "")
+
+
+def test_subtab_action_plugin_uninstall_confirmed(tmp_path, monkeypatch):
+    import json
+    install_path = tmp_path / "myplugin"
+    install_path.mkdir()
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json",
+        settings=tmp_path / "settings.json",
+    ))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": str(install_path),
+                             "version": "1", "installedAt": "", "lastUpdated": ""}]},
+    }))
+    monkeypatch.setattr("axt.confirm_modal",
+                        lambda stdscr, msg, title="Confirm": True)
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    s.ext_selected["plugins"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "plugins", ord("x"))
+    assert "Uninstalled" in (msg or "")
+    assert not install_path.exists()
+
+
+def test_subtab_action_plugin_uninstall_cancelled(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json",
+        settings=tmp_path / "settings.json",
+    ))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
+                             "installedAt": "", "lastUpdated": ""}]},
+    }))
+    monkeypatch.setattr("axt.confirm_modal",
+                        lambda stdscr, msg, title="Confirm": False)
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    s.ext_selected["plugins"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(s, "plugins", ord("x")) == "Cancelled"
+
+
+def test_subtab_action_plugin_none_selected_returns_none():
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = []
+    s.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(s, "plugins", ord("e")) is None
+
+
+# ─── _handle_subtab_action: skills link/unlink ───────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks unsupported on Windows")
+def test_subtab_action_skill_link(tmp_path, monkeypatch):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    target = tmp_path / "src-skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("---\nname: src\n---")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(skills=skills, claude_dir=tmp_path / "claude"))
+    monkeypatch.setattr("axt.text_input_modal",
+                        lambda stdscr, prompt, title="Input", initial="": str(target))
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "skills", ord("l"))
+    assert msg is not None and "Linked" in msg
+
+
+def test_subtab_action_skill_link_cancelled(monkeypatch):
+    """text_input_modal returning None (Esc) means link is aborted."""
+    if sys.platform == "win32":
+        pytest.skip("symlinks unsupported on Windows")
+    monkeypatch.setattr("axt.text_input_modal",
+                        lambda *a, **kw: None)
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(s, "skills", ord("l")) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks unsupported on Windows")
+def test_subtab_action_skill_unlink_non_symlink(monkeypatch):
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name="dirskill", path="/x", is_symlink=False, source="user")
+    ]
+    s.ext_selected["skills"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "skills", ord("u"))
+    assert msg == "Selected skill is not a symlink (cannot unlink)"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks unsupported on Windows")
+def test_subtab_action_skill_unlink_confirmed(tmp_path, monkeypatch):
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "SKILL.md").write_text("---\n---")
+    link = skills / "mylink"
+    link.symlink_to(src)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(skills=skills, claude_dir=tmp_path / "claude"))
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: True)
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name="mylink", path=str(link), is_symlink=True,
+                      source="user", target=str(src))
+    ]
+    s.ext_selected["skills"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "skills", ord("u"))
+    assert msg is not None and "Unlinked" in msg
+    assert not link.exists()
+
+
+# ─── _handle_subtab_action: marketplace add/sync/remove ───────────────────────
+
+
+def test_subtab_action_market_add(tmp_path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=tmp_path / "km.json",
+        marketplaces=tmp_path / "marketplaces",
+    ))
+    inputs = iter(["dir:/some/path", "mymarket"])
+    monkeypatch.setattr("axt.text_input_modal",
+                        lambda *a, **kw: next(inputs))
+    captured = {}
+    def fake_add(km, mk, name, source):
+        captured["name"] = name
+        captured["source"] = source
+    monkeypatch.setattr("axt.tui.tabs.add_marketplace", fake_add)
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "market", ord("a"))
+    assert msg is not None and "Added mymarket" in msg
+    assert captured["name"] == "mymarket"
+    assert captured["source"].kind == "directory"
+
+
+def test_subtab_action_market_add_cancelled_at_source(monkeypatch):
+    monkeypatch.setattr("axt.text_input_modal", lambda *a, **kw: None)
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(s, "market", ord("a")) is None
+
+
+def test_subtab_action_market_add_parse_failure(monkeypatch):
+    monkeypatch.setattr("axt.text_input_modal", lambda *a, **kw: "  ")  # blank → returns early
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.stdscr_callbacks = {"stdscr": object()}
+    # Blank source string is falsy after strip? Actually "  " is truthy, then
+    # parse_marketplace_source("") is called on strip → bare path → github.
+    # To force a parse error, supply a value that the parser rejects.
+    monkeypatch.setattr("axt.text_input_modal", lambda *a, **kw: "github:")
+    # github: with empty repo parses OK (kind=github). Use a clearly invalid form.
+    monkeypatch.setattr("axt.tui.tabs.parse_marketplace_source",
+                        lambda s: (_ for _ in ()).throw(ValueError("bad")))
+    msg = axt._handle_subtab_action(s, "market", ord("a"))
+    assert msg is not None and "Parse failed" in msg
+
+
+def test_subtab_action_market_sync(monkeypatch):
+    monkeypatch.setattr("axt.tui.tabs.sync_marketplace",
+                        lambda km, name: axt.SyncMarketplaceResult(before="a", after="b", updated=True))
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [
+        axt.MarketplaceInfo(name="m1",
+                            source=axt.MarketplaceSource(kind="directory", path="/p"),
+                            install_location="/loc", last_updated="2026-01-01")
+    ]
+    s.ext_selected["market"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "market", ord("s"))
+    assert msg is not None and "Synced m1" in msg
+
+
+def test_subtab_action_market_remove_confirmed(monkeypatch):
+    removed = []
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: True)
+    monkeypatch.setattr("axt.tui.tabs.remove_marketplace",
+                        lambda km, mk, name: removed.append(name))
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [
+        axt.MarketplaceInfo(name="m1",
+                            source=axt.MarketplaceSource(kind="directory", path="/p"),
+                            install_location="/loc", last_updated="2026-01-01")
+    ]
+    s.ext_selected["market"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "market", ord("x"))
+    assert msg is not None and "Removed m1" in msg
+    assert removed == ["m1"]
+
+
+def test_subtab_action_market_none_selected_returns_none():
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = []
+    s.stdscr_callbacks = {"stdscr": object()}
+    # 's' with no selection returns None (m is None).
+    assert axt._handle_subtab_action(s, "market", ord("s")) is None
+
+
+# ─── _handle_subtab_action: hooks preview ─────────────────────────────────────
+
+
+def test_subtab_action_hook_preview(monkeypatch):
+    captured = []
+    monkeypatch.setattr("axt.preview_modal",
+                        lambda stdscr, content, title="Preview": captured.append((title, content)))
+    monkeypatch.setattr("axt.tui.tabs.preview_hook",
+                        lambda hook: axt.HookPreviewResult(
+                            type="command", summary="ran echo",
+                            output="hello", error="", exit_code=0))
+    s = axt.TuiState()
+    s.ext_sub_tab = "hooks"
+    s.ext_cache["hooks"] = [
+        axt.HookInfo(event="PreToolUse", matcher="*", source="user",
+                     source_path="/s.json", type="command", command="echo hi")
+    ]
+    s.ext_selected["hooks"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "hooks", ord("p"))
+    assert msg is None  # preview returns None
+    assert captured
+    assert "ran echo" in captured[0][1]
+    assert "hello" in captured[0][1]
+
+
+def test_subtab_action_hook_preview_none_selected():
+    s = axt.TuiState()
+    s.ext_sub_tab = "hooks"
+    s.ext_cache["hooks"] = []
+    s.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(s, "hooks", ord("p")) is None
+
+
+# ─── _handle_subtab_action: commands/agents editor ────────────────────────────
+
+
+def test_subtab_action_command_edit(monkeypatch):
+    called = []
+    monkeypatch.setattr("axt.open_in_editor",
+                        lambda stdscr, path: called.append(path) or True)
+    s = axt.TuiState()
+    s.ext_sub_tab = "commands"
+    s.ext_cache["commands"] = [
+        axt.CommandInfo(name="cmd", source="user", source_path="/c.md",
+                        description="d", content="x")
+    ]
+    s.ext_selected["commands"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "commands", ord("e"))
+    assert called == ["/c.md"]
+    assert msg is not None and "Opened" in msg
+
+
+def test_subtab_action_agent_edit_no_source_path():
+    s = axt.TuiState()
+    s.ext_sub_tab = "agents"
+    s.ext_cache["agents"] = [
+        axt.AgentInfo(name="a", source="user", source_path="", description="d")
+    ]
+    s.ext_selected["agents"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    # No source_path → returns None.
+    assert axt._handle_subtab_action(s, "agents", ord("e")) is None
+
+
+# ─── render_extensions_tab: each sub-tab renders without error ────────────────
+
+
+def _isolate_ext_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr("axt.HOME", tmp_path / "home")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        claude_dir=tmp_path / "claude",
+        settings=tmp_path / "settings.json",
+        installed_plugins=tmp_path / "ip.json",
+        skills=tmp_path / "skills",
+        vault=tmp_path / "vault",
+        known_marketplaces=tmp_path / "km.json",
+        marketplaces=tmp_path / "marketplaces",
+    ))
+    monkeypatch.chdir(tmp_path)
+
+
+def test_render_extensions_skills_subtab_empty(tmp_path, monkeypatch):
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "No skills found." in flat
+
+
+def test_render_extensions_commands_subtab_with_data(tmp_path, monkeypatch):
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "commands"
+    s.ext_cache["commands"] = [
+        axt.CommandInfo(name="deploy", source="user", source_path="/c.md",
+                        description="Deploy the app", content="x", version="2.0")
+    ]
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "/deploy" in flat
+    assert "Deploy the app" in flat
+
+
+def test_render_extensions_agents_subtab_with_data(tmp_path, monkeypatch):
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "agents"
+    s.ext_cache["agents"] = [
+        axt.AgentInfo(name="reviewer", source="user", source_path="/a.md",
+                      description="Reviews code", version="1.1")
+    ]
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "reviewer" in flat
+    assert "Reviews code" in flat
+
+
+def test_render_extensions_mcp_subtab_with_data(tmp_path, monkeypatch):
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "mcp"
+    s.ext_cache["mcp"] = [
+        axt.McpServerInfo(name="srv", plugin_id="p@m", command="node",
+                          args=("server.js",), env=(), version="3.0")
+    ]
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "srv" in flat
+    assert "node" in flat
+
+
+def test_render_extensions_hooks_subtab_with_data(tmp_path, monkeypatch):
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "hooks"
+    s.ext_cache["hooks"] = [
+        axt.HookInfo(event="PreToolUse", matcher="*", source="user",
+                     source_path="/s.json", type="command", command="echo hi")
+    ]
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "PreToolUse" in flat
+
+
+def test_render_extensions_market_subtab_with_data(tmp_path, monkeypatch):
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [
+        axt.MarketplaceInfo(
+            name="official",
+            source=axt.MarketplaceSource(kind="github", repo="user/repo"),
+            install_location="/loc/official", last_updated="2026-05-01T00:00:00Z")
+    ]
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "official" in flat
+    assert "github" in flat
+
+
+def test_render_extensions_unknown_subtab_is_noop(tmp_path, monkeypatch):
+    """An unrecognized sub-tab key hits the final `else: return` — sub-tab bar
+    is still drawn but no list."""
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "vault"
+    # Force an unknown key directly through the dispatch by patching ext_sub_tab
+    # to a value not in the if/elif chain after the vault early-return guard.
+    s.ext_sub_tab = "bogus"
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    # The sub-tab bar header still renders.
+    assert "Sub:" in flat
+
+
+# ─── render_usage_tab: full summary path (budget + cards + chart + active) ────
+
+
+def test_render_usage_tab_full_summary_with_budget(tmp_path, monkeypatch):
+    """A loaded usage tab with a configured budget and real entries renders
+    the plan line, budget bar, period cards, the daily chart and insights."""
+    import json
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    # Configure a monthly budget + a claude plan so the budget bar + plan line draw.
+    (tmp_path / "config.json").write_text(json.dumps({
+        "monthly_budget": 100,
+        "timezone": "UTC",
+        "plans": {"claude": {"plan": "max", "monthly_cost": 200}},
+    }))
+    now = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    entry = axt.UnifiedUsageEntry(
+        platform="claude", model="claude-sonnet-4",
+        timestamp=now, session_id="s1", project_path="/tmp/proj",
+        input_tokens=2000, output_tokens=1000,
+        cache_write_tokens=10, cache_read_tokens=5,
+    )
+    state = axt.TuiState()
+    state.usage_entries = [entry]
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+    state.context_analysis = _make_empty_context_analysis()
+    scr = _make_stdscr(rows=50, cols=140)
+    axt.render_usage_tab(scr, state, 0, 48, 140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Plan: max" in flat
+    assert "Today" in flat and "Week" in flat and "Month" in flat
+    assert "Last 14 days" in flat
+    assert "Insights" in flat
+
+
+def test_usage_period_card_aggregates():
+    """_usage_period_card returns 3 lines with session/msg counts."""
+    e = axt.UnifiedUsageEntry(
+        platform="claude", model="claude-sonnet-4",
+        timestamp="2026-05-01T00:00:00Z", session_id="s1", project_path="/p",
+        input_tokens=100, output_tokens=50, cache_write_tokens=0, cache_read_tokens=0,
+    )
+    lines = axt._usage_period_card([e], "Today")
+    assert len(lines) == 3
+    assert "Today" in lines[0]
+    assert "sessions=" in lines[0]
+    assert "cost=$" in lines[2]
+
+
+def test_gauge_attr_thresholds():
+    assert axt._gauge_attr(95) == axt.CP_ERR()
+    assert axt._gauge_attr(70) == axt.CP_INFO()
+    assert axt._gauge_attr(10) == axt.CP_OK()
+
+
+def test_fmt_quota_eta_buckets():
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    assert axt._fmt_quota_eta(None) == "—"
+    assert axt._fmt_quota_eta(now - timedelta(seconds=10)) == "now"
+    assert axt._fmt_quota_eta(now + timedelta(minutes=30)).endswith("m")
+    assert "h" in axt._fmt_quota_eta(now + timedelta(hours=3))
+    assert "d" in axt._fmt_quota_eta(now + timedelta(days=2))
+
+
+def test_usage_gauge_lines_no_rate_limits(tmp_path, monkeypatch):
+    """With no snapshot, the gauge lines include the missing/stale message."""
+    monkeypatch.setattr("axt.PATHS", axt.Paths(usage_snapshot=tmp_path / "none.json"))
+    state = axt.TuiState()
+    state.context_analysis = _make_empty_context_analysis()
+    lines = axt._usage_gauge_lines(state, 120)
+    flat = " ".join(t for (_x, t, _w, _a) in lines)
+    assert "Rate limits: snapshot missing or stale" in flat
+
+
+def test_render_usage_gauges_with_snapshot(tmp_path, monkeypatch):
+    """_render_usage_gauges draws Context + 5h + 7d rows and returns the count."""
+    import json
+    snap = tmp_path / "snap.json"
+    snap.write_text(json.dumps({
+        "five_hour": {"used_percentage": 50, "resets_at": "2099-01-01T00:00:00Z"},
+        "seven_day": {"used_percentage": 95, "resets_at": "2099-01-08T00:00:00Z"},
+        "updated_at": "2099-01-01T00:00:00Z",
+    }))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(usage_snapshot=snap))
+    state = axt.TuiState()
+    state.context_analysis = axt.ContextAnalysis(
+        total_tokens=50_000, context_window_size=200_000, used_percent=25.0,
+        model="m", sources=[],
+        cost_impact=axt.CostImpact(
+            model="m", cache_write_cost=0.0, cache_read_cost_per_turn=0.0,
+            avg_turns_per_session=1, avg_sessions_per_day=1,
+            per_session_cost=0.0, monthly_cost=0.0),
+    )
+    scr = _make_stdscr(rows=30, cols=140)
+    rows = axt._render_usage_gauges(scr, state, 0, 140)
+    assert rows == 3  # context + 5h + 7d
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Context:" in flat
+    assert "5h:" in flat
+    assert "7d:" in flat
+
+
+def test_render_usage_gauges_no_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(usage_snapshot=tmp_path / "none.json"))
+    state = axt.TuiState()
+    state.context_analysis = _make_empty_context_analysis()
+    scr = _make_stdscr(rows=30, cols=140)
+    rows = axt._render_usage_gauges(scr, state, 0, 140)
+    # Context window size is 200k > 0 → 1 row, then snapshot-missing → 1 more.
+    assert rows == 2
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "snapshot missing or stale" in flat
+
+
+# ─── _daily_costs ─────────────────────────────────────────────────────────────
+
+
+def test_daily_costs_buckets_by_day():
+    e = axt.UnifiedUsageEntry(
+        platform="claude", model="claude-sonnet-4",
+        timestamp="2026-05-01T12:00:00Z", session_id="s", project_path="/p",
+        input_tokens=1000, output_tokens=1000, cache_write_tokens=0, cache_read_tokens=0,
+    )
+    out = axt._daily_costs([e], 14, "UTC")
+    assert len(out) == 14
+    # Each element is (MM-DD label, cost).
+    assert all(len(label) == 5 for label, _ in out)
+
+
+def test_date_iter_length_and_order():
+    from datetime import datetime, timezone
+    now = datetime(2026, 5, 10, tzinfo=timezone.utc)
+    days = axt._date_iter(now, 5)
+    assert len(days) == 5
+    assert days[-1].day == 10  # last element is today
+    assert days[0].day == 6    # 5 days ago
+
+
+# ─── _context_rows ────────────────────────────────────────────────────────────
+
+
+def test_context_rows_groups_and_sorts():
+    a1 = axt.ContextSource(name="a1", category="memory", estimated_tokens=300,
+                           percentage=3.0, path="", hint="", chars=1200, actionable=True)
+    a2 = axt.ContextSource(name="a2", category="memory", estimated_tokens=200,
+                           percentage=2.0, path="", hint="", chars=800, actionable=True)
+    b1 = axt.ContextSource(name="b1", category="rules", estimated_tokens=1000,
+                           percentage=10.0, path="", hint="", chars=4000, actionable=True)
+    analysis = axt.ContextAnalysis(
+        total_tokens=1500, context_window_size=200_000, used_percent=0.75,
+        model="m", sources=[a1, a2, b1],
+        cost_impact=axt.CostImpact(
+            model="m", cache_write_cost=0.0, cache_read_cost_per_turn=0.0,
+            avg_turns_per_session=1, avg_sessions_per_day=1,
+            per_session_cost=0.0, monthly_cost=0.0),
+    )
+    rows = axt._context_rows(analysis)
+    # rules (1000) sorts before memory (500).
+    assert rows[0].category == "rules"
+    assert rows[0].tokens == 1000
+    assert rows[1].category == "memory"
+    assert rows[1].items == 2
+    assert rows[1].tokens == 500
+
+
+# ─── render_context_tab: sources + project pane path ──────────────────────────
+
+
+def test_render_context_tab_with_sources_and_project_pane(tmp_path, monkeypatch):
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    (tmp_path / "CLAUDE.md").write_text("# proj\nhello\n")
+    state = axt.TuiState()
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.context_show_project = True
+    scr = _make_stdscr(rows=40, cols=140)
+    axt.render_context_tab(scr, state, 0, 38, 140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Category" in flat  # sources table header
+    assert "Project files" in flat
+    assert "cost:" in flat
+
+
+def test_render_context_tab_no_sources_message(tmp_path, monkeypatch):
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    state.context_analysis = _make_empty_context_analysis()  # no sources
+    state.context_show_project = False
+    scr = _make_stdscr(rows=40, cols=140)
+    axt.render_context_tab(scr, state, 0, 38, 140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "No context sources detected." in flat
+
+
+def test_render_project_files_pane_empty(tmp_path, monkeypatch):
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    state.project_items = []  # explicitly empty
+    scr = _make_stdscr(rows=20, cols=120)
+    axt._render_project_files_pane(scr, state, 0, 10, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "No project context files found." in flat
+
+
+def test_render_project_files_pane_with_items(tmp_path, monkeypatch):
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    state.project_items = [
+        axt.ProjectContextItem(name="CLAUDE.md", source="project",
+                               path="/p/CLAUDE.md", content="x", lines=10)
+    ]
+    scr = _make_stdscr(rows=20, cols=120)
+    axt._render_project_files_pane(scr, state, 0, 10, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "CLAUDE.md" in flat
+    assert "Project files" in flat
+
+
+# ─── render_vault_tab: empty filtered + search prompt ─────────────────────────
+
+
+def test_render_vault_tab_empty_filter_message(tmp_path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=tmp_path / "vault", installed_plugins=tmp_path / "ip.json",
+        claude_dir=tmp_path / "claude",
+    ))
+    monkeypatch.chdir(tmp_path)
+    s = axt.TuiState()
+    s.refresh_token = 1  # skip disk
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_vault_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Vault is empty or no items match" in flat
+
+
+def test_render_vault_tab_search_prompt_visible():
+    """When searching, the /search prompt row with cursor is drawn."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="alpha", type="skill", path="/p/alpha", description="d",
+                      in_vault=True)
+    ]
+    s.refresh_token = 1
+    s.vault_searching = True
+    s.vault_search = "alp"
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_vault_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "/search: alp" in flat
+
+
+def test_render_vault_tab_pending_indicator_in_title():
+    """Pending toggles show a `pending=N` segment in the title row."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="alpha", type="skill", path="/p/alpha", description="d",
+                      in_vault=True)
+    ]
+    s.refresh_token = 1
+    s.vault_pending_project.add("alpha")
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_vault_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "pending=1" in flat
+
+
+def test_render_vault_tab_used_in_detail_field(tmp_path, monkeypatch):
+    """When the usage index has projects for the selected item, the detail
+    panel includes a 'Used in' field listing project names."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="alpha", type="skill", path="/p/alpha", description="d",
+                      in_vault=True)
+    ]
+    s.refresh_token = 1
+    s.vault_usage_index = {
+        "skill:alpha": axt.ExtensionUsage(type="skill", name="alpha", projects=[
+            axt.ProjectRef(path="/x/projA", name="projA"),
+            axt.ProjectRef(path="/x/projB", name="projB"),
+        ])
+    }
+    scr = _make_stdscr(rows=30, cols=140)
+    axt.render_vault_tab(scr, s, 0, 26, 140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Used in" in flat
+    assert "projA" in flat
+
+
+# ─── loop.py: _handle_sub_tab_key left/right cycle + fall-through ─────────────
+
+
+def test_sub_tab_left_right_cycle_sub_tabs():
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.focused_layer = "subTab"
+    assert state.ext_sub_tab == "vault"
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, curses.KEY_RIGHT, "extensions")
+    assert consumed is True
+    assert state.ext_sub_tab == "skills"
+    consumed = axt._handle_layer_key(scr, state, curses.KEY_LEFT, "extensions")
+    assert consumed is True
+    assert state.ext_sub_tab == "vault"
+
+
+def test_sub_tab_unrecognized_key_not_consumed():
+    """A non-navigation key on the subTab layer returns False (not consumed)."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.focused_layer = "subTab"
+    scr = _make_stdscr()
+    assert axt._handle_layer_key(scr, state, ord("z"), "extensions") is False
+
+
+def test_main_tab_unrecognized_key_not_consumed():
+    """A non-navigation key on the mainTab layer returns False."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("usage")
+    state.focused_layer = "mainTab"
+    scr = _make_stdscr()
+    assert axt._handle_layer_key(scr, state, ord("z"), "usage") is False
+
+
+def test_content_layer_non_climb_key_not_consumed():
+    """A content-layer key that is neither Esc nor an up-at-top climb returns
+    False so the tab body handler can process it."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("context")
+    state.focused_layer = "content"
+    state.context_selected = 3  # not at top → KEY_UP does not climb
+    scr = _make_stdscr()
+    assert axt._handle_content_layer_key(scr, state, curses.KEY_UP, "context") is False
+    assert axt._handle_content_layer_key(scr, state, ord("j"), "context") is False
+
+
+# ─── loop.py: _tui_loop driven with a mock stdscr (no real TTY) ──────────────
+#
+# _tui_loop takes `stdscr` as a parameter and only touches curses module
+# functions we can monkeypatch — it does NOT spawn its own curses.wrapper.
+# Feeding a key sequence through stdscr.getch() exercises the dispatch loop
+# without a terminal.
+
+
+def _loop_stdscr(keys, rows=30, cols=120):
+    """Mock stdscr for _tui_loop: getch() returns `keys` in order. The final
+    key MUST cause the loop to return (e.g. ord('q'))."""
+    scr = _make_stdscr(rows, cols)
+    seq = iter(keys)
+    scr.getch.side_effect = lambda: next(seq)
+    return scr
+
+
+def _quiet_curses(monkeypatch):
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    monkeypatch.setattr("curses.set_escdelay", lambda *a: None, raising=False)
+    monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda: None)
+
+
+def test_tui_loop_quits_on_q(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _quiet_curses(monkeypatch)
+    scr = _loop_stdscr([ord("q")])
+    # Returns cleanly (None) without raising.
+    assert axt._tui_loop(scr) is None
+    assert scr.keypad.called
+
+
+def test_tui_loop_help_then_quit(monkeypatch, tmp_path):
+    """`?` opens the help preview, then `q` quits. preview_modal is stubbed."""
+    monkeypatch.chdir(tmp_path)
+    _quiet_curses(monkeypatch)
+    shown = []
+    monkeypatch.setattr("axt.tui.loop.preview_modal",
+                        lambda stdscr, content, title="Preview": shown.append(title))
+    scr = _loop_stdscr([ord("?"), ord("q")])
+    axt._tui_loop(scr)
+    assert shown == ["axt help"]
+
+
+def test_tui_loop_esc_at_main_tab_quits(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _quiet_curses(monkeypatch)
+    scr = _loop_stdscr([27])  # Esc at mainTab → quit
+    assert axt._tui_loop(scr) is None
+
+
+def test_tui_loop_number_key_switches_tab_then_quit(monkeypatch, tmp_path):
+    """Pressing '2' jumps to the Context tab (index 1) before quitting."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    _quiet_curses(monkeypatch)
+    captured = {}
+    real_handle = axt.handle_context_input
+
+    # Drive: press '2' then 'q'. We can't read state after return, so verify
+    # via a render-frame side effect: capture state.tab_idx at quit time by
+    # patching _render_frame to record it.
+    real_render = axt.tui.loop._render_frame
+    def spy_render(stdscr, state):
+        captured["tab_idx"] = state.tab_idx
+        return real_render(stdscr, state)
+    monkeypatch.setattr("axt.tui.loop._render_frame", spy_render)
+    scr = _loop_stdscr([ord("2"), ord("q")])
+    axt._tui_loop(scr)
+    assert captured["tab_idx"] == _tab_idx("context")
+
+
+def test_tui_loop_resize_then_quit(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _quiet_curses(monkeypatch)
+    scr = _loop_stdscr([curses.KEY_RESIZE, ord("q")])
+    assert axt._tui_loop(scr) is None
+
+
+def test_tui_loop_context_pane_toggle_then_quit(monkeypatch, tmp_path):
+    """`P` on the Context tab toggles the project files pane."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    _quiet_curses(monkeypatch)
+    captured = {}
+    real_render = axt.tui.loop._render_frame
+    def spy_render(stdscr, state):
+        captured["show_project"] = state.context_show_project
+        return real_render(stdscr, state)
+    monkeypatch.setattr("axt.tui.loop._render_frame", spy_render)
+    # Start on Context tab (index 1) via '2', toggle P, then quit.
+    scr = _loop_stdscr([ord("2"), ord("P"), ord("q")])
+    axt._tui_loop(scr)
+    # Default is True; one P press flips it to False.
+    assert captured["show_project"] is False
+
+
+def test_tui_loop_timeout_tick_redraws(monkeypatch, tmp_path):
+    """A -1 getch (timeout) while background work is pending triggers a redraw,
+    then the next key quits."""
+    monkeypatch.chdir(tmp_path)
+    _quiet_curses(monkeypatch)
+    render_count = [0]
+    real_render = axt.tui.loop._render_frame
+    def counting_render(stdscr, state):
+        render_count[0] += 1
+        return real_render(stdscr, state)
+    monkeypatch.setattr("axt.tui.loop._render_frame", counting_render)
+    scr = _loop_stdscr([-1, -1, ord("q")])
+    axt._tui_loop(scr)
+    # initial render + 2 timeout-tick redraws (q does a final-ish redraw path
+    # only via handler; quit returns before that). At minimum 3 renders.
+    assert render_count[0] >= 3
+
+
+def test_tui_loop_content_layer_routes_keys_to_tab_handler(monkeypatch, tmp_path):
+    """Descending into the Context content layer and pressing `j` must route
+    the key to handle_context_input (advancing context_selected)."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    _quiet_curses(monkeypatch)
+    # Seed two context categories so `j` has somewhere to move.
+    monkeypatch.setattr("axt.tui.tabs.analyze_context",
+                        lambda **kw: _seed_context_analysis_with_sources())
+    captured = {}
+    real_render = axt.tui.loop._render_frame
+    def spy_render(stdscr, state):
+        captured["layer"] = state.focused_layer
+        captured["selected"] = state.context_selected
+        return real_render(stdscr, state)
+    monkeypatch.setattr("axt.tui.loop._render_frame", spy_render)
+    # '2' → Context tab; KEY_DOWN → content layer; 'j' → handler; 'q' quits.
+    scr = _loop_stdscr([ord("2"), curses.KEY_DOWN, ord("j"), ord("q")])
+    axt._tui_loop(scr)
+    assert captured["layer"] == "content"
+
+
+def test_tui_loop_resize_in_modal_state_redraws(monkeypatch, tmp_path):
+    """KEY_RESIZE while in a vault modal sub-state takes the modal resize
+    branch (still redraws), then quits via the handler path."""
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=tmp_path / "vault", installed_plugins=tmp_path / "ip.json",
+        claude_dir=tmp_path / "claude",
+    ))
+    monkeypatch.chdir(tmp_path)
+    _quiet_curses(monkeypatch)
+    # Vault sub-tab with one item; descend to content, focus the detail panel
+    # (Tab) → that is a modal sub-state. Then KEY_RESIZE (modal branch), then q.
+    captured = {"detail_ever": False}
+    real_render = axt.tui.loop._render_frame
+    def spy_render(stdscr, state):
+        if state.vault_detail_focused:
+            captured["detail_ever"] = True
+        return real_render(stdscr, state)
+    monkeypatch.setattr("axt.tui.loop._render_frame", spy_render)
+    # Pre-seed vault items by faking _vault_load via refresh_token + direct list
+    # — but the loop builds its own TuiState. Instead, monkeypatch _vault_load
+    # to populate one item so descent works.
+    def fake_load(state):
+        state.vault_items = [
+            axt.VaultItem(name="a", type="skill", path="/p/a", description="d",
+                          in_vault=True)
+        ]
+    monkeypatch.setattr("axt.tui.tabs._vault_load", fake_load)
+    # mainTab→subTab (KEY_DOWN), subTab→content (KEY_DOWN, needs items), Tab
+    # (focus detail = modal), KEY_RESIZE (modal resize branch), Esc (blurs the
+    # detail panel via the handler — exits the modal sub-state), q (quits — `q`
+    # only quits when NOT in a modal sub-state).
+    scr = _loop_stdscr([
+        curses.KEY_DOWN, curses.KEY_DOWN, 9, curses.KEY_RESIZE, 27, ord("q"),
+    ])
+    axt._tui_loop(scr)
+    assert captured["detail_ever"] is True
+
+
+# ─── More tabs.py branch coverage ────────────────────────────────────────────
+
+
+def test_compute_simple_insights_skips_unparseable_timestamps():
+    """Entries with timestamps that don't parse are skipped in the parallel
+    computation (the `continue` branches)."""
+    good = axt.ClaudeUsageEntry(
+        model="m", input_tokens=10, output_tokens=10,
+        cache_creation_tokens=0, cache_read_tokens=0,
+        session_id="s1", project_path="p", timestamp="2026-04-29T10:00:00Z")
+    bad = axt.ClaudeUsageEntry(
+        model="m", input_tokens=10, output_tokens=10,
+        cache_creation_tokens=0, cache_read_tokens=0,
+        session_id="s2", project_path="p", timestamp="not-a-timestamp")
+    out = axt._compute_simple_insights([good, bad])
+    # Only the good entry contributes a parseable bucket → not 3 sessions →
+    # parallel_pct stays 0, and the function does not raise.
+    assert out["parallel_pct"] == 0.0
+    assert out["top_model"] == "m"
+
+
+def test_handle_usage_input_unrecognized_key_returns_none():
+    s = axt.TuiState()
+    assert axt.handle_usage_input(s, ord("z")) is None
+
+
+def _usage_entry_now():
+    now = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return axt.UnifiedUsageEntry(
+        platform="claude", model="claude-opus-4-7",
+        timestamp=now, session_id="s1", project_path="/p",
+        input_tokens=100_000, output_tokens=20_000,
+        cache_write_tokens=0, cache_read_tokens=0)
+
+
+def test_usage_summary_budget_over_limit_shows_stop():
+    """A cost over the monthly budget renders the ⛔ marker (pct >= 1 branch)."""
+    import dataclasses
+    entry = _usage_entry_now()
+    cost = axt._entry_cost(entry)
+    assert cost > 0  # sanity: opus-4-7 is in the pricing table
+    config = dataclasses.replace(axt.AxtConfig(), monthly_budget=cost / 2)  # over 100%
+    state = axt.TuiState()
+    state.usage_config = config
+    state.context_analysis = _make_empty_context_analysis()
+    lines = axt._usage_summary_lines(state, config, [entry], 140)
+    flat = " ".join(t for (_x, t, _w, _a) in lines)
+    assert "⛔" in flat
+
+
+def test_usage_summary_budget_warning_threshold():
+    """A cost between 80% and 100% of budget renders the ⚠ marker."""
+    import dataclasses
+    entry = _usage_entry_now()
+    cost = axt._entry_cost(entry)
+    config = dataclasses.replace(axt.AxtConfig(), monthly_budget=cost / 0.9)  # ~90%
+    state = axt.TuiState()
+    state.usage_config = config
+    state.context_analysis = _make_empty_context_analysis()
+    lines = axt._usage_summary_lines(state, config, [entry], 140)
+    flat = " ".join(t for (_x, t, _w, _a) in lines)
+    assert "⚠" in flat
+
+
+def test_render_usage_tab_clamps_negative_scroll(tmp_path, monkeypatch):
+    """A negative usage_scroll is clamped back to 0 during render."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    state.usage_entries = []
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+    state.usage_scroll = -5
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+    assert state.usage_scroll == 0
+
+
+# ─── _handle_subtab_action: error-return branches ────────────────────────────
+
+
+def test_subtab_action_plugin_enable_failure(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "settings.json"))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
+                             "installedAt": "", "lastUpdated": ""}]},
+    }))
+    monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled",
+                        lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    s.ext_selected["plugins"] = 0
+    s.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(s, "plugins", ord("e"))
+    assert msg is not None and "Enable failed" in msg
+
+
+def test_subtab_action_market_sync_failure(monkeypatch):
+    monkeypatch.setattr("axt.tui.tabs.sync_marketplace",
+                        lambda km, name: (_ for _ in ()).throw(RuntimeError("network")))
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [
+        axt.MarketplaceInfo(name="m1",
+                            source=axt.MarketplaceSource(kind="directory", path="/p"),
+                            install_location="/loc", last_updated="2026-01-01")
+    ]
+    s.ext_selected["market"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "market", ord("s"))
+    assert msg is not None and "Sync failed" in msg
+
+
+def test_subtab_action_skill_link_unsupported(monkeypatch):
+    """When symlinks are unsupported (e.g. Windows), `l` returns a clear msg."""
+    monkeypatch.setattr("axt.tui.tabs.is_symlink_supported", lambda: False)
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt._handle_subtab_action(s, "skills", ord("l"))
+    assert msg == "Symlinks unsupported on this platform"
+
+
+def test_handle_vault_input_scan_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        projects=tmp_path / "projects", vault=tmp_path / "vault"))
+    monkeypatch.setattr("axt.tui.tabs._vault_scan",
+                        lambda state: (_ for _ in ()).throw(OSError("scan boom")))
+    s = axt.TuiState()
+    s.refresh_token = 1
+    msg = axt.handle_vault_input(s, ord("f"))
+    assert msg is not None and "Scan failed" in msg
+
+
+def test_handle_vault_input_mode_scan_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        projects=tmp_path / "projects", vault=tmp_path / "vault"))
+    monkeypatch.setattr("axt.tui.tabs._vault_scan",
+                        lambda state: (_ for _ in ()).throw(OSError("scan boom")))
+    s = axt.TuiState()
+    s.refresh_token = 1
+    msg = axt.handle_vault_input(s, ord("M"))
+    assert msg is not None and "Scan failed" in msg
+    # Mode still toggled despite the scan failure.
+    assert s.vault_scan_mode == "full"

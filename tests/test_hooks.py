@@ -60,6 +60,22 @@ def test_extract_hooks_defaults_type_to_command(tmp_path: Path):
     assert out[0].type == "command"
 
 
+def test_extract_hooks_skips_malformed_entries(tmp_path: Path):
+    """Non-dict rule, non-list hooks, and non-dict hook entries are all skipped."""
+    settings = {
+        "hooks": {
+            "Stop": [
+                "not-a-dict-rule",                              # rule not a dict → skip
+                {"matcher": "*", "hooks": "not-a-list"},        # hooks not a list → skip
+                {"matcher": "*", "hooks": [42, {"type": "command", "command": "ok"}]},  # non-dict hook skipped
+            ]
+        }
+    }
+    out = axt._extract_hooks(settings, "user", "/x")
+    assert len(out) == 1
+    assert out[0].command == "ok"
+
+
 def test_extract_hooks_handles_http_and_mcp(tmp_path: Path):
     settings = {
         "hooks": {
@@ -138,3 +154,152 @@ def test_get_hook_detail():
     assert axt.get_hook_detail(h) == "https://x"
     h = axt.HookInfo(event="SessionStart", matcher="*", source="user", source_path="/x", type="prompt", prompt="A very long prompt " * 10)
     assert len(axt.get_hook_detail(h)) == 60
+
+
+def test_get_hook_detail_mcp_tool():
+    h = axt.HookInfo(event="Stop", matcher="*", source="user", source_path="/x", type="mcp_tool", server="srv", tool="run")
+    assert axt.get_hook_detail(h) == "srv:run"
+
+
+def test_get_hook_detail_unknown_type_empty():
+    h = axt.HookInfo(event="Stop", matcher="*", source="user", source_path="/x", type="weird")
+    assert axt.get_hook_detail(h) == ""
+
+
+# ── preview_hook error branches ──────────────────────────────────────────────
+
+
+def test_preview_hook_command_timeout(monkeypatch):
+    import subprocess
+
+    def _raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", _raise_timeout)
+    h = axt.HookInfo(event="Stop", matcher="*", source="user", source_path="/x", type="command", command="sleep 999")
+    res = axt.preview_hook(h, timeout_ms=2000)
+    assert res.type == "command"
+    assert res.error == "timeout after 2000ms"
+    assert res.exit_code is None
+    assert res.output is None
+
+
+def test_preview_hook_command_oserror(monkeypatch):
+    import subprocess
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("sh not found")
+
+    monkeypatch.setattr(subprocess, "run", _raise_oserror)
+    h = axt.HookInfo(event="Stop", matcher="*", source="user", source_path="/x", type="command", command="whatever")
+    res = axt.preview_hook(h)
+    assert res.type == "command"
+    assert res.error == "sh not found"
+    assert res.summary == "whatever"
+
+
+def test_preview_hook_command_nonzero_exit_and_stderr(tmp_path):
+    h = axt.HookInfo(event="Stop", matcher="*", source="user", source_path="/x", type="command",
+                     command="echo oops 1>&2; exit 3")
+    res = axt.preview_hook(h)
+    assert res.exit_code == 3
+    assert "oops" in (res.error or "")
+    assert res.output is None
+
+
+def test_preview_hook_pretooluse_payload_includes_tool_name(monkeypatch):
+    """PreToolUse hooks should receive a sampled tool_name on stdin (line ~878)."""
+    import subprocess
+
+    captured = {}
+    real_run = subprocess.run
+
+    def _capture(*args, **kwargs):
+        captured["input"] = kwargs.get("input")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _capture)
+    h = axt.HookInfo(event="PreToolUse", matcher="Write", source="user", source_path="/x",
+                     type="command", command="cat")
+    res = axt.preview_hook(h)
+    assert res.exit_code == 0
+    payload = json.loads(captured["input"])
+    assert payload["tool_name"] == "Write"
+    assert payload["hook_event"] == "PreToolUse"
+    assert payload["tool_input"] == {}
+    # Echoed back via `cat`.
+    assert "Write" in (res.output or "")
+
+
+def test_preview_hook_pretooluse_star_matcher_defaults_to_bash(monkeypatch):
+    import subprocess
+
+    captured = {}
+    real_run = subprocess.run
+
+    def _capture(*args, **kwargs):
+        captured["input"] = kwargs.get("input")
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _capture)
+    h = axt.HookInfo(event="PreToolUse", matcher="*", source="user", source_path="/x",
+                     type="command", command="cat")
+    axt.preview_hook(h)
+    assert json.loads(captured["input"])["tool_name"] == "Bash"
+
+
+def test_preview_hook_prompt_returns_prompt_body():
+    h = axt.HookInfo(event="UserPromptSubmit", matcher="*", source="user", source_path="/x",
+                     type="prompt", prompt="Inject this instruction.")
+    res = axt.preview_hook(h)
+    assert res.type == "prompt"
+    assert res.output == "Inject this instruction."
+
+
+def test_preview_hook_agent_no_prompt_placeholder():
+    h = axt.HookInfo(event="Stop", matcher="*", source="user", source_path="/x", type="agent")
+    res = axt.preview_hook(h)
+    assert res.type == "agent"
+    assert res.output == "(no prompt)"
+
+
+# ── list_hooks: plugin scope ─────────────────────────────────────────────────
+
+
+def test_list_hooks_includes_plugin_hooks(tmp_path: Path):
+    install = tmp_path / "plug"
+    (install / "hooks").mkdir(parents=True)
+    (install / "hooks" / "hooks.json").write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": "Edit", "hooks": [{"type": "command", "command": "plug-cmd"}]}]}})
+    )
+    ip = tmp_path / "installed_plugins.json"
+    ip.write_text(json.dumps({
+        "version": 2,
+        "plugins": {
+            "p@m": [{"scope": "user", "installPath": str(install), "version": "9.9",
+                     "installedAt": "", "lastUpdated": ""}]
+        },
+    }))
+    hooks = axt.list_hooks(user_settings_path=tmp_path / "nope.json", installed_plugins_path=ip)
+    assert len(hooks) == 1
+    h = hooks[0]
+    assert h.source == "plugin"
+    assert h.command == "plug-cmd"
+    assert h.matcher == "Edit"
+    assert h.version == "9.9"
+
+
+def test_list_hooks_plugin_path_missing_hooks_json(tmp_path: Path):
+    """A plugin without hooks/hooks.json contributes nothing (continue branch)."""
+    install = tmp_path / "plug"
+    install.mkdir()
+    ip = tmp_path / "installed_plugins.json"
+    ip.write_text(json.dumps({
+        "version": 2,
+        "plugins": {
+            "p@m": [{"scope": "user", "installPath": str(install), "version": "1",
+                     "installedAt": "", "lastUpdated": ""}]
+        },
+    }))
+    hooks = axt.list_hooks(user_settings_path=tmp_path / "nope.json", installed_plugins_path=ip)
+    assert hooks == []

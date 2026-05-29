@@ -6,8 +6,12 @@ are pure file-system.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
+import subprocess
+import tarfile
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -337,3 +341,487 @@ def test_pooled_map_callbacks():
     )
     assert sorted(seen) == [("a", "A"), ("b", "B"), ("c", "C")]
     assert err_seen == [("fail", "nope")]
+
+
+# ─── helpers for network/git/tarball mocking ─────────────────────────────────
+
+
+class _FakeResponse(io.BytesIO):
+    """Context-manager-capable fake urllib response wrapping raw bytes."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+
+def _make_tarball_bytes(top: str, files: dict[str, str]) -> bytes:
+    """Build a real .tar.gz where every file lives under a single `top/` dir,
+    mimicking GitHub's `owner-repo-sha/` archive layout."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        # Add the top-level directory entry.
+        dir_info = tarfile.TarInfo(name=top)
+        dir_info.type = tarfile.DIRTYPE
+        dir_info.mode = 0o755
+        tf.addfile(dir_info)
+        for rel, content in files.items():
+            raw = content.encode("utf-8")
+            info = tarfile.TarInfo(name=f"{top}/{rel}")
+            info.size = len(raw)
+            tf.addfile(info, io.BytesIO(raw))
+    return buf.getvalue()
+
+
+def _http_error(code: int = 404, reason: str = "Not Found") -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        url="https://api.github.com/x", code=code, msg=reason, hdrs=None, fp=None
+    )
+
+
+# ─── _git subprocess wrapper ─────────────────────────────────────────────────
+
+
+def test_git_returns_proc_fields(monkeypatch):
+    class _Proc:
+        returncode = 0
+        stdout = "out-data"
+        stderr = "err-data"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Proc())
+    code, out, err = axt._git(["git", "status"])
+    assert (code, out, err) == (0, "out-data", "err-data")
+
+
+def test_git_binary_missing_returns_127(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError("no git here")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    code, out, err = axt._git(["git", "status"])
+    assert code == 127
+    assert out == ""
+    assert "git not found on PATH" in err
+
+
+def test_git_short_hash_failure_raises(monkeypatch):
+    monkeypatch.setattr(axt, "_git", lambda args, cwd=None: (1, "", "fatal: bad rev"))
+    with pytest.raises(RuntimeError, match="git rev-parse failed"):
+        axt._git_short_hash("/some/dir")
+
+
+def test_git_short_hash_empty_raises(monkeypatch):
+    monkeypatch.setattr(axt, "_git", lambda args, cwd=None: (0, "   \n", ""))
+    with pytest.raises(RuntimeError, match="returned empty"):
+        axt._git_short_hash("/some/dir")
+
+
+# ─── _fetch_github_head_sha ──────────────────────────────────────────────────
+
+
+def test_fetch_github_head_sha_success(monkeypatch):
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=None: _FakeResponse(b"  abcdef1234567890\n"),
+    )
+    assert axt._fetch_github_head_sha("o/r") == "abcdef1234567890"
+
+
+def test_fetch_github_head_sha_http_error(monkeypatch):
+    def boom(req, timeout=None):
+        raise _http_error(404, "Not Found")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    with pytest.raises(RuntimeError, match="GitHub API error: 404"):
+        axt._fetch_github_head_sha("o/missing")
+
+
+def test_fetch_github_head_sha_url_error(monkeypatch):
+    def boom(req, timeout=None):
+        raise urllib.error.URLError("dns failure")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    with pytest.raises(RuntimeError, match="GitHub API error"):
+        axt._fetch_github_head_sha("o/r")
+
+
+# ─── download_and_extract_tarball ────────────────────────────────────────────
+
+
+def test_download_and_extract_tarball_success(tmp_path: Path, monkeypatch):
+    sha = "deadbeefcafe0001"
+    monkeypatch.setattr(axt, "_fetch_github_head_sha", lambda repo: sha)
+    tar_bytes = _make_tarball_bytes(
+        f"owner-repo-{sha[:7]}",
+        {"README.md": "hello", "sub/plugin.json": '{"name":"p"}'},
+    )
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=None: _FakeResponse(tar_bytes),
+    )
+    dest = tmp_path / "install"
+    returned = axt.download_and_extract_tarball("owner/repo", dest)
+    assert returned == sha
+    # Files from inside the single top dir landed directly under dest.
+    assert (dest / "README.md").read_text() == "hello"
+    assert (dest / "sub" / "plugin.json").read_text() == '{"name":"p"}'
+    # The .gcs-sha marker holds the full sha.
+    assert (dest / axt.GCS_SHA_FILE).read_text() == sha
+
+
+def test_download_and_extract_tarball_overwrites_existing(tmp_path: Path, monkeypatch):
+    sha = "1111222233334444"
+    monkeypatch.setattr(axt, "_fetch_github_head_sha", lambda repo: sha)
+    tar_bytes = _make_tarball_bytes(f"x-{sha[:7]}", {"new.txt": "fresh"})
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=None: _FakeResponse(tar_bytes),
+    )
+    dest = tmp_path / "install"
+    dest.mkdir()
+    (dest / "stale.txt").write_text("old")
+    axt.download_and_extract_tarball("o/r", dest)
+    assert not (dest / "stale.txt").exists()  # prior content wiped
+    assert (dest / "new.txt").read_text() == "fresh"
+
+
+def test_download_and_extract_tarball_http_error_leaves_dest(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(axt, "_fetch_github_head_sha", lambda repo: "0" * 16)
+
+    def boom(req, timeout=None):
+        raise _http_error(500, "Server Error")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    dest = tmp_path / "install"
+    dest.mkdir()
+    (dest / "keep.txt").write_text("untouched")
+    with pytest.raises(RuntimeError, match="Tarball download failed: 500"):
+        axt.download_and_extract_tarball("o/r", dest)
+    # Download failed before extraction, so existing dest is left intact.
+    assert (dest / "keep.txt").read_text() == "untouched"
+
+
+def test_download_and_extract_tarball_url_error(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(axt, "_fetch_github_head_sha", lambda repo: "0" * 16)
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=None: (_ for _ in ()).throw(urllib.error.URLError("offline")),
+    )
+    with pytest.raises(RuntimeError, match="Tarball download failed"):
+        axt.download_and_extract_tarball("o/r", tmp_path / "install")
+
+
+def test_download_and_extract_tarball_empty_archive(tmp_path: Path, monkeypatch):
+    sha = "abc1230000000000"
+    monkeypatch.setattr(axt, "_fetch_github_head_sha", lambda repo: sha)
+    # Archive containing only files at root (no top-level directory entry).
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        raw = b"loose"
+        info = tarfile.TarInfo(name="loose.txt")
+        info.size = len(raw)
+        tf.addfile(info, io.BytesIO(raw))
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=None: _FakeResponse(buf.getvalue()),
+    )
+    with pytest.raises(RuntimeError, match="extracted empty"):
+        axt.download_and_extract_tarball("o/r", tmp_path / "install")
+
+
+# ─── add_marketplace (git URL construction + clone) ──────────────────────────
+
+
+def test_add_marketplace_git_url_passthrough(tmp_path: Path):
+    km = tmp_path / "km.json"
+    mks = tmp_path / "marketplaces"
+    captured = {}
+
+    def fake_git(args, cwd=None):
+        captured["args"] = args
+        return (0, "", "")
+
+    src = axt.MarketplaceSource(kind="git", url="https://gitlab.com/x/y.git")
+    with patch.object(axt, "_git", fake_git):
+        axt.add_marketplace(km, mks, "mine", src)
+    # Bare git URL is passed through verbatim (no .git suffix munging).
+    assert captured["args"][-2] == "https://gitlab.com/x/y.git"
+    assert captured["args"][-1] == str(mks / "mine")
+    data = json.loads(km.read_text())
+    assert data["mine"]["source"]["url"] == "https://gitlab.com/x/y.git"
+    assert data["mine"]["installLocation"] == str(mks / "mine")
+
+
+def test_add_marketplace_unknown_kind_raises(tmp_path: Path):
+    km = tmp_path / "km.json"
+    src = axt.MarketplaceSource(kind="weird")
+    with pytest.raises(ValueError, match="Unknown source kind"):
+        axt.add_marketplace(km, tmp_path / "m", "x", src)
+    assert not km.exists()
+
+
+def test_add_marketplace_git_clone_failure_no_registry_write(tmp_path: Path):
+    km = tmp_path / "km.json"
+    src = axt.MarketplaceSource(kind="git", url="https://example.com/x.git")
+    with patch.object(axt, "_git", return_value=(1, "", "fatal: auth failed")):
+        with pytest.raises(RuntimeError, match="git clone failed"):
+            axt.add_marketplace(km, tmp_path / "m", "x", src)
+    assert not km.exists()
+
+
+# ─── get_marketplace_version (git + github branches) ─────────────────────────
+
+
+def _seed_github_entry(km: Path, install: Path, repo: str = "o/r") -> None:
+    km.write_text(json.dumps({
+        "x": {
+            "source": {"source": "github", "repo": repo},
+            "installLocation": str(install),
+            "lastUpdated": "",
+        }
+    }))
+
+
+def test_get_marketplace_version_git_updatable(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+
+    calls = []
+
+    def fake_git(args, cwd=None):
+        calls.append(args)
+        if "rev-parse" in args and "HEAD" in args:
+            return (0, "aaaaaaa\n", "")
+        if "fetch" in args:
+            return (0, "", "")
+        if "rev-parse" in args and "@{u}" in args:
+            return (0, "bbbbbbb\n", "")
+        return (1, "", "unexpected")
+
+    monkeypatch.setattr(axt, "_git", fake_git)
+    info = axt.get_marketplace_version(tmp_path / "km.json", "x")
+    assert info.current == "aaaaaaa"
+    assert info.remote == "bbbbbbb"
+    assert info.updatable is True
+    assert info.error is None
+
+
+def test_get_marketplace_version_git_up_to_date(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+
+    def fake_git(args, cwd=None):
+        if "fetch" in args:
+            return (0, "", "")
+        if "@{u}" in args:
+            return (0, "samehash\n", "")
+        return (0, "samehash\n", "")
+
+    monkeypatch.setattr(axt, "_git", fake_git)
+    info = axt.get_marketplace_version(tmp_path / "km.json", "x")
+    assert info.current == info.remote == "samehash"
+    assert info.updatable is False
+
+
+def test_get_marketplace_version_git_fetch_failure(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+
+    def fake_git(args, cwd=None):
+        if "rev-parse" in args and "HEAD" in args:
+            return (0, "current1\n", "")
+        if "fetch" in args:
+            return (1, "", "fatal: could not fetch")
+        return (0, "x\n", "")
+
+    monkeypatch.setattr(axt, "_git", fake_git)
+    info = axt.get_marketplace_version(tmp_path / "km.json", "x")
+    assert info.error == "fatal: could not fetch"
+    assert info.updatable is False
+    assert info.current == "?"
+
+
+def test_get_marketplace_version_git_no_upstream(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+
+    def fake_git(args, cwd=None):
+        if "rev-parse" in args and "HEAD" in args:
+            return (0, "cur1234\n", "")
+        if "fetch" in args:
+            return (0, "", "")
+        if "@{u}" in args:
+            return (1, "", "")  # empty stderr -> falls back to "no upstream"
+        return (0, "", "")
+
+    monkeypatch.setattr(axt, "_git", fake_git)
+    info = axt.get_marketplace_version(tmp_path / "km.json", "x")
+    assert info.current == "cur1234"
+    assert info.remote == "?"
+    assert info.error == "no upstream"
+    assert info.updatable is False
+
+
+def test_get_marketplace_version_git_rev_parse_raises(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+    # First rev-parse (HEAD) fails -> _git_short_hash raises RuntimeError.
+    monkeypatch.setattr(axt, "_git", lambda args, cwd=None: (1, "", "fatal: bad object"))
+    info = axt.get_marketplace_version(tmp_path / "km.json", "x")
+    assert info.current == "?"
+    assert info.error and "git rev-parse failed" in info.error
+
+
+def test_get_marketplace_version_github_no_git_dir(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / axt.GCS_SHA_FILE).write_text("localsha1234567890")
+    _seed_github_entry(tmp_path / "km.json", install)
+    monkeypatch.setattr(axt, "_fetch_github_head_sha", lambda repo: "remotesha999999999")
+    info = axt.get_marketplace_version(tmp_path / "km.json", "x")
+    assert info.current == "localsh"
+    assert info.remote == "remotes"
+    assert info.updatable is True
+
+
+def test_get_marketplace_version_github_network_error(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / axt.GCS_SHA_FILE).write_text("localsha1234567890")
+    _seed_github_entry(tmp_path / "km.json", install)
+
+    def boom(repo):
+        raise RuntimeError("GitHub API error: 503 Unavailable")
+
+    monkeypatch.setattr(axt, "_fetch_github_head_sha", boom)
+    info = axt.get_marketplace_version(tmp_path / "km.json", "x")
+    assert info.current == "?"
+    assert info.remote == "?"
+    assert info.error and "503" in info.error
+    assert info.updatable is False
+
+
+def test_get_marketplace_version_non_git_non_github(tmp_path: Path):
+    install = tmp_path / "install"
+    install.mkdir()
+    # git source kind but no .git dir, no repo => the dead-end branch.
+    (tmp_path / "km.json").write_text(json.dumps({
+        "x": {
+            "source": {"source": "git", "url": "https://e.com/x.git"},
+            "installLocation": str(install),
+            "lastUpdated": "",
+        }
+    }))
+    info = axt.get_marketplace_version(tmp_path / "km.json", "x")
+    assert info.error == "Non-git source without .git directory"
+    assert info.updatable is False
+
+
+# ─── sync_marketplace ────────────────────────────────────────────────────────
+
+
+def test_sync_marketplace_missing(tmp_path: Path):
+    (tmp_path / "km.json").write_text("{}")
+    with pytest.raises(KeyError, match="not found"):
+        axt.sync_marketplace(tmp_path / "km.json", "nope")
+
+
+def test_sync_marketplace_directory_noop(tmp_path: Path):
+    target = tmp_path / "local"
+    target.mkdir()
+    km = tmp_path / "km.json"
+    km.write_text(json.dumps({
+        "x": {
+            "source": {"source": "directory", "path": str(target)},
+            "installLocation": str(target),
+            "lastUpdated": "old",
+        }
+    }))
+    result = axt.sync_marketplace(km, "x")
+    assert result.before == result.after == "local"
+    assert result.updated is False
+    # lastUpdated bumped despite no content change.
+    assert json.loads(km.read_text())["x"]["lastUpdated"] != "old"
+
+
+def test_sync_marketplace_git_pull_updates(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+
+    state = {"hash": "before1"}
+
+    def fake_git(args, cwd=None):
+        if "rev-parse" in args:
+            return (0, state["hash"] + "\n", "")
+        if "pull" in args:
+            state["hash"] = "after22"  # pull advances HEAD
+            return (0, "Updating...\n", "")
+        return (1, "", "unexpected")
+
+    monkeypatch.setattr(axt, "_git", fake_git)
+    result = axt.sync_marketplace(tmp_path / "km.json", "x")
+    assert result.before == "before1"
+    assert result.after == "after22"
+    assert result.updated is True
+
+
+def test_sync_marketplace_git_pull_failure(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+
+    def fake_git(args, cwd=None):
+        if "rev-parse" in args:
+            return (0, "before1\n", "")
+        if "pull" in args:
+            return (1, "", "fatal: not fast-forward")
+        return (0, "", "")
+
+    monkeypatch.setattr(axt, "_git", fake_git)
+    with pytest.raises(RuntimeError, match="git pull failed"):
+        axt.sync_marketplace(tmp_path / "km.json", "x")
+    # lastUpdated NOT bumped on failure (write never reached).
+    assert json.loads((tmp_path / "km.json").read_text())["x"]["lastUpdated"] == ""
+
+
+def test_sync_marketplace_github_tarball(tmp_path: Path, monkeypatch):
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / axt.GCS_SHA_FILE).write_text("oldsha00000000000")
+    _seed_github_entry(tmp_path / "km.json", install)
+
+    def fake_dl(repo, dest):
+        Path(dest).mkdir(parents=True, exist_ok=True)
+        (Path(dest) / axt.GCS_SHA_FILE).write_text("newsha11111111111")
+        return "newsha11111111111"
+
+    monkeypatch.setattr(axt, "download_and_extract_tarball", fake_dl)
+    result = axt.sync_marketplace(tmp_path / "km.json", "x")
+    assert result.before == "oldsha0"
+    assert result.after == "newsha1"
+    assert result.updated is True
+    assert json.loads((tmp_path / "km.json").read_text())["x"]["lastUpdated"] != ""
+
+
+def test_sync_marketplace_unsyncable(tmp_path: Path):
+    install = tmp_path / "install"
+    install.mkdir()
+    # git kind, no .git dir, no github repo => cannot sync.
+    (tmp_path / "km.json").write_text(json.dumps({
+        "x": {
+            "source": {"source": "git", "url": "https://e.com/x.git"},
+            "installLocation": str(install),
+            "lastUpdated": "keep",
+        }
+    }))
+    with pytest.raises(RuntimeError, match="not a git repo and not a github source"):
+        axt.sync_marketplace(tmp_path / "km.json", "x")
+    assert json.loads((tmp_path / "km.json").read_text())["x"]["lastUpdated"] == "keep"

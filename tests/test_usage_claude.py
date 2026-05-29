@@ -127,6 +127,30 @@ def test_load_all_claude_usage_missing_dir(tmp_path: Path, monkeypatch):
     assert axt.load_all_claude_usage(tmp_path / "nope") == []
 
 
+# ─── Timezone helpers ────────────────────────────────────────────────────────
+
+
+def test_date_in_tz_converts_to_local_day():
+    # 23:30 UTC on the 29th is already the 30th in Seoul (UTC+9).
+    assert axt._date_in_tz("2026-04-29T23:30:00Z", "Asia/Seoul") == "2026-04-30"
+
+
+def test_date_in_tz_invalid_timezone_falls_back_to_utc_slice():
+    """A bad timezone (e.g. from a corrupt config) must not crash usage
+    grouping — it falls back to the UTC date slice."""
+    assert axt._date_in_tz("2026-04-29T10:00:00Z", "Not/AZone") == "2026-04-29"
+
+
+def test_date_in_tz_malformed_timestamp_falls_back_to_slice():
+    assert axt._date_in_tz("garbage-date", "UTC") == "garbage-da"  # iso[:10]
+
+
+def test_today_in_tz_invalid_timezone_falls_back_to_utc():
+    from datetime import datetime, timezone
+    expected = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    assert axt._today_in_tz("Not/AZone") == expected
+
+
 # ─── Aggregation ─────────────────────────────────────────────────────────────
 
 
