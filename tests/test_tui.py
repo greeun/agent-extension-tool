@@ -7,6 +7,7 @@ TUI without a TTY.
 from __future__ import annotations
 
 import curses
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -1036,6 +1037,78 @@ def test_vault_sort_used_orders_by_project_count():
     }
     sorted_items = axt._vault_filtered(state)
     assert [i.name for i in sorted_items] == ["popular", "rare", "unused"]
+
+
+# ─── Apply pending keeps the Used index in sync ──────────────────────────────
+
+
+def _seed_vault_skill(tmp_path: Path, name: str = "myskill") -> Path:
+    """Create a minimal vault skill on disk and point axt.PATHS at it."""
+    skill_dir = tmp_path / "vault" / "skills" / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(f"---\nname: {name}\n---\nbody\n")
+    return skill_dir
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_apply_pending_project_link_updates_used_index(tmp_path, monkeypatch):
+    """Linking a vault item to the current project must add that project to the
+    Used index, so the 'Used' column reflects it without a manual `f` re-scan."""
+    skill_dir = _seed_vault_skill(tmp_path)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=tmp_path / "vault",
+        installed_plugins=tmp_path / "ip.json",
+        claude_dir=tmp_path / "claude",
+    ))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+
+    item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
+                         description="", in_vault=True, is_linked=False)
+    state = axt.TuiState()
+    state.vault_items = [item]
+    state.vault_pending_project = {"myskill"}
+
+    axt._vault_apply_pending(state)
+
+    entry = state.vault_usage_index.get("skill:myskill")
+    assert entry is not None, "Used index should gain an entry for the linked item"
+    assert any(p.path == str(proj) for p in entry.projects)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_apply_pending_project_unlink_removes_from_used_index(tmp_path, monkeypatch):
+    """Unlinking from the current project must drop that project from the Used
+    index so the count goes back down immediately."""
+    skill_dir = _seed_vault_skill(tmp_path)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=tmp_path / "vault",
+        installed_plugins=tmp_path / "ip.json",
+        claude_dir=tmp_path / "claude",
+    ))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+
+    # Pre-link on disk so is_linked is True, and seed the index as a prior scan would.
+    item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
+                         description="", in_vault=True, is_linked=True)
+    axt.link_to_project(proj, item)
+    state = axt.TuiState()
+    state.vault_items = [item]
+    state.vault_usage_index = {
+        "skill:myskill": axt.ExtensionUsage(type="skill", name="myskill", projects=[
+            axt.ProjectRef(path=str(proj), name="proj"),
+        ]),
+    }
+    state.vault_pending_project = {"myskill"}
+
+    axt._vault_apply_pending(state)
+
+    entry = state.vault_usage_index.get("skill:myskill")
+    projects = entry.projects if entry else []
+    assert all(p.path != str(proj) for p in projects)
 
 
 # ─── Scan cache persistence ──────────────────────────────────────────────────

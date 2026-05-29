@@ -43,8 +43,10 @@ from axt.tui.widgets import (  # noqa: F401 — wildcard skips `_`-prefixed name
 from axt.core import *  # noqa: F401,F403
 from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
     _active_plugins,
+    _add_to_index,
     _date_in_tz,
     _iso_now,
+    _project_name_from_path,
     _safe_listdir,
     _safe_read_text,
     _today_in_tz,
@@ -281,11 +283,29 @@ def _vault_scan(state: TuiState) -> None:
     _save_scan_cache(state.vault_usage_index, state.vault_scan_mode)
 
 
+def _usage_index_drop(index: dict[str, Any], type_: str, name: str, project_path: str) -> None:
+    """Remove a single project from a type:name entry in the usage index.
+    Mirror of core._add_to_index for the unlink direction. Drops the entry
+    entirely once its last project is gone so the 'Used' cell reverts to '─'."""
+    key = f"{type_}:{name}"
+    entry = index.get(key)
+    if entry is None:
+        return
+    entry.projects = [p for p in entry.projects if p.path != project_path]
+    if not entry.projects:
+        del index[key]
+
+
 def _vault_apply_pending(state: TuiState) -> str:
     """Commit the toggle pending state to disk (project and global symlinks)."""
     items_by_name = {i.name: i for i in state.vault_items}
     applied = 0
     errors = 0
+    # The cross-project scan counts the current project iff it links/profiles
+    # the item, so keep the in-memory index in sync with each project toggle —
+    # otherwise the "Used" column stays stale until a manual `f` re-scan.
+    cwd = Path.cwd()
+    cwd_ref = ProjectRef(path=str(cwd), name=_project_name_from_path(str(cwd)))
     for name in list(state.vault_pending_project):
         item = items_by_name.get(name)
         if not item or item.type == "plugin":
@@ -293,9 +313,11 @@ def _vault_apply_pending(state: TuiState) -> str:
             continue
         try:
             if item.is_linked:
-                unlink_from_project(Path.cwd(), item)
+                unlink_from_project(cwd, item)
+                _usage_index_drop(state.vault_usage_index, item.type, item.name, str(cwd))
             else:
-                link_to_project(Path.cwd(), item)
+                link_to_project(cwd, item)
+                _add_to_index(state.vault_usage_index, item.type, item.name, cwd_ref)
             applied += 1
         except (OSError, ValueError, FileExistsError):
             errors += 1
