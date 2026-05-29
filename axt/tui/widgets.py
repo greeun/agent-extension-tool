@@ -330,10 +330,14 @@ def render_detail_panel(
     *,
     scroll: int = 0,
     focused: bool = False,
-) -> None:
-    """Right-side detail panel. Boxed via simple `│` borders, scrollable."""
+) -> int:
+    """Right-side detail panel. Boxed via simple `│` borders, scrollable.
+
+    Returns the scroll offset actually used after clamping to the content
+    height — callers that track scroll in state should write this back so a
+    held scroll key can't run past the last line into blank space."""
     if h <= 0 or w <= 0:
-        return
+        return 0
     border_attr = CP_CYAN() if focused else CP_DIM()
     # Top border.
     safe_addnstr(stdscr, y, x, "┌" + "─" * (w - 2) + "┐", w, border_attr)
@@ -342,7 +346,7 @@ def render_detail_panel(
     # Side borders + content.
     inner_w = w - 4  # 2 for borders + 2 padding
     if inner_w <= 0:
-        return
+        return 0
 
     # Build all content lines (title + blank + label:value pairs + wrapping).
     lines: list[tuple[str, int]] = []  # (text, attr)
@@ -360,8 +364,11 @@ def render_detail_panel(
         for cont in value_lines[1:]:
             lines.append((fit_cells(indent + cont, inner_w), 0))
 
-    # Render side borders + visible slice.
+    # Render side borders + visible slice. Clamp scroll so the last line pins
+    # to the bottom row — never scroll past the content into blank space.
     content_h = h - 2  # minus borders
+    max_scroll = max(0, len(lines) - content_h)
+    scroll = max(0, min(scroll, max_scroll))
     visible_lines = lines[scroll:scroll + content_h]
     for row_i in range(content_h):
         safe_addnstr(stdscr, y + 1 + row_i, x, "│", 1, border_attr)
@@ -371,6 +378,7 @@ def render_detail_panel(
             safe_addnstr(stdscr, y + 1 + row_i, x + 2, text, inner_w, attr)
         else:
             safe_addnstr(stdscr, y + 1 + row_i, x + 2, " " * inner_w, inner_w, 0)
+    return scroll
 
 
 def _wrap_to_cells(text: str, max_cells: int) -> list[str]:

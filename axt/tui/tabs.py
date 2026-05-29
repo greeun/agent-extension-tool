@@ -542,7 +542,9 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         usage = state.vault_usage_index.get(f"{current.type}:{current.name}")
         if usage and usage.projects:
             detail_fields.append(("Used in", ", ".join(p.name for p in usage.projects[:8])))
-    render_detail_panel(
+    # Write the clamped scroll back so a held `j`/PgDn can't run the offset
+    # past the content into blank space (the input handler over-increments).
+    state.vault_detail_scroll = render_detail_panel(
         stdscr,
         detail_y, detail_x, detail_h, detail_w,
         title=f"{current.name} ({current.type})",

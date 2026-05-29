@@ -340,6 +340,27 @@ def test_render_detail_panel_handles_long_value():
     assert not appeared_full
 
 
+def test_render_detail_panel_clamps_overscroll_when_content_fits():
+    """Content shorter than the panel → no scroll possible; an over-scrolled
+    value is clamped back to 0 so the panel never shows blank space."""
+    scr = _make_stdscr()
+    # h=10 → content_h=8. title + blank + 2 short fields = 4 lines (< 8).
+    clamped = axt.render_detail_panel(
+        scr, 0, 0, 10, 30, "T", [("A", "1"), ("B", "2")], scroll=9999
+    )
+    assert clamped == 0
+
+
+def test_render_detail_panel_clamps_to_max_scroll():
+    """Content taller than the panel → scroll is clamped to the last full
+    page (len(lines) - content_h), pinning the final line to the bottom."""
+    scr = _make_stdscr()
+    fields = [(f"k{i:02d}", str(i)) for i in range(20)]  # 20 short, unwrapped lines
+    # h=10 → content_h=8. title + blank + 20 fields = 22 lines. max = 22-8 = 14.
+    clamped = axt.render_detail_panel(scr, 0, 0, 10, 30, "T", fields, scroll=9999)
+    assert clamped == 14
+
+
 # ─── render_tab_bar ──────────────────────────────────────────────────────────
 
 
@@ -1318,6 +1339,20 @@ def test_vault_detail_focus_scroll_j_k():
     assert state.vault_detail_scroll == 2
     axt.handle_vault_input(state, ord("k"))
     assert state.vault_detail_scroll == 1
+
+
+def test_vault_detail_render_clamps_overscroll_back_to_state():
+    """Rendering the vault tab clamps an over-scrolled detail panel and writes
+    the clamped value back to state, so a held `j` can't scroll into blank
+    space (mirrors the usage-tab render-time clamp)."""
+    scr = _make_stdscr(rows=30, cols=120)
+    s = axt.TuiState()
+    _seed_vault_for_render(s)
+    s.vault_detail_focused = True
+    s.vault_detail_scroll = 9999
+    axt.render_vault_tab(scr, s, y0=2, h=25, w=120)
+    assert s.vault_detail_scroll < 9999       # clamped, not left runaway
+    assert s.vault_detail_scroll >= 0
 
 
 def test_vault_detail_focus_esc_blurs():
