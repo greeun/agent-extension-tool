@@ -2184,6 +2184,63 @@ def test_kick_usage_reload_skips_context_if_already_loaded(monkeypatch, tmp_path
     assert calls == []
 
 
+def test_kick_usage_reload_refreshes_stale_model(monkeypatch, tmp_path):
+    """If usage entries reveal a different live model than the one a cache
+    was primed with, the worker must rebuild context with the real model."""
+    from types import SimpleNamespace
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    entry = axt.UnifiedUsageEntry(
+        platform="claude", model="claude-opus-4-8",
+        timestamp="2026-05-30T00:00:00Z", session_id="s", project_path="p",
+        input_tokens=1, output_tokens=1, cache_write_tokens=0, cache_read_tokens=0,
+    )
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", lambda **kw: [entry])
+
+    calls = []
+    monkeypatch.setattr(
+        "axt.tui.tabs.analyze_context",
+        lambda **kw: calls.append(kw) or SimpleNamespace(model=kw["model"]),
+    )
+
+    state = axt.TuiState()
+    state.context_analysis = SimpleNamespace(model="claude-opus-4-6")  # stale
+    axt._kick_usage_reload(state)
+    if state.usage_load_thread is not None:
+        state.usage_load_thread.join(timeout=2.0)
+
+    assert len(calls) == 1
+    assert calls[0]["model"] == "claude-opus-4-8"
+    assert state.context_analysis.model == "claude-opus-4-8"
+
+
+def test_kick_usage_reload_keeps_matching_model(monkeypatch, tmp_path):
+    """No needless rebuild when the cached model already matches the live one."""
+    from types import SimpleNamespace
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    entry = axt.UnifiedUsageEntry(
+        platform="claude", model="claude-opus-4-8",
+        timestamp="2026-05-30T00:00:00Z", session_id="s", project_path="p",
+        input_tokens=1, output_tokens=1, cache_write_tokens=0, cache_read_tokens=0,
+    )
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", lambda **kw: [entry])
+
+    calls = []
+    monkeypatch.setattr(
+        "axt.tui.tabs.analyze_context",
+        lambda **kw: calls.append(kw) or SimpleNamespace(model=kw["model"]),
+    )
+
+    state = axt.TuiState()
+    state.context_analysis = SimpleNamespace(model="claude-opus-4-8")  # already current
+    axt._kick_usage_reload(state)
+    if state.usage_load_thread is not None:
+        state.usage_load_thread.join(timeout=2.0)
+
+    assert calls == []
+
+
 def test_render_usage_tab_loading_skips_summary(tmp_path, monkeypatch):
     """During first-paint loading, the tab body must NOT include the plan
     label or insights — those depend on data that isn't loaded yet."""

@@ -918,13 +918,18 @@ def _kick_usage_reload(state: TuiState) -> None:
             )
             # Prime the context cache too — `_render_usage_gauges` reads
             # `state.context_analysis` and we don't want a synchronous
-            # filesystem scan blocking the first paint.
-            if state.context_analysis is None:
+            # filesystem scan blocking the first paint. Once `entries` are
+            # loaded we know the live model, so also refresh a cache that was
+            # primed with a stale fallback before usage arrived. With no
+            # entries there's nothing new to learn — leave a loaded cache be.
+            model = detect_current_model(entries, project_dir=Path.cwd())
+            cached = state.context_analysis
+            if cached is None or (entries and cached.model != model):
                 state.context_analysis = analyze_context(
                     home_dir=HOME,
                     project_dir=Path.cwd(),
                     installed_plugins_path=PATHS.installed_plugins,
-                    model="claude-opus-4-6",
+                    model=model,
                 )
             state.usage_config = config
             state.usage_entries = entries
@@ -1282,7 +1287,7 @@ def _ensure_context_loaded(state: TuiState) -> None:
         home_dir=HOME,
         project_dir=Path.cwd(),
         installed_plugins_path=PATHS.installed_plugins,
-        model="claude-opus-4-6",
+        model=detect_current_model(state.usage_entries, project_dir=Path.cwd()),
     )
 
 

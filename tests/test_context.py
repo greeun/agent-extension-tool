@@ -2,9 +2,26 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 import axt
+
+
+def _mk_entry(model: str, timestamp: str) -> axt.UnifiedUsageEntry:
+    return axt.UnifiedUsageEntry(
+        platform="claude", model=model, timestamp=timestamp,
+        session_id="s", project_path="p",
+        input_tokens=1, output_tokens=1, cache_write_tokens=0, cache_read_tokens=0,
+    )
+
+
+def _write_transcript(path: Path, model: str, timestamp: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "type": "assistant", "timestamp": timestamp,
+        "message": {"model": model, "usage": {"input_tokens": 1, "output_tokens": 1}},
+    }) + "\n")
 
 
 def test_estimate_tokens_empty():
@@ -90,6 +107,106 @@ def test_analyze_context_includes_cost_impact(tmp_path: Path, monkeypatch):
     assert analysis.cost_impact.model == "claude-opus-4-7"
     # 9 turn-reads + 1 write, with positive token total.
     assert analysis.cost_impact.per_session_cost > 0
+
+
+def test_detect_current_model_prefers_most_recent_entry(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    entries = [
+        _mk_entry("claude-opus-4-6", "2026-05-01T00:00:00Z"),
+        _mk_entry("claude-opus-4-8", "2026-05-30T00:00:00Z"),
+    ]
+    assert axt.detect_current_model(entries) == "claude-opus-4-8"
+
+
+def test_detect_current_model_skips_unknown_and_synthetic(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    entries = [
+        _mk_entry("claude-opus-4-8", "2026-05-01T00:00:00Z"),
+        _mk_entry("unknown", "2026-05-30T00:00:01Z"),
+        _mk_entry("<synthetic>", "2026-05-30T00:00:02Z"),
+    ]
+    # Falls back past the trailing non-real models to the real one.
+    assert axt.detect_current_model(entries) == "claude-opus-4-8"
+
+
+def test_detect_current_model_env_override(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    entries = [_mk_entry("claude-opus-4-8", "2026-05-30T00:00:00Z")]
+    assert axt.detect_current_model(entries) == "claude-sonnet-4-6"
+
+
+def test_detect_current_model_scans_transcripts(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    projects = tmp_path / "projects"
+    f = projects / "proj" / "sess.jsonl"
+    f.parent.mkdir(parents=True)
+    f.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "assistant", "timestamp": "2026-05-30T00:00:00Z",
+         "message": {"model": "claude-opus-4-8", "usage": {"input_tokens": 1, "output_tokens": 1}}},
+    ]) + "\n")
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(projects=projects))
+    # No entries passed → must discover the model from the newest transcript.
+    assert axt.detect_current_model() == "claude-opus-4-8"
+
+
+def test_detect_current_model_fallback_default(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(projects=tmp_path / "empty"))
+    assert axt.detect_current_model() == axt.DEFAULT_MODEL
+    assert axt.DEFAULT_MODEL == "claude-opus-4-8"
+
+
+def test_detect_current_model_scopes_to_project_dir(tmp_path: Path, monkeypatch):
+    """The session in *this* project dir wins over a globally more-recent
+    transcript from a different project (concurrent session contamination)."""
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    import os as _os
+    projects = tmp_path / "projects"
+    cwd = tmp_path / "myproj"
+    enc = str(cwd).replace("/", "-").replace(".", "-")
+    _write_transcript(projects / enc / "s.jsonl", "claude-opus-4-8", "2026-05-30T00:00:00Z")
+    other = projects / "-some-other-proj" / "s.jsonl"
+    _write_transcript(other, "claude-opus-4-7", "2026-05-30T00:00:00Z")
+    _os.utime(other, (3_000_000_000, 3_000_000_000))  # globally newest
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(projects=projects))
+
+    assert axt.detect_current_model(project_dir=cwd) == "claude-opus-4-8"
+    # Proof the scoping matters: unscoped picks the contaminating session.
+    assert axt.detect_current_model() == "claude-opus-4-7"
+
+
+def test_detect_current_model_project_dir_without_transcripts_falls_back(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    projects = tmp_path / "projects"
+    _write_transcript(projects / "-some-proj" / "s.jsonl", "claude-opus-4-7", "2026-05-30T00:00:00Z")
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(projects=projects))
+    # cwd has no transcript dir → fall back to the global most-recent.
+    assert axt.detect_current_model(project_dir=tmp_path / "no-session") == "claude-opus-4-7"
+
+
+def test_detect_current_model_synthetic_only_transcript_falls_back(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    projects = tmp_path / "projects"
+    f = projects / "proj" / "sess.jsonl"
+    f.parent.mkdir(parents=True)
+    f.write_text("\n".join(json.dumps(r) for r in [
+        {"type": "assistant", "timestamp": "2026-05-30T00:00:00Z",
+         "message": {"model": "<synthetic>", "usage": {"input_tokens": 1, "output_tokens": 1}}},
+    ]) + "\n")
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(projects=projects))
+    # Newest transcript carries no real model → fall through to the default.
+    assert axt.detect_current_model() == axt.DEFAULT_MODEL
+
+
+def test_analyze_context_default_model_is_current(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"; home.mkdir()
+    proj = tmp_path / "proj"; proj.mkdir()
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    analysis = axt.analyze_context(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json",
+    )
+    assert analysis.model == axt.DEFAULT_MODEL
 
 
 def test_add_context_hints_classifies_categories():

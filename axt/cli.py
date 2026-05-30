@@ -74,7 +74,7 @@ def cli_context(args) -> int:
         home_dir=HOME,
         project_dir=Path.cwd(),
         installed_plugins_path=PATHS.installed_plugins,
-        model=args.model,
+        model=args.model or detect_current_model(project_dir=Path.cwd()),
         avg_turns_per_session=30,
         avg_sessions_per_day=5,
     )
@@ -843,7 +843,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_ctx.add_argument("--detail", action="store_true", help="Show individual items within categories")
     sp_ctx.add_argument("--json", action="store_true", help="Output as JSON")
     sp_ctx.add_argument("--category", help="Filter by category")
-    sp_ctx.add_argument("--model", default="claude-opus-4-6", help="Model override")
+    sp_ctx.add_argument("--model", default=None, help="Model override (default: auto-detect current model)")
     sp_ctx.set_defaults(func=cli_context)
 
     # market

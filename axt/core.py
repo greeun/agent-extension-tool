@@ -45,7 +45,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, Sequence, TypeVar
 
 __version__ = "1.0.1"
 
@@ -2903,6 +2903,93 @@ def get_context_window_size(model_id: str) -> Optional[int]:
     return p.context_window if p else None
 
 
+# Fallback when the live model can't be determined. Kept as the current
+# latest Claude model so a fresh machine with no transcripts still reads sane.
+DEFAULT_MODEL = "claude-opus-4-8"
+
+
+def _is_real_model(model: str) -> bool:
+    """A concrete model id, not the ``unknown`` placeholder or a synthetic
+    marker like ``<synthetic>`` that the transcript occasionally records."""
+    return bool(model) and model != "unknown" and not model.startswith("<")
+
+
+def _project_transcript_dir(project_dir: os.PathLike[str] | str) -> Optional[Path]:
+    """Claude transcript dir for a project path, or None if absent.
+
+    Claude Code stores each project's transcripts under ``PATHS.projects``
+    in a dir whose name is the absolute path with ``/`` and ``.`` collapsed
+    to ``-`` (the inverse of :func:`_decode_project_dir_name`).
+    """
+    name = str(Path(project_dir)).replace("/", "-").replace(".", "-")
+    d = Path(PATHS.projects) / name
+    return d if d.is_dir() else None
+
+
+def _latest_transcript_model(search_dir: "Optional[Path]" = None) -> Optional[str]:
+    """Best real model id from the most-recently-modified Claude transcript
+    under ``search_dir`` (defaults to all of ``PATHS.projects``).
+
+    axt runs as a separate process and can't see the live session, so the
+    newest ``.jsonl`` is the closest proxy for "what model am I running
+    right now". OSError-safe; returns None when no usable transcript exists.
+    """
+    try:
+        root = search_dir if search_dir is not None else Path(PATHS.projects)
+        newest: Optional[Path] = None
+        newest_mtime = -1.0
+        for p in root.rglob("*.jsonl"):
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > newest_mtime:
+                newest_mtime, newest = mtime, p
+        if newest is None:
+            return None
+        for e in reversed(parse_claude_jsonl(newest)):
+            if _is_real_model(e.model):
+                return e.model
+    except OSError:
+        return None
+    return None
+
+
+def detect_current_model(
+    entries: Optional[Sequence[UnifiedUsageEntry]] = None,
+    project_dir: "Optional[os.PathLike[str] | str]" = None,
+) -> str:
+    """Best-effort detection of the model currently in use.
+
+    Priority: ``ANTHROPIC_MODEL`` env override (explicit user intent) → the
+    newest transcript in *this* project's dir (``project_dir``) → most recent
+    usable entry from ``entries`` → newest transcript anywhere →
+    :data:`DEFAULT_MODEL`.
+
+    Scoping to ``project_dir`` first matters because both ``entries`` (loaded
+    across all projects) and the global transcript scan can surface a
+    *different* project's concurrent session — axt is launched from one
+    project, and that project's session is what the user means by "current".
+    """
+    env = os.environ.get("ANTHROPIC_MODEL")
+    if env:
+        return env
+    if project_dir is not None:
+        tdir = _project_transcript_dir(project_dir)
+        if tdir is not None:
+            scoped = _latest_transcript_model(tdir)
+            if scoped:
+                return scoped
+    if entries:
+        for e in reversed(list(entries)):
+            if _is_real_model(getattr(e, "model", "")):
+                return e.model
+    scanned = _latest_transcript_model()
+    if scanned:
+        return scanned
+    return DEFAULT_MODEL
+
+
 def calculate_cost(usage: TokenUsage, model_id: str) -> float:
     p = get_model_pricing(model_id)
     if p is None:
@@ -3506,7 +3593,7 @@ def analyze_context(
     home_dir: os.PathLike[str] | str,
     project_dir: os.PathLike[str] | str,
     installed_plugins_path: os.PathLike[str] | str,
-    model: str = "claude-opus-4-6",
+    model: str = DEFAULT_MODEL,
     avg_turns_per_session: int = 30,
     avg_sessions_per_day: int = 5,
 ) -> ContextAnalysis:
