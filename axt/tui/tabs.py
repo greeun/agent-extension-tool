@@ -469,7 +469,10 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         detail_w = w
         detail_y = table_y_top + table_h
     else:
-        table_w = int(w * 0.62)
+        # Table gets 70% of the width so the Name column is not starved by the
+        # seven fixed columns. The detail panel keeps the remaining ~30%, which
+        # still holds the Path/Description fields (they wrap when needed).
+        table_w = int(w * 0.70)
         table_h = table_h_full
         detail_x = table_w
         detail_w = w - table_w
@@ -481,10 +484,10 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # "Project" / "Global" show the *intended* state after applying pending toggles.
     no_w = max(3, len(str(len(filtered))) + 1)
     used_w = 6  # "Used" header + " N proj" data ≤ 6
-    proj_w = 6  # "Proj" header + "● *" data ≤ 6
-    glob_w = 6  # "Glob"
+    proj_w = 5  # "Proj" header (4) + "● *" data (3) ≤ 5
+    glob_w = 5  # "Glob"
     type_w = 6  # "Type"
-    vault_w = 7  # "Vault"
+    vault_w = 6  # "Vault" header (5) + "glob*"/"proj*" data (5) ≤ 6
     ver_w = 8   # "Ver" header + "1.2.3" data ≤ 8
     # _draw_cell renders each column at `col.width + 2` cells (per-column
     # gap). With 8 columns + 4-cell prefix the gap cost is 4 + 2*8 = 20. We

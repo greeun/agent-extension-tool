@@ -227,7 +227,7 @@ def _seed_vault_for_render(s):
 
 
 def test_render_vault_tab_uses_right_layout_when_wide():
-    """w=120: detail panel is drawn at x = int(120 * 0.62) (right side)."""
+    """w=120: detail panel is drawn at x = int(120 * 0.70) (right side)."""
     scr = _make_stdscr(rows=30, cols=120)
     s = axt.TuiState()
     _seed_vault_for_render(s)
@@ -235,7 +235,7 @@ def test_render_vault_tab_uses_right_layout_when_wide():
     top = _detail_panel_top_left(scr.calls)
     assert top is not None, "detail panel was not rendered"
     y, x = top
-    assert x == int(120 * 0.62), f"expected right layout at x=74, got x={x}"
+    assert x == int(120 * 0.70), f"expected right layout at x=84, got x={x}"
     assert y == 3, f"expected detail top y=3, got y={y}"
 
 
@@ -265,8 +265,8 @@ def test_render_vault_tab_layout_threshold_at_100():
     scr100 = _make_stdscr(rows=30, cols=100)
     axt.render_vault_tab(scr100, s, y0=2, h=25, w=100)
     x100 = _detail_panel_top_left(scr100.calls)[1]
-    assert x100 == int(100 * 0.62), \
-        f"w=100 must use right layout (x={int(100 * 0.62)}), got x={x100}"
+    assert x100 == int(100 * 0.70), \
+        f"w=100 must use right layout (x={int(100 * 0.70)}), got x={x100}"
 
 
 def test_render_vault_tab_bottom_height_clamped():
