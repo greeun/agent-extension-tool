@@ -1651,7 +1651,7 @@ def _ensure_subtab_loaded(state: TuiState, sub_key: str) -> None:
     elif sub_key == "agents":
         state.ext_cache["agents"] = list_all_agents(project_dir=Path.cwd())
     elif sub_key == "mcp":
-        state.ext_cache["mcp"] = list_mcp_servers(_active_plugins())
+        state.ext_cache["mcp"] = collect_mcp_servers(_active_plugins())
     elif sub_key == "hooks":
         state.ext_cache["hooks"] = list_hooks(
             user_settings_path=PATHS.settings,
@@ -1764,16 +1764,16 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
 
     elif sub == "mcp":
         cols = [
-            TableColumn("name", "Server", max(20, w - 68)),
-            TableColumn("ver", "Ver", 8),
-            TableColumn("plugin", "Plugin", 25),
-            TableColumn("cmd", "Command", 30),
+            TableColumn("name", "Server", max(18, w - 64)),
+            TableColumn("scope", "Scope", 13),
+            TableColumn("transport", "Transport", 10),
+            TableColumn("detail", "Detail", 30),
         ]
         rows = [{
-            "name": s.name,
-            "ver": s.version or "─",
-            "plugin": s.plugin_id,
-            "cmd": " ".join([s.command, *s.args_list])[:60],
+            "name": s.name + (" [off]" if s.disabled else ""),
+            "scope": s.scope,
+            "transport": s.transport,
+            "detail": (s.url or " ".join([s.command, *s.args_list]).strip())[:60],
         } for s in data]
 
     elif sub == "hooks":

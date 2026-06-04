@@ -282,9 +282,11 @@ def test_project_status_no_profile(tmp_path: Path, monkeypatch):
 
 
 def test_mcp_list_no_plugins(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("axt.PATHS", axt.Paths(
         installed_plugins=tmp_path / "ip.json",
         settings=tmp_path / "settings.json",
+        claude_config=tmp_path / ".claude.json",
     ))
     code, out, _ = _run(["mcp", "list"])
     assert code == 0
@@ -292,9 +294,11 @@ def test_mcp_list_no_plugins(tmp_path: Path, monkeypatch):
 
 
 def test_mcp_info_missing(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("axt.PATHS", axt.Paths(
         installed_plugins=tmp_path / "ip.json",
         settings=tmp_path / "settings.json",
+        claude_config=tmp_path / ".claude.json",
     ))
     code, out, err = _run(["mcp", "info", "doesnotexist"])
     assert code == 1
@@ -742,7 +746,8 @@ def test_market_list_with_registered_marketplace(tmp_path: Path, monkeypatch):
 def test_mcp_list_with_servers(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("axt.PATHS", axt.Paths(
-        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "s.json"))
+        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "s.json",
+        claude_config=tmp_path / ".claude.json"))
     monkeypatch.setattr("axt.list_mcp_servers", lambda _p: [
         axt.McpServerInfo(name="srv1", plugin_id="plug@m", command="node",
                           args=("server.js",), env=())])
@@ -756,7 +761,8 @@ def test_mcp_list_with_servers(tmp_path: Path, monkeypatch):
 def test_mcp_info_with_env(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("axt.PATHS", axt.Paths(
-        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "s.json"))
+        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "s.json",
+        claude_config=tmp_path / ".claude.json"))
     monkeypatch.setattr("axt.list_mcp_servers", lambda _p: [
         axt.McpServerInfo(name="srv1", plugin_id="plug@m", command="node",
                           args=("server.js",), env=(("API_KEY", "x"),))])

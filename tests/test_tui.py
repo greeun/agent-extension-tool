@@ -1749,9 +1749,11 @@ def test_render_extensions_tab_mcp_sub_tab_does_not_raise(monkeypatch, tmp_path)
     fake_installed.write_text('{"version":2,"plugins":{}}')
 
     fake_paths = dataclasses.replace(
-        axt.PATHS, settings=fake_settings, installed_plugins=fake_installed
+        axt.PATHS, settings=fake_settings, installed_plugins=fake_installed,
+        claude_config=tmp_path / ".claude.json",
     )
     monkeypatch.setattr("axt.PATHS", fake_paths)
+    monkeypatch.chdir(tmp_path)
 
     state = axt.TuiState()
     state.ext_sub_tab = "mcp"

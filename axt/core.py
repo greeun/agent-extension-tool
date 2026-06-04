@@ -71,12 +71,29 @@ def _env_dir(env_var: str, default: Path) -> Path:
 CLAUDE_DIR: Path = _env_dir("CLAUDE_CONFIG_DIR", HOME / ".claude")
 
 
+def _claude_config_file() -> Path:
+    """Path to the main ``~/.claude.json`` config.
+
+    Claude Code keeps user/project ``mcpServers``, ``disabledMcpServers``, etc.
+    here (a file beside ``~/.claude/``). ``CLAUDE_CONFIG_DIR`` relocates it into
+    that directory; otherwise it lives at ``~/.claude.json``.
+    """
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    if override:
+        return Path(override) / ".claude.json"
+    return HOME / ".claude.json"
+
+
+CLAUDE_CONFIG_FILE: Path = _claude_config_file()
+
+
 @dataclass(frozen=True)
 class Paths:
     """All filesystem locations axt reads or writes."""
 
     # Claude
     claude_dir: Path = CLAUDE_DIR
+    claude_config: Path = CLAUDE_CONFIG_FILE
     settings: Path = CLAUDE_DIR / "settings.json"
     known_marketplaces: Path = CLAUDE_DIR / "plugins" / "known_marketplaces.json"
     installed_plugins: Path = CLAUDE_DIR / "plugins" / "installed_plugins.json"
@@ -461,6 +478,10 @@ class McpServerInfo:
     args: tuple[str, ...]
     env: tuple[tuple[str, str], ...]  # frozen, sorted
     version: str = ""  # inherited from parent plugin
+    scope: str = "plugin"  # plugin | user | project | project-file
+    transport: str = "stdio"  # stdio | http | sse
+    url: str = ""  # remote servers (http/sse) only
+    disabled: bool = False  # listed in the project's disabledMcpServers
 
     @property
     def args_list(self) -> list[str]:
@@ -469,6 +490,56 @@ class McpServerInfo:
     @property
     def env_dict(self) -> dict[str, str]:
         return dict(self.env)
+
+
+def _mcp_info_from_def(
+    name: str,
+    definition: Any,
+    *,
+    scope: str,
+    plugin_id: str = "",
+    version: str = "",
+    disabled: bool = False,
+) -> McpServerInfo | None:
+    """Build an `McpServerInfo` from one `mcpServers[name]` definition.
+
+    Routes by transport: an explicit `type` of `http`/`sse`, or a bare `url`
+    with no `command`, becomes a remote server (command empty, url set);
+    everything else is treated as a stdio server (command/args/env).
+    Non-dict definitions are rejected (returns None).
+    """
+    if not isinstance(definition, dict):
+        return None
+    typ = str(definition.get("type") or "").lower()
+    url = str(definition.get("url") or "")
+    command = str(definition.get("command") or "")
+    if typ in ("http", "sse") or (url and not command):
+        return McpServerInfo(
+            name=name,
+            plugin_id=plugin_id,
+            command="",
+            args=(),
+            env=(),
+            version=version,
+            scope=scope,
+            transport=typ if typ in ("http", "sse") else "http",
+            url=url,
+            disabled=disabled,
+        )
+    args = definition.get("args") or []
+    env = definition.get("env") or {}
+    return McpServerInfo(
+        name=name,
+        plugin_id=plugin_id,
+        command=command,
+        args=tuple(str(a) for a in args) if isinstance(args, list) else (),
+        env=tuple(sorted((str(k), str(v)) for k, v in env.items())) if isinstance(env, dict) else (),
+        version=version,
+        scope=scope,
+        transport="stdio",
+        url="",
+        disabled=disabled,
+    )
 
 
 def list_mcp_servers(installed_plugins: list[dict[str, str]] | list[PluginInfo]) -> list[McpServerInfo]:
@@ -489,20 +560,68 @@ def list_mcp_servers(installed_plugins: list[dict[str, str]] | list[PluginInfo])
         if not isinstance(mcp_map, dict):
             continue
         for name, definition in mcp_map.items():
-            if not isinstance(definition, dict):
-                continue
-            args = definition.get("args") or []
-            env = definition.get("env") or {}
-            servers.append(
-                McpServerInfo(
-                    name=name,
-                    plugin_id=pid,
-                    command=definition.get("command", ""),
-                    args=tuple(str(a) for a in args) if isinstance(args, list) else (),
-                    env=tuple(sorted((str(k), str(v)) for k, v in env.items())) if isinstance(env, dict) else (),
-                    version=pver,
-                )
-            )
+            info = _mcp_info_from_def(name, definition, scope="plugin", plugin_id=pid, version=pver)
+            if info is not None:
+                servers.append(info)
+    return servers
+
+
+def _disabled_mcp_names(project_entry: dict[str, Any]) -> set[str]:
+    """Names listed under a project's `disabledMcpServers`."""
+    raw = project_entry.get("disabledMcpServers")
+    return {str(x) for x in raw} if isinstance(raw, list) else set()
+
+
+def collect_mcp_servers(
+    installed_plugins: list[dict[str, str]] | list[PluginInfo],
+    *,
+    claude_config_path: os.PathLike[str] | str | None = None,
+    project_dir: os.PathLike[str] | str | None = None,
+) -> list[McpServerInfo]:
+    """Aggregate MCP servers from every local Claude source.
+
+    Sources, in order:
+      1. installed plugin manifests           → scope ``plugin``
+      2. ``<claude.json>.mcpServers``          → scope ``user``
+      3. ``<claude.json>.projects[<dir>].mcpServers`` → scope ``project``
+      4. ``<dir>/.mcp.json`` ``mcpServers``    → scope ``project-file``
+
+    A server whose name appears in the project's ``disabledMcpServers`` is kept
+    but flagged ``disabled=True``. ``claude_config_path`` / ``project_dir``
+    default to ``PATHS.claude_config`` and the current working directory.
+    """
+    cfg_path = Path(claude_config_path) if claude_config_path is not None else PATHS.claude_config
+    proj = Path(project_dir) if project_dir is not None else Path.cwd()
+
+    servers: list[McpServerInfo] = list(list_mcp_servers(installed_plugins))
+
+    config = read_json(cfg_path, fallback={})
+    if not isinstance(config, dict):
+        config = {}
+
+    project_entry: dict[str, Any] = {}
+    projects = config.get("projects")
+    if isinstance(projects, dict):
+        entry = projects.get(str(proj))
+        if isinstance(entry, dict):
+            project_entry = entry
+    disabled = _disabled_mcp_names(project_entry)
+
+    def _ingest(mcp_map: Any, scope: str) -> None:
+        if not isinstance(mcp_map, dict):
+            return
+        for name, definition in mcp_map.items():
+            info = _mcp_info_from_def(name, definition, scope=scope, disabled=str(name) in disabled)
+            if info is not None:
+                servers.append(info)
+
+    _ingest(config.get("mcpServers"), "user")
+    _ingest(project_entry.get("mcpServers"), "project")
+
+    mcp_json = read_json(proj / ".mcp.json", fallback={})
+    if isinstance(mcp_json, dict):
+        _ingest(mcp_json.get("mcpServers"), "project-file")
+
     return servers
 
 

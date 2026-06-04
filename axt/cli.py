@@ -227,31 +227,46 @@ def cli_market_remove(args) -> int:
 # wildcard `from axt.core import *` at the top of this module.)
 
 
+def _mcp_detail(server) -> str:
+    """One-line transport detail: URL for remote, command line for stdio."""
+    if server.url:
+        return server.url
+    return " ".join([server.command, *server.args_list]).strip()
+
+
 def cli_mcp_list(args) -> int:
-    servers = list_mcp_servers(_active_plugins())
+    servers = collect_mcp_servers(_active_plugins())
     if not servers:
-        print("No MCP servers found in active plugins.")
+        print("No MCP servers found.")
         return 0
-    print(_bold(f" {'Server'.ljust(25)} {'Command'.ljust(20)} Plugin"))
-    print("─" * 70)
+    print(_bold(f" {'Server'.ljust(24)} {'Scope'.ljust(13)} {'Transport'.ljust(10)} Detail"))
+    print("─" * 78)
     for s in servers:
-        cmd = " ".join([s.command, *s.args_list])
-        print(f" {s.name.ljust(25)} {cmd.ljust(20)} {s.plugin_id}")
+        flag = _red(" [disabled]") if s.disabled else ""
+        print(f" {s.name.ljust(24)} {s.scope.ljust(13)} {s.transport.ljust(10)} {_mcp_detail(s)}{flag}")
     print(f"\n {len(servers)} MCP server(s)")
     return 0
 
 
 def cli_mcp_info(args) -> int:
-    servers = list_mcp_servers(_active_plugins())
+    servers = collect_mcp_servers(_active_plugins())
     server = next((s for s in servers if s.name == args.name), None)
     if not server:
         print(_red(f'MCP server "{args.name}" not found.'))
         return 1
     print(_bold(server.name))
-    print(f"Plugin: {server.plugin_id}")
-    print(f"Command: {server.command} {' '.join(server.args_list)}")
-    if server.env_dict:
-        print(f"Env: {json.dumps(server.env_dict)}")
+    print(f"Scope: {server.scope}")
+    print(f"Transport: {server.transport}")
+    if server.plugin_id:
+        print(f"Plugin: {server.plugin_id}")
+    if server.transport == "stdio":
+        print(f"Command: {server.command} {' '.join(server.args_list)}".rstrip())
+        if server.env_dict:
+            print(f"Env: {json.dumps(server.env_dict)}")
+    else:
+        print(f"URL: {server.url}")
+    if server.disabled:
+        print(_red("Disabled in current project"))
     return 0
 
 
