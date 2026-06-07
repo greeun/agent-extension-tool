@@ -15,6 +15,7 @@ from __future__ import annotations
 import curses
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -54,7 +55,7 @@ Main tabs (resource axis)
   3  Usage         Claude usage & cost (plan, budget, today/week/month, insights)
 
 Navigation
-  1–3           Jump to main tab (active tab has cyan background)
+  1–3           Jump to main tab (active tab is highlighted)
   ← / →         Previous / next within the focused layer
   ↑ / ↓         Move focus between layers (mainTab ↔ subTab ↔ content)
   Esc           Climb one focus layer up (content → subTab → mainTab → quit)
@@ -109,6 +110,7 @@ Vault column meanings
 
 Globals
   ?             Show this help
+  t             Toggle light / dark theme (saved to config)
   q / Q         Quit
   Esc           Quit only at the main-tab layer; otherwise climbs one layer up
 """
@@ -130,21 +132,14 @@ def _render_frame(stdscr, state: TuiState) -> None:
         return
     stdscr.erase()
 
-    # Header (tab bar on top, cwd on right of second row, divider).
+    # Header: tab bar + divider. The cwd line now sits at the bottom, just
+    # above the status/shortcuts bar (see below), so the top stays compact.
     render_tab_bar(stdscr, 0, 0, w, state.tab_idx, focused=(state.focused_layer == "mainTab"))
-    cwd_text = f" cwd: {Path.cwd()}"
-    cwd_w = cell_width(cwd_text)
-    if cwd_w >= w - 2:
-        cwd_text = fit_cells(cwd_text, w - 2)
-        cwd_w = cell_width(cwd_text)
-    cwd_x = max(0, w - 1 - cwd_w)
-    if cwd_w > 0:
-        safe_addnstr(stdscr, 1, cwd_x, cwd_text, cwd_w, CP_DIM())
-    safe_addnstr(stdscr, 2, 0, "─" * (w - 1), w - 1, CP_DIM())
+    safe_addnstr(stdscr, 1, 0, "─" * (w - 1), w - 1, CP_DIM())
 
     # Tab content.
-    body_y = 3
-    body_h = h - body_y - 1  # leave one line for status
+    body_y = 2
+    body_h = h - body_y - 2  # leave two lines at the bottom: cwd + status bar
 
     tab_key = MAIN_TABS[state.tab_idx][0]
     renderer = TAB_RENDERERS.get(tab_key)
@@ -153,6 +148,11 @@ def _render_frame(stdscr, state: TuiState) -> None:
                         name=MAIN_TABS[state.tab_idx][2], hint="")
     else:
         renderer(stdscr, state, body_y, body_h, w)
+
+    # cwd line — left-aligned at column 0 (flush with the divider/status bar),
+    # on the row just above the status/shortcuts bar.
+    cwd_text = fit_cells(f"cwd: {Path.cwd()}", w - 1)
+    safe_addnstr(stdscr, h - 2, 0, cwd_text, w - 1, CP_DIM())
 
     # Status / shortcuts line — adjust per active tab + sub-tab.
     if tab_key == "extensions" and state.ext_sub_tab == "vault":
@@ -291,14 +291,27 @@ def _has_background_work(state: TuiState) -> bool:
 _POLL_TIMEOUT_MS = 200
 
 
-def _tui_loop(stdscr) -> None:
+def _persist_theme(theme: str) -> None:
+    """Save the chosen theme to the user config so it survives restarts.
+
+    Best-effort: a read-only or malformed config must never crash a live
+    theme toggle.
+    """
+    try:
+        cfg = load_config(AXT_CONFIG_PATH)
+        save_config(AXT_CONFIG_PATH, replace(cfg, theme=theme))
+    except (OSError, ValueError):
+        pass
+
+
+def _tui_loop(stdscr, theme: str = "dark") -> None:
     curses.curs_set(0)
     try:
         curses.set_escdelay(25)  # 3.9+
     except (AttributeError, curses.error):
         pass
     stdscr.keypad(True)
-    tui_init_colors()
+    tui_init_colors(theme, stdscr)
 
     state = TuiState()
     state.stdscr_callbacks = {"stdscr": stdscr}
@@ -344,6 +357,16 @@ def _tui_loop(stdscr) -> None:
         if not modal:
             if key == ord("?"):
                 state.show_help = True
+                continue
+            # Live theme toggle (dark ↔ light) — re-inits the palette in place
+            # and persists the choice. Skipped while a modal sub-state owns the
+            # keyboard so `t` can still be typed into the Vault search field.
+            if key == ord("t"):
+                new_theme = "light" if current_theme() == "dark" else "dark"
+                tui_init_colors(new_theme, stdscr)
+                _persist_theme(new_theme)
+                set_status(state, f"Theme: {new_theme}")
+                _render_frame(stdscr, state)
                 continue
             # `q`/`Q` always quits. Esc only quits when focus is on the main
             # tab row — at lower layers it climbs up one level (handled by
@@ -408,10 +431,15 @@ def _tui_loop(stdscr) -> None:
         _render_frame(stdscr, state)
 
 
-def launch_tui() -> int:
-    """Public entry point — invoked from `cli_tui` and `main` with no args."""
+def launch_tui(theme: str = "dark") -> int:
+    """Public entry point — invoked from `cli_tui` and `main`.
+
+    ``theme`` ("dark" | "light") selects the initial color palette; the user
+    can flip it live with `t` (persisted to config). The lambda keeps
+    ``curses.wrapper`` a single-argument call so test stubs stay simple.
+    """
     try:
-        curses.wrapper(_tui_loop)
+        curses.wrapper(lambda scr: _tui_loop(scr, theme))
     except curses.error as e:
         print(_red(f"TUI failed to start: {e}"), file=sys.stderr)
         print(_dim("This usually means the terminal is too small or doesn't support curses."), file=sys.stderr)

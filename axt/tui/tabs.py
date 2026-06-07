@@ -433,15 +433,16 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         title_parts.append(f"search={state.vault_search!r}")
     if pending:
         title_parts.append(f"pending={pending}")
-    safe_addnstr(stdscr, y0, 0, fit_cells("  ".join(title_parts), w - 1), w - 1, CP_HDR())
-
-    # Search-mode prompt: keep visible whenever a search filter is active so
-    # the user can see what they typed even after pressing Enter. The trailing
-    # cursor (`_`) is only drawn while the field is actively capturing input.
+    # Draw the full-width title/status row (+ the /search prompt when a filter
+    # is active) and take the body rect below it. render_title_bar uses
+    # CP_TITLE (the accent tier), so no full-width rule appears under the row on
+    # light. The trailing cursor (`_`) shows only while capturing input.
+    search = None
     if state.vault_searching or state.vault_search:
         cursor = "_" if state.vault_searching else ""
-        prompt = f" /search: {state.vault_search}{cursor}"
-        safe_addnstr(stdscr, y0 + 1, 0, fit_cells(prompt, w - 1), w - 1, CP_INFO() | curses.A_BOLD)
+        search = f" /search: {state.vault_search}{cursor}"
+    table_y_top, table_h_full = render_title_bar(
+        stdscr, y0, h, w, "  ".join(title_parts), search=search)
 
     filtered = _vault_filtered(state)
     if not filtered:
@@ -455,10 +456,10 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # The threshold (w < 100) is chosen so an 80-column terminal — where the
     # right panel's inner width drops to ~26 cells and long Path/Description
     # fields wrap aggressively — switches to a full-width bottom panel.
+    # Layout split uses the body rect (table_y_top / table_h_full) returned by
+    # render_title_bar above — no per-renderer reserved-row arithmetic, so the
+    # region always fills down to the last body row.
     bottom_layout = w < 100
-    has_search_row = state.vault_searching or bool(state.vault_search)
-    table_y_top = y0 + (2 if has_search_row else 1)
-    table_h_full = h - (4 if has_search_row else 3)
     if bottom_layout:
         detail_h = max(8, min(16, int(h * 0.35)))
         # Never let the panel eat the entire list; reserve at least 3 list rows.
@@ -538,6 +539,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         columns, rows,
         selected=state.vault_selected,
         checked=checked,
+        header_rule=False,  # header attaches directly to the list (no ──── rule)
     )
 
     # Detail panel.
@@ -786,7 +788,7 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
 
 def render_stub_tab(stdscr, state: TuiState, y0: int, h: int, w: int, name: str, hint: str) -> None:
     title = f" {name}"
-    safe_addnstr(stdscr, y0, 0, fit_cells(title, w - 1), w - 1, CP_HDR())
+    safe_addnstr(stdscr, y0, 0, fit_cells(title, w - 1), w - 1, CP_TITLE())
     safe_addnstr(stdscr, y0 + 2, 2, f"{name} tab — not yet implemented in the curses TUI.", w - 4, 0)
     safe_addnstr(stdscr, y0 + 3, 2, hint, w - 4, CP_DIM())
     safe_addnstr(stdscr, y0 + 5, 2, "Use the CLI for now:", w - 4, CP_INFO())
@@ -1094,7 +1096,7 @@ def _usage_summary_lines(
     total_cost = sum(_entry_cost(e) for e in entries)
     plan = config.plans.get("claude")
     plan_label = f"{plan.plan} (${plan.monthly_cost}/mo)" if plan else "—"
-    lines.append((2, fit_cells(f"Plan: {plan_label}", w - 4), w - 4, CP_HDR()))
+    lines.append((2, fit_cells(f"Plan: {plan_label}", w - 4), w - 4, CP_TITLE()))
 
     if config.monthly_budget > 0:
         bar_w = min(40, max(10, w - 30))
@@ -1105,7 +1107,7 @@ def _usage_summary_lines(
         if pct >= 1:
             text, attr = f"{bar} {label} ⛔", CP_ERR()
         elif pct >= 0.8:
-            text, attr = f"{bar} {label} ⚠", CP_HDR()
+            text, attr = f"{bar} {label} ⚠", CP_TITLE()
         else:
             text, attr = f"{bar} {label}", CP_OK()
         lines.append((2, fit_cells(text, w - 4), w - 4, attr))
@@ -1130,7 +1132,7 @@ def _usage_summary_lines(
             lines.append((2, fit_cells(line, w - 4), w - 4, 0))
         lines.append((0, "", w, 0))  # gap between cards
 
-    lines.append((2, "Last 14 days (daily cost):", w - 4, CP_HDR()))
+    lines.append((2, "Last 14 days (daily cost):", w - 4, CP_TITLE()))
     chart_data = _daily_costs(entries, 14, tz)
     # Bar-chart helper returns x=0 lines; nudge them to x=4 so they
     # align with the original `render_bar_chart(... x=4, w=w-8)` layout.
@@ -1150,7 +1152,7 @@ def _usage_summary_lines(
         lines.append((0, "", w, 0))
 
     insights = _compute_simple_insights(claude_entries)
-    lines.append((2, "Insights (this month):", w - 4, CP_HDR()))
+    lines.append((2, "Insights (this month):", w - 4, CP_TITLE()))
     lines.append((2, fit_cells(
         f"  large-context sessions (>150k input tokens):  {insights['large_pct']:.1f}%",
         w - 4), w - 4, 0))
@@ -1177,7 +1179,7 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     sig = (id(entries), id(config), w)
     if state.usage_lines is None or state.usage_lines_sig != sig:
         lines: list[tuple[int, str, int, int]] = []
-        lines.append((0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_HDR()))
+        lines.append((0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_TITLE()))
         lines.append((0, "", w, 0))  # gap
 
         if entries is None:
@@ -1408,11 +1410,10 @@ def _render_project_files_pane(stdscr, state: TuiState, y0: int, h: int, w: int)
     """Render the per-project context file list (CLAUDE.md, settings, memory…)."""
     _ensure_project_loaded(state)
     items = state.project_items or []
-    safe_addnstr(stdscr, y0, 0, fit_cells(
-        f" Project files — {Path.cwd().name}  ({len(items)} files)",
-        w - 1), w - 1, CP_HDR())
+    body_y, body_h = render_title_bar(
+        stdscr, y0, h, w, f" Project files — {Path.cwd().name}  ({len(items)} files)")
     if not items:
-        safe_addnstr(stdscr, y0 + 1, 2, "No project context files found.", w - 4, CP_DIM())
+        safe_addnstr(stdscr, body_y, 2, "No project context files found.", w - 4, CP_DIM())
         return
     columns = [
         TableColumn("name", "Name", max(20, w - 22)),
@@ -1421,7 +1422,7 @@ def _render_project_files_pane(stdscr, state: TuiState, y0: int, h: int, w: int)
     ]
     rows_data = [{"name": i.name, "source": i.source, "lines": str(i.lines)}
                  for i in items]
-    render_table(stdscr, y0 + 1, 0, max(1, h - 1), w, columns, rows_data,
+    render_table(stdscr, body_y, 0, max(1, body_h), w, columns, rows_data,
                  selected=state.project_selected, show_header=True)
 
 
@@ -1432,14 +1433,14 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
         safe_addnstr(stdscr, y0 + 2, 2, "Loading context…", w - 4, CP_DIM())
         return
 
-    safe_addnstr(stdscr, y0, 0, fit_cells(
+    body_y, _ = render_title_bar(
+        stdscr, y0, h, w,
         f" Context — {format_tokens(analysis.total_tokens)} / {format_tokens(analysis.context_window_size)} "
-        f"({analysis.used_percent:.1f}%)  model={analysis.model}",
-        w - 1), w - 1, CP_HDR())
+        f"({analysis.used_percent:.1f}%)  model={analysis.model}")
 
     # Rate-limit bars (5h / 7d quota) at the top so the user sees them first.
-    rl_rows = _render_rate_limit_bars(stdscr, y0 + 1, w)
-    y_body = y0 + 1 + rl_rows + 1
+    rl_rows = _render_rate_limit_bars(stdscr, body_y, w)
+    y_body = body_y + rl_rows + 1
 
     # Reserve 2 rows at the bottom: cost line + spacing.
     body_h = max(1, h - (y_body - y0) - 2)
@@ -1616,14 +1617,14 @@ def _render_subtab_bar(stdscr, y: int, w: int, active_key: str, *, focused: bool
       - Bar unfocused:  `  Sub:` (no marker) + active sub-tab is bold cyan text
                         with underline (no fill), brackets retained
     """
-    label_attr = CP_HDR() if focused else CP_DIM()
+    label_attr = CP_TITLE() if focused else CP_DIM()
     marker = "▶ " if focused else "  "
     marker_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
     safe_addnstr(stdscr, y, 0, marker, w, marker_attr)
     safe_addnstr(stdscr, y, cell_width(marker), "Sub: ", w - cell_width(marker), label_attr)
     cur = cell_width(marker) + 5  # "Sub: " is 5 cells
     inactive_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
-    active_attr = _safe_pair(1, curses.A_BOLD) if focused else _safe_pair(8, curses.A_BOLD | curses.A_UNDERLINE)
+    active_attr = CP_ACTIVE_CHIP() if focused else _safe_pair(8, curses.A_BOLD | curses.A_UNDERLINE)
     for i, (key, label) in enumerate(EXTENSION_SUB_TABS):
         if key == active_key:
             cell = f"[ {label} ]"
@@ -1670,7 +1671,8 @@ def _render_simple_list(stdscr, state, y0, h, w, key, columns, rows):
         safe_addnstr(stdscr, y0 + 2, 2, f"No {key} found.", w - 4, CP_DIM())
         return
     render_table(stdscr, y0, 0, h, w, columns, rows,
-                 selected=state.ext_selected[key], show_header=True)
+                 selected=state.ext_selected[key], show_header=True,
+                 header_rule=False)  # match Vault: header attaches to the list
 
 
 def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:

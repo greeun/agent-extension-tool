@@ -128,6 +128,44 @@ def test_load_config_defaults_when_missing(tmp_path: Path):
     assert config.plans["claude"].plan == "max-5x"
 
 
+def test_load_config_theme_defaults_to_auto(tmp_path: Path):
+    config = axt.load_config(tmp_path / "config.json")
+    assert config.theme == "auto"
+
+
+def test_save_load_config_roundtrips_theme(tmp_path: Path):
+    p = tmp_path / "config.json"
+    axt.save_config(p, axt.AxtConfig(theme="light"))
+    assert axt.load_config(p).theme == "light"
+
+
+def test_detect_terminal_is_light_via_colorfgbg():
+    # COLORFGBG = "fg;bg" or "fg;default;bg"; last field is the bg color index.
+    assert axt._detect_terminal_is_light({"COLORFGBG": "0;15"}) is True
+    assert axt._detect_terminal_is_light({"COLORFGBG": "0;7"}) is True
+    assert axt._detect_terminal_is_light({"COLORFGBG": "15;0"}) is False
+    assert axt._detect_terminal_is_light({"COLORFGBG": "0;default;15"}) is True
+    assert axt._detect_terminal_is_light({}) is None
+    assert axt._detect_terminal_is_light({"COLORFGBG": "garbage"}) is None
+    assert axt._detect_terminal_is_light({"COLORFGBG": "7"}) is None
+
+
+def test_resolve_theme_priority():
+    # CLI override beats everything.
+    assert axt.resolve_theme("dark", "light") == "light"
+    assert axt.resolve_theme("light", "dark") == "dark"
+    # Saved explicit value beats auto-detect.
+    assert axt.resolve_theme("light", None, {"COLORFGBG": "15;0"}) == "light"
+    assert axt.resolve_theme("dark", None, {"COLORFGBG": "0;15"}) == "dark"
+    # auto → COLORFGBG detection.
+    assert axt.resolve_theme("auto", None, {"COLORFGBG": "0;15"}) == "light"
+    assert axt.resolve_theme("auto", None, {"COLORFGBG": "15;0"}) == "dark"
+    # auto with no signal → dark fallback.
+    assert axt.resolve_theme("auto", None, {}) == "dark"
+    # CLI "auto" forces detection even when a dark value is saved.
+    assert axt.resolve_theme("dark", "auto", {"COLORFGBG": "0;15"}) == "light"
+
+
 def test_load_config_merges_user_overrides(tmp_path: Path):
     p = tmp_path / "config.json"
     p.write_text(json.dumps({

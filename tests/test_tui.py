@@ -151,6 +151,31 @@ def test_fit_cells_zero_width():
     assert axt.fit_cells("anything", 0) == ""
 
 
+# ─── render_title_bar — section title band + body rect ───────────────────────
+
+
+def test_render_title_bar_returns_body_rect_and_uses_cp_title():
+    """render_title_bar draws the title with CP_TITLE (accent, never the dim
+    CP_HDR) and returns the body rect below the title band."""
+    axt.tui_init_colors("dark")
+    try:
+        scr = _make_stdscr(rows=20, cols=80)
+        body = axt.render_title_bar(scr, 3, 15, 80, " My Title")
+        assert body == (4, 14), f"no-search band should reserve 1 row, got {body}"
+        title_calls = [c for c in scr.calls if c[0] == 3 and c[1] == 0]
+        assert any("My Title" in c[2] for c in title_calls)
+        attr = next(c[4] for c in title_calls if "My Title" in c[2])
+        assert attr & curses.A_BOLD, "dark title must use CP_TITLE bold accent"
+
+        scr2 = _make_stdscr(rows=20, cols=80)
+        body2 = axt.render_title_bar(scr2, 3, 15, 80, " T", search=" /search: ab_")
+        assert body2 == (5, 13), f"search band should reserve 2 rows, got {body2}"
+        assert any("/search: ab" in c[2] for c in scr2.calls if c[0] == 4), \
+            "search prompt should render on the row below the title"
+    finally:
+        axt.tui_init_colors("dark")
+
+
 # ─── render_table — the bug-source test ──────────────────────────────────────
 
 
@@ -212,6 +237,14 @@ def _detail_panel_top_left(calls):
     return None
 
 
+def _detail_panel_bottom_y(calls):
+    """Return the y of the detail panel's bottom border ('└...┘'), or None."""
+    for args in calls:
+        if len(args) >= 3 and isinstance(args[2], str) and args[2].startswith("└"):
+            return args[0]
+    return None
+
+
 def _seed_vault_for_render(s):
     """Minimum state needed for render_vault_tab to draw the detail panel."""
     s.vault_items = [
@@ -237,6 +270,85 @@ def test_render_vault_tab_uses_right_layout_when_wide():
     y, x = top
     assert x == int(120 * 0.70), f"expected right layout at x=84, got x={x}"
     assert y == 3, f"expected detail top y=3, got y={y}"
+
+
+def test_render_vault_tab_fills_to_bottom_no_blank_band():
+    """Regression: the Vault table/detail region must fill down to the last
+    body row (y0 + h - 1). A stale `h - 3` reservation used to leave a 2-row
+    blank band above the cwd line — the list looked like it had trailing
+    padding. The detail panel's bottom border pins the region's last row."""
+    scr = _make_stdscr(rows=30, cols=120)
+    s = axt.TuiState()
+    _seed_vault_for_render(s)
+    y0, h = 2, 25
+    axt.render_vault_tab(scr, s, y0=y0, h=h, w=120)
+    bottom = _detail_panel_bottom_y(scr.calls)
+    assert bottom is not None, "detail panel bottom border was not drawn"
+    assert bottom == y0 + h - 1, (
+        f"vault region must fill to the last body row {y0 + h - 1}, "
+        f"got bottom border at y={bottom} ({y0 + h - 1 - bottom} blank rows)"
+    )
+
+
+def test_render_vault_tab_header_has_no_underline_rule():
+    """The Vault column header attaches directly to the list — there is no
+    ──── rule between the header row and the first data row (header_rule=False).
+    The row right below the header now holds the first item instead."""
+    scr = _make_stdscr(rows=30, cols=120)
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name=f"item-{i:02d}", type="skill", path=f"/x/{i}",
+                      description="d", in_vault=True, version="1.0.0")
+        for i in range(10)
+    ]
+    s.refresh_token = 1
+    s.vault_selected = 0
+    y0, h = 2, 25
+    axt.render_vault_tab(scr, s, y0=y0, h=h, w=120)
+    header_y = y0 + 1          # table_y_top with no search row
+    below_y = header_y + 1
+    # No horizontal rule (a run of ─) at x=0 directly below the header.
+    for c in scr.calls:
+        if c[0] == below_y and c[1] == 0 and isinstance(c[2], str) and c[2].strip():
+            assert set(c[2].strip()) != {"─"}, (
+                f"unexpected ──── header underline at row {below_y}")
+    # The first item renders on that row instead of a blank separator.
+    first_row_texts = [c[2] for c in scr.calls if c[0] == below_y]
+    assert any("item-00" in t for t in first_row_texts), \
+        "first vault item should sit directly under the header"
+
+
+def test_render_vault_tab_title_no_underline_in_light_theme():
+    """Light theme: the full-width filter/sort title row must NOT carry
+    A_UNDERLINE (it would render as a rule under the row). Dark theme keeps
+    its A_BOLD header emphasis."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name=f"item-{i:02d}", type="skill", path=f"/x/{i}",
+                      description="d", in_vault=True, version="1.0.0")
+        for i in range(6)
+    ]
+    s.refresh_token = 1
+    s.vault_selected = 0
+
+    def _title_attr(theme):
+        axt.tui_init_colors(theme)
+        scr = _make_stdscr(rows=30, cols=120)
+        axt.render_vault_tab(scr, s, y0=2, h=25, w=120)
+        # Title row is at y0=2, x=0.
+        return next(c[4] for c in scr.calls
+                    if c[0] == 2 and c[1] == 0 and len(c) >= 5)
+
+    try:
+        light_attr = _title_attr("light")
+        dark_attr = _title_attr("dark")
+    finally:
+        axt.tui_init_colors("dark")
+
+    assert not (light_attr & curses.A_UNDERLINE), \
+        "light-theme vault title must not be underlined"
+    assert dark_attr & curses.A_BOLD, \
+        "dark-theme vault title keeps its bold header emphasis"
 
 
 def test_render_vault_tab_uses_bottom_layout_when_narrow():
@@ -279,9 +391,9 @@ def test_render_vault_tab_bottom_height_clamped():
     top = _detail_panel_top_left(scr.calls)
     assert top is not None
     y, _x = top
-    # h=10, not searching → table_h_full = 10 - 3 = 7. detail_h candidate = 8,
-    # guard = min(8, max(1, 7-3)) = 4. table_h = 7-4 = 3. table_y_top = 0+1=1.
-    # detail_y = 1 + 3 = 4.
+    # h=10, not searching → table_h_full = 10 - 1 = 9. detail_h candidate = 8,
+    # guard = min(8, max(1, 9-3)) = 6. table_h = 9-6 = 3. table_y_top = 0+1=1.
+    # detail_y = 1 + 3 = 4 (the extra 2 rows now extend the panel downward).
     assert y == 4, f"expected detail top y=4 under guard, got y={y}"
 
 
@@ -1303,7 +1415,8 @@ def test_subtab_bar_focus_attr_differs_from_unfocused(tmp_path):
 
 
 def test_render_frame_shows_cwd_line(tmp_path, monkeypatch):
-    """The header area must include a line with 'cwd:' + the full project path."""
+    """The frame shows a 'cwd:' line with the full project path, on the row
+    just above the status bar (h-2)."""
     monkeypatch.chdir(tmp_path)
     scr = _make_stdscr(rows=30, cols=140)
     state = axt.TuiState()
@@ -1311,6 +1424,10 @@ def test_render_frame_shows_cwd_line(tmp_path, monkeypatch):
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "cwd:" in flat
     assert str(tmp_path) in flat
+    # cwd now sits on the row just above the status/shortcuts bar.
+    cwd_rows = [c[0] for c in scr.calls
+                if len(c) >= 3 and isinstance(c[2], str) and "cwd:" in c[2]]
+    assert cwd_rows == [30 - 2]
 
 
 # ─── Non-Vault Extensions sub-tabs: no duplicated row number ─────────────────
@@ -1348,6 +1465,42 @@ def test_extensions_plugins_sub_tab_no_duplicate_number_column():
             # Exactly one occurrence of an isolated "1" cell — the prefix number,
             # NOT also a duplicated `no` column.
             assert len(number_cells) <= 1
+        finally:
+            axt.PATHS = original
+
+
+def test_extensions_subtab_header_has_no_underline_rule():
+    """Non-Vault Extensions sub-tabs match Vault: the column header attaches
+    directly to the list with no ──── rule below it (header_rule=False)."""
+    import json
+    import tempfile
+    from pathlib import Path as _P
+    with tempfile.TemporaryDirectory() as tmp:
+        ip_path = _P(tmp) / "ip.json"
+        ip_path.write_text(json.dumps({
+            "version": 2,
+            "plugins": {"plug@m": [{
+                "scope": "user", "installPath": "/p", "version": "1",
+                "installedAt": "", "lastUpdated": "",
+            }]},
+        }))
+        original = axt.PATHS
+        try:
+            axt.PATHS = axt.Paths(installed_plugins=ip_path, settings=_P(tmp) / "s.json", vault=_P(tmp) / "vault", claude_dir=_P(tmp) / "claude")
+            state = axt.TuiState()
+            state.ext_sub_tab = "plugins"
+            scr = _make_stdscr(rows=20, cols=120)
+            axt.render_extensions_tab(scr, state, 0, 18, 120)
+            # The header row carries the exact "Plugin" column label (the
+            # subtab bar shows "Plugins" plural, so an exact match avoids it).
+            header_y = next(c[0] for c in scr.calls
+                            if len(c) >= 3 and isinstance(c[2], str)
+                            and c[2].strip() == "Plugin")
+            below_y = header_y + 1
+            for c in scr.calls:
+                if c[0] == below_y and c[1] == 0 and isinstance(c[2], str) and c[2].strip():
+                    assert set(c[2].strip()) != {"─"}, (
+                        f"unexpected ──── header underline at row {below_y}")
         finally:
             axt.PATHS = original
 
@@ -2445,14 +2598,14 @@ def test_render_vault_tab_bottom_layout_never_negative_table_h():
     scr = _make_stdscr(rows=5, cols=80)
     s = axt.TuiState()
     _seed_vault_for_render(s)
-    # h=3 → table_h_full = 0; detail_h guard keeps it at 1; table_h must clamp
-    # to 0, so detail_y == table_y_top (i.e., panel starts AT the table area,
-    # not above it).
+    # h=3 → table_h_full = 2; detail_h guard collapses to 1; table_h clamps to
+    # max(0, 2-1) = 1, so detail_y stays at or below the table area (panel never
+    # starts above the title row).
     axt.render_vault_tab(scr, s, y0=0, h=3, w=80)
     top = _detail_panel_top_left(scr.calls)
     assert top is not None
     y, _x = top
-    # table_y_top = 0 + 1 = 1; table_h clamped to 0; detail_y = 1.
+    # table_y_top = 0 + 1 = 1; table_h = 1; detail_y = 2.
     assert y >= 1, f"detail must not be drawn above the title row, got y={y}"
 
 
@@ -2499,6 +2652,87 @@ def test_tui_init_colors_initializes_eight_pairs(monkeypatch):
     assert seen == [1, 2, 3, 4, 5, 6, 7, 8]
 
 
+def test_dim_pair_uses_terminal_default_foreground(monkeypatch):
+    """The 'dim' pair (7) must use the terminal's default foreground (-1), not a
+    hardcoded COLOR_WHITE — otherwise white-on-white renders it invisible on
+    light terminal backgrounds. With default fg + A_DIM it adapts to any
+    background (dark-gray on white, light-gray on black)."""
+    monkeypatch.setattr("curses.use_default_colors", lambda: None)
+    pairs = {}
+    monkeypatch.setattr("curses.init_pair", lambda n, fg, bg: pairs.__setitem__(n, (fg, bg)))
+    axt.tui_init_colors()
+    assert pairs[7] == (-1, -1)
+    # COLOR_WHITE must not appear as a foreground anywhere — it is the one value
+    # that collapses to invisible on a white background.
+    assert curses.COLOR_WHITE not in {fg for fg, _bg in pairs.values()}
+
+
+def test_dark_palette_keeps_original_hues(monkeypatch):
+    """The DARK theme restores the original "looks good on black" scheme:
+    solid cyan chip, yellow header, cyan secondary."""
+    monkeypatch.setattr("curses.use_default_colors", lambda: None)
+    pairs = {}
+    monkeypatch.setattr("curses.init_pair", lambda n, fg, bg: pairs.__setitem__(n, (fg, bg)))
+    axt.tui_init_colors("dark")
+    assert pairs[1] == (curses.COLOR_BLACK, curses.COLOR_CYAN)  # solid cyan chip
+    assert pairs[2] == (curses.COLOR_YELLOW, -1)                # yellow header
+    assert pairs[8] == (curses.COLOR_CYAN, -1)                  # cyan secondary
+    assert axt.current_theme() == "dark"
+
+
+def test_light_palette_drops_fluorescent_hues(monkeypatch):
+    """The LIGHT theme fixes a white background on every pair, uses monochrome
+    emphasis (reverse/underline) for active & header, and never uses the
+    wash-out hues (yellow/cyan) as a foreground."""
+    monkeypatch.setattr("curses.use_default_colors", lambda: None)
+    pairs = {}
+    monkeypatch.setattr("curses.init_pair", lambda n, fg, bg: pairs.__setitem__(n, (fg, bg)))
+    axt.tui_init_colors("light")
+    # Light fixes a white background on every pair (terminal-independent).
+    assert all(bg == curses.COLOR_WHITE for _fg, bg in pairs.values())
+    assert pairs[1] == (curses.COLOR_BLACK, curses.COLOR_WHITE)   # reverse → white-on-black chip
+    assert pairs[2] == (curses.COLOR_BLACK, curses.COLOR_WHITE)   # header (+underline)
+    assert pairs[8] == (curses.COLOR_BLUE, curses.COLOR_WHITE)    # secondary
+    fgs = {fg for fg, _bg in pairs.values()}
+    assert curses.COLOR_YELLOW not in fgs   # no fluorescent yellow
+    assert curses.COLOR_CYAN not in fgs     # cyan washes out on white → blue
+    assert axt.current_theme() == "light"
+    axt.tui_init_colors("dark")  # restore global so other tests see dark
+
+
+def test_light_theme_fills_white_background(monkeypatch):
+    """Light fills stdscr with a white background (terminal-independent); dark
+    resets the fill to the terminal default."""
+    monkeypatch.setattr("curses.use_default_colors", lambda: None)
+    monkeypatch.setattr("curses.init_pair", lambda *a: None)
+    monkeypatch.setattr("curses.color_pair", lambda n: 0x100 << n)
+    bkgds = []
+
+    class _Scr:
+        def bkgd(self, ch, attr):
+            bkgds.append((ch, attr))
+
+    scr = _Scr()
+    axt.tui_init_colors("light", scr)
+    assert bkgds[-1] == (" ", 0x100 << 7)   # black-on-white fill (pair 7)
+    axt.tui_init_colors("dark", scr)
+    assert bkgds[-1] == (" ", 0)            # reset to terminal default
+    axt.tui_init_colors("dark")  # restore global
+
+
+def test_cp_active_chip_reverses_in_light_only(monkeypatch):
+    """The active-tab chip uses a solid color pair in dark, but a monochrome
+    A_REVERSE chip in light (no fluorescent fill on a white background)."""
+    monkeypatch.setattr("curses.color_pair", lambda n: 0x100 << n)
+    axt.tui_init_colors("dark")
+    assert axt.CP_ACTIVE_CHIP() & curses.A_BOLD
+    assert not (axt.CP_ACTIVE_CHIP() & curses.A_REVERSE)
+    axt.tui_init_colors("light")
+    assert axt.CP_ACTIVE_CHIP() & curses.A_BOLD
+    assert axt.CP_ACTIVE_CHIP() & curses.A_REVERSE
+    axt.tui_init_colors("dark")  # restore global so other tests see dark
+
+
 def test_color_pair_helpers_degrade_without_color(monkeypatch):
     """When color_pair raises (no start_color), the CP_* helpers return just
     the extra attribute bits instead of crashing."""
@@ -2514,10 +2748,37 @@ def test_color_pair_helpers_degrade_without_color(monkeypatch):
 
 def test_color_pair_helpers_use_color_when_available(monkeypatch):
     """When color_pair works, the bit is OR-ed into the returned attribute."""
+    axt.tui_init_colors("dark")  # emphasis bits are theme-dependent
     monkeypatch.setattr("curses.color_pair", lambda n: 0x100 << n)
-    assert axt.CP_HDR() & (0x100 << 2)
-    assert axt.CP_HDR() & curses.A_BOLD
+    # CP_TITLE = the accent tier (pair 2 + bold in dark).
+    assert axt.CP_TITLE() & (0x100 << 2)
+    assert axt.CP_TITLE() & curses.A_BOLD
+    # CP_HDR = the subordinate column-header tier (pair 7 / dim in dark).
+    assert axt.CP_HDR() & (0x100 << 7)
     assert axt.CP_INFO() == (0x100 << 4)
+
+
+def test_cp_title_vs_hdr_emphasis_hierarchy(monkeypatch):
+    """Two distinct tiers: CP_TITLE (section/status accent) sits above CP_HDR
+    (table column header). Dark: title = yellow+bold, header = dim grey.
+    Light: title = plain default fg (no full-width rule), header = underline."""
+    monkeypatch.setattr("curses.color_pair", lambda n: 0x100 << n)
+    axt.tui_init_colors("dark")
+    # Title: bold accent, never underlined.
+    assert axt.CP_TITLE() & curses.A_BOLD
+    assert not (axt.CP_TITLE() & curses.A_UNDERLINE)
+    # Header: dim, not bold (subordinate to the title).
+    assert axt.CP_HDR() & curses.A_DIM
+    assert not (axt.CP_HDR() & curses.A_BOLD)
+    axt.tui_init_colors("light")
+    # Title: no underline and no bold → a full-width title row stays plain text
+    # (no rule, no solid bar) on white.
+    assert not (axt.CP_TITLE() & curses.A_UNDERLINE)
+    assert not (axt.CP_TITLE() & curses.A_BOLD)
+    # Header: underline (A_BOLD washes out on white), not bold.
+    assert axt.CP_HDR() & curses.A_UNDERLINE
+    assert not (axt.CP_HDR() & curses.A_BOLD)
+    axt.tui_init_colors("dark")  # restore global so other tests see dark
 
 
 # ─── safe_addnstr error handling + guards ────────────────────────────────────
@@ -4117,7 +4378,21 @@ def _loop_stdscr(keys, rows=30, cols=120):
 def _quiet_curses(monkeypatch):
     monkeypatch.setattr("curses.curs_set", lambda *a: None)
     monkeypatch.setattr("curses.set_escdelay", lambda *a: None, raising=False)
-    monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda: None)
+    monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda *a, **k: None)
+
+
+def test_tui_loop_t_persists_theme_toggle(monkeypatch, tmp_path):
+    """Pressing `t` flips the theme and persists the new value. The palette
+    re-init is stubbed by _quiet_curses, so current_theme() stays at the value
+    we seed (dark) and the first toggle resolves to light."""
+    monkeypatch.chdir(tmp_path)
+    axt.tui_init_colors("dark")  # seed the active theme
+    _quiet_curses(monkeypatch)   # stubs loop.tui_init_colors → theme stays put
+    persisted = []
+    monkeypatch.setattr("axt.tui.loop._persist_theme", lambda t: persisted.append(t))
+    scr = _loop_stdscr([ord("t"), ord("q")])
+    axt._tui_loop(scr, "dark")
+    assert persisted == ["light"]
 
 
 def test_tui_loop_quits_on_q(monkeypatch, tmp_path):
@@ -5307,7 +5582,7 @@ def test_tui_loop_set_escdelay_attributeerror_swallowed(monkeypatch, tmp_path):
     swallowed (lines 298-299) and the loop still runs to quit."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("curses.curs_set", lambda *a: None)
-    monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda: None)
+    monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda *a, **k: None)
     monkeypatch.delattr("curses.set_escdelay", raising=False)
     scr = _loop_stdscr([ord("q")])
     assert axt._tui_loop(scr) is None

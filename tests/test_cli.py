@@ -63,7 +63,7 @@ def test_unknown_command_returns_error():
 def test_no_args_invokes_tui(monkeypatch):
     """No-arg invocation calls launch_tui(); under tests we stub it."""
     called = []
-    monkeypatch.setattr("axt.launch_tui", lambda: called.append(True) or 0)
+    monkeypatch.setattr("axt.launch_tui", lambda *a, **k: called.append(True) or 0)
     code, _, _ = _run([])
     assert code == 0
     assert called == [True]
@@ -71,10 +71,20 @@ def test_no_args_invokes_tui(monkeypatch):
 
 def test_tui_explicit(monkeypatch):
     called = []
-    monkeypatch.setattr("axt.launch_tui", lambda: called.append(True) or 0)
+    monkeypatch.setattr("axt.launch_tui", lambda *a, **k: called.append(True) or 0)
     code, _, _ = _run(["tui"])
     assert code == 0
     assert called == [True]
+
+
+def test_cli_theme_flag_overrides(monkeypatch):
+    """`axt --theme light` (no subcommand) launches the TUI with the light
+    theme; an explicit --theme beats whatever is saved in config."""
+    seen = []
+    monkeypatch.setattr("axt.launch_tui", lambda *a, **k: seen.append(a[0] if a else None) or 0)
+    code, _, _ = _run(["--theme", "light"])
+    assert code == 0
+    assert seen == ["light"]
 
 
 def test_tui_launch_outside_terminal_fails_gracefully():
@@ -715,7 +725,7 @@ def test_smoke_usage_and_plan_default_actions(tmp_path: Path, monkeypatch):
 def test_smoke_dunder_main_entry(monkeypatch):
     """`python -m axt` routes through axt.main; stub the TUI so it stays headless."""
     import runpy
-    monkeypatch.setattr("axt.launch_tui", lambda: 0)
+    monkeypatch.setattr("axt.launch_tui", lambda *a, **k: 0)
     monkeypatch.setattr(sys, "argv", ["axt"])
     # __main__ calls sys.exit(main()); 0 → SystemExit(0)
     with pytest.raises(SystemExit) as e:

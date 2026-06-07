@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 T = TypeVar("T")
 
@@ -3221,6 +3221,7 @@ class AxtConfig:
     locale: str = "ko-KR"
     start_of_week: str = "monday"  # "monday" | "sunday"
     budget_warning_threshold: float = 0.8
+    theme: str = "auto"  # "auto" | "dark" | "light" — TUI color theme
     plans: dict[str, PlanConfig] = field(default_factory=lambda: {
         "claude": PlanConfig(plan="max-5x", monthly_cost=100, billing_cycle_start=1),
     })
@@ -3268,6 +3269,7 @@ def load_config(config_path: os.PathLike[str] | str) -> AxtConfig:
         locale=str(saved.get("locale", default.locale)),
         start_of_week=str(saved.get("startOfWeek", default.start_of_week)),
         budget_warning_threshold=float(saved.get("budgetWarningThreshold", default.budget_warning_threshold)),
+        theme=str(saved.get("theme", default.theme)),
         plans=plans,
     )
 
@@ -3281,9 +3283,57 @@ def save_config(config_path: os.PathLike[str] | str, config: AxtConfig) -> None:
         "locale": config.locale,
         "startOfWeek": config.start_of_week,
         "budgetWarningThreshold": config.budget_warning_threshold,
+        "theme": config.theme,
         "plans": {k: _plan_to_json(v) for k, v in config.plans.items()},
     }
     write_json_atomic(config_path, payload)
+
+
+# ─── TUI theme resolution ──────────────────────────────────────────────────────
+#
+# curses cannot portably query the terminal background, so we make a
+# best-effort guess from COLORFGBG (set by some terminals: rxvt, konsole,
+# iTerm2-when-enabled, passed through by tmux) and let the user override it
+# explicitly. macOS Terminal.app / default iTerm2 do NOT set COLORFGBG, so the
+# auto path falls back to dark and the user toggles to light with `t` / --theme.
+
+
+def _detect_terminal_is_light(env: Optional[dict[str, str]] = None) -> Optional[bool]:
+    """Best-effort background detection via ``COLORFGBG``.
+
+    Returns ``True`` (light bg), ``False`` (dark bg), or ``None`` (unknown).
+    ``COLORFGBG`` is ``"fg;bg"`` or ``"fg;default;bg"`` — the last field is the
+    background color index. A light background uses index 7 (white) or 15
+    (bright white); anything else is treated as dark.
+    """
+    src = os.environ if env is None else env
+    raw = (src.get("COLORFGBG") or "").strip()
+    if not raw:
+        return None
+    parts = raw.split(";")
+    if len(parts) < 2:
+        return None
+    bg = parts[-1].strip()
+    if not bg.isdigit():
+        return None
+    return int(bg) in (7, 15)
+
+
+def resolve_theme(
+    config_theme: str,
+    cli_override: Optional[str] = None,
+    env: Optional[dict[str, str]] = None,
+) -> str:
+    """Resolve the effective TUI theme to ``"dark"`` or ``"light"``.
+
+    Priority: ``cli_override`` → saved ``config_theme`` (when explicit) →
+    ``COLORFGBG`` auto-detect → ``"dark"`` fallback. A value of ``"auto"`` (from
+    either source) triggers detection rather than acting as an explicit theme.
+    """
+    candidate = (cli_override or config_theme or "auto").lower()
+    if candidate in ("dark", "light"):
+        return candidate
+    return "light" if _detect_terminal_is_light(env) else "dark"
 
 
 # ── Section 8: Context Analysis ──────────────────────────────────────────────

@@ -824,7 +824,9 @@ def cli_vault_unlink_global(args) -> int:
 # tui — launches the curses dashboard implemented in Sections 11-14.
 
 def cli_tui(args) -> int:
-    return launch_tui()
+    cfg = load_config(AXT_CONFIG_PATH)
+    theme = resolve_theme(cfg.theme, getattr(args, "theme", None))
+    return launch_tui(theme)
 
 
 # ─── Argparse wiring ─────────────────────────────────────────────────────────
@@ -847,6 +849,10 @@ def build_parser() -> argparse.ArgumentParser:
     """Construct the full argparse tree mirroring src/cli/* commander structure."""
     parser = argparse.ArgumentParser(prog="axt", description="Agent eXtension Tool")
     parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--theme", choices=("auto", "dark", "light"), default=None,
+        help="TUI color theme for this run (default: saved config / auto-detect)",
+    )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     # tui (also the no-arg default)
@@ -941,11 +947,14 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # No-arg invocation → launch TUI (matches `axt` with no args).
     if not argv:
-        return cli_tui(argparse.Namespace())
+        return cli_tui(argparse.Namespace(theme=None))
 
     args = parser.parse_args(argv)
     func = getattr(args, "func", None)
     if func is None:
+        # Top-level-only invocation (e.g. `axt --theme light`) → launch TUI.
+        if getattr(args, "theme", None) is not None:
+            return cli_tui(args)
         parser.print_help()
         return 1
     try:

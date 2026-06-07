@@ -19,7 +19,7 @@ from typing import Optional
 # Duplicated to keep widgets.py independent of axt.core. The single source
 # of truth is still axt.core.__version__ / axt.__version__ — the package
 # mirror loop in axt/__init__.py re-exports the most-recent definition.
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 
 # ── Section 11: TUI — Common helpers (curses, color, key, width) ────────────
@@ -34,26 +34,89 @@ __version__ = "1.0.1"
 
 
 
-def tui_init_colors() -> None:
-    """Initialize the standard 9-color palette. Safe to call multiple times."""
+# Theme palettes. pair NUMBERS carry fixed meaning (1 = active/selection chip,
+# 2 = header, 3-6 = ok/info/err/mark, 7 = dim, 8 = secondary); only their
+# (fg, bg) — and a couple of emphasis attributes — differ per theme. Because
+# every CP_* helper resolves a pair by NUMBER, swapping the palette re-themes
+# the entire UI without touching call sites.
+#
+# DARK = the original "looks good on black" scheme (yellow headers, solid cyan
+# chips); backgrounds are -1 so it inherits the terminal's own background.
+# LIGHT = a FIXED white background — every pair's bg is COLOR_WHITE and stdscr
+# is filled via bkgd() — so the theme looks identical regardless of the
+# terminal's background. Emphasis is monochrome (reverse / underline), and cyan
+# (which washes out on white) is swapped for blue.
+_DARK_PALETTE = (
+    (1, curses.COLOR_BLACK, curses.COLOR_CYAN),        # active / selection chip
+    (2, curses.COLOR_YELLOW, -1),                      # header / accent
+    (3, curses.COLOR_GREEN, -1),                       # success / active
+    (4, curses.COLOR_BLUE, -1),                        # info
+    (5, curses.COLOR_RED, -1),                         # danger / error
+    (6, curses.COLOR_MAGENTA, -1),                     # mark
+    (7, -1, -1),                                       # dim (default fg + A_DIM)
+    (8, curses.COLOR_CYAN, -1),                        # secondary
+)
+_LIGHT_PALETTE = (
+    (1, curses.COLOR_BLACK, curses.COLOR_WHITE),       # active/selection → reverse = white-on-black chip
+    (2, curses.COLOR_BLACK, curses.COLOR_WHITE),       # header → +A_UNDERLINE
+    (3, curses.COLOR_GREEN, curses.COLOR_WHITE),       # success / active
+    (4, curses.COLOR_BLUE, curses.COLOR_WHITE),        # info
+    (5, curses.COLOR_RED, curses.COLOR_WHITE),         # danger / error
+    (6, curses.COLOR_MAGENTA, curses.COLOR_WHITE),     # mark
+    (7, curses.COLOR_BLACK, curses.COLOR_WHITE),       # dim → +A_DIM; also the bkgd fill pair
+    (8, curses.COLOR_BLUE, curses.COLOR_WHITE),        # secondary (cyan washes out on white)
+)
+
+# pair 7 is black-on-white in the light palette; it doubles as the full-screen
+# background fill (via bkgd) so untouched cells and attr-less text stay on white
+# under the light theme.
+_LIGHT_BG_PAIR = 7
+
+# Active theme, set by tui_init_colors(). Drives CP_ACTIVE_CHIP()'s reverse
+# branch so the curses helpers stay argument-free at their many call sites.
+_ACTIVE_THEME = "dark"
+
+
+def current_theme() -> str:
+    """The theme last applied by :func:`tui_init_colors` ("dark"|"light")."""
+    return _ACTIVE_THEME
+
+
+def tui_init_colors(theme: str = "dark", stdscr=None) -> None:
+    """Initialize the color palette for ``theme`` ("dark" | "light").
+
+    Safe to call multiple times — used both at startup and on a live theme
+    toggle. Unknown values fall back to dark. When ``stdscr`` is provided, the
+    light theme also fills the whole screen with a white background (so the
+    look is fixed regardless of the terminal's own background); dark resets the
+    fill to the terminal default.
+    """
+    global _ACTIVE_THEME
+    _ACTIVE_THEME = "light" if theme == "light" else "dark"
+    # curses raises curses.error when color isn't started, and ValueError
+    # ("Color pair is greater than COLOR_PAIRS-1") when curses isn't
+    # initialized at all (COLOR_PAIRS == -1). Swallow both so the helper is
+    # safe to call from unit tests and color-less terminals alike.
     try:
         curses.use_default_colors()
-    except curses.error:
+    except (curses.error, ValueError):
         pass
-    pairs = [
-        (1, curses.COLOR_BLACK, curses.COLOR_CYAN),    # selection
-        (2, curses.COLOR_YELLOW, -1),                  # header / accent
-        (3, curses.COLOR_GREEN, -1),                   # success / active
-        (4, curses.COLOR_BLUE, -1),                    # info
-        (5, curses.COLOR_RED, -1),                     # danger / error
-        (6, curses.COLOR_MAGENTA, -1),                 # mark
-        (7, curses.COLOR_WHITE, -1),                   # dim
-        (8, curses.COLOR_CYAN, -1),                    # secondary
-    ]
-    for n, fg, bg in pairs:
+    palette = _LIGHT_PALETTE if _ACTIVE_THEME == "light" else _DARK_PALETTE
+    for n, fg, bg in palette:
         try:
             curses.init_pair(n, fg, bg)
-        except curses.error:
+        except (curses.error, ValueError):
+            pass
+    # Fix the screen background to match the theme. Light = solid white (via the
+    # black-on-white fill pair) so untouched cells and attr-less text stay on
+    # white even on a dark terminal; dark = reset to the terminal default.
+    if stdscr is not None:
+        try:
+            if _ACTIVE_THEME == "light":
+                stdscr.bkgd(" ", curses.color_pair(_LIGHT_BG_PAIR))
+            else:
+                stdscr.bkgd(" ", 0)
+        except (curses.error, ValueError):
             pass
 
 
@@ -72,8 +135,42 @@ def CP_SEL() -> int:   # selection — REVERSE makes it visible even without col
     return _safe_pair(1, curses.A_BOLD | curses.A_REVERSE)
 
 
-def CP_HDR() -> int:
+def CP_ACTIVE_CHIP() -> int:
+    """Strongest highlight: the active main-tab chip / active sub-tab cell.
+
+    Dark = a solid cyan chip (black-on-cyan, BOLD). Light = a monochrome
+    reverse chip (default fg/bg swapped) so there is no fluorescent fill to
+    strain the eye on a white background. Selected list rows already use
+    CP_SEL() (which carries A_REVERSE), so they adapt automatically.
+    """
+    extra = curses.A_BOLD
+    if _ACTIVE_THEME == "light":
+        extra |= curses.A_REVERSE
+    return _safe_pair(1, extra)
+
+
+def CP_TITLE() -> int:
+    """Section / status TITLE — the accent tier, just below selection in the
+    emphasis hierarchy. Dark: yellow + bold (the strongest content accent).
+    Light: the default fg with NO underline/reverse, so a full-width title row
+    never renders as a rule or a solid bar on white. Distinct from CP_HDR(),
+    which is the subordinate table-column-header tier.
+    """
+    if _ACTIVE_THEME == "light":
+        return _safe_pair(2)
     return _safe_pair(2, curses.A_BOLD)
+
+
+def CP_HDR() -> int:
+    # TABLE COLUMN-HEADER tier — subordinate to CP_TITLE() so column labels
+    # recede beneath the section title (which owns the accent).
+    # Dark: dim grey (pair 7 + A_DIM) — quieter than the yellow title.
+    # Light: default fg + A_UNDERLINE. A_BOLD washes out on white (bold→bright
+    # on iTerm2 etc.), and the underline is per-cell here (not a full-width
+    # title row), so it reads as a header underline, not a rule.
+    if _ACTIVE_THEME == "light":
+        return _safe_pair(2, curses.A_UNDERLINE)
+    return _safe_pair(7, curses.A_DIM)
 
 
 def CP_OK() -> int:
@@ -193,7 +290,7 @@ def render_tab_bar(stdscr, y: int, x: int, w: int, active_idx: int, focused: boo
     # strongest cell on screen. Active+unfocused = bold cyan text with
     # underline (no fill) so it's clearly weaker than the focused chip but
     # still visibly different from inactive (dim) cells.
-    active_focused = _safe_pair(1, curses.A_BOLD)
+    active_focused = CP_ACTIVE_CHIP()
     active_unfocused = _safe_pair(8, curses.A_BOLD | curses.A_UNDERLINE)
     # Compute total cell width with full names; if it doesn't fit, fall back
     # to the short labels so a narrow terminal still shows every tab.
@@ -221,6 +318,27 @@ class TableColumn:
     width: int
 
 
+def render_title_bar(stdscr, y: int, h: int, w: int, title: str, *,
+                     search: Optional[str] = None) -> tuple[int, int]:
+    """Draw a full-width section / status TITLE at row ``y`` using ``CP_TITLE()``
+    (the accent tier — never the dim ``CP_HDR()`` column-header tier), with an
+    optional search-prompt row just below it, and return the body rectangle
+    ``(body_y, body_h)`` left beneath the title band.
+
+    This centralizes the "title row (+ optional search row) then content"
+    geometry each tab used to hand-roll, so the reserved-row arithmetic lives
+    in one place instead of drifting per renderer (the source of the earlier
+    Vault blank-band / off-by-rows bugs).
+    """
+    safe_addnstr(stdscr, y, 0, fit_cells(title, w - 1), w - 1, CP_TITLE())
+    used = 1
+    if search is not None:
+        safe_addnstr(stdscr, y + 1, 0, fit_cells(search, w - 1), w - 1,
+                     CP_INFO() | curses.A_BOLD)
+        used = 2
+    return y + used, max(0, h - used)
+
+
 def render_table(
     stdscr,
     y: int,
@@ -233,6 +351,7 @@ def render_table(
     selected: int,
     checked: Optional[set[int]] = None,
     show_header: bool = True,
+    header_rule: bool = True,
     top_offset: int = 0,
 ) -> int:
     """Draw a table at (y, x, h, w). Returns the number of data rows drawn.
@@ -259,9 +378,12 @@ def render_table(
             cursor += _draw_cell(stdscr, y, cursor, col.label, col.width + 2, w - (cursor - x), CP_HDR())
             if cursor - x >= w:
                 break
-        # Separator line.
-        safe_addnstr(stdscr, y + 1, x, "─" * max(0, w - 1), w - 1, CP_DIM())
-        header_h = 2
+        header_h = 1
+        # Separator line under the header — suppressed when header_rule=False
+        # so the header can attach directly to the first data row.
+        if header_rule:
+            safe_addnstr(stdscr, y + 1, x, "─" * max(0, w - 1), w - 1, CP_DIM())
+            header_h = 2
 
     avail = h - header_h
     if avail <= 0:
@@ -351,7 +473,7 @@ def render_detail_panel(
     # Build all content lines (title + blank + label:value pairs + wrapping).
     lines: list[tuple[str, int]] = []  # (text, attr)
     if title:
-        lines.append((fit_cells(title, inner_w), CP_HDR()))
+        lines.append((fit_cells(title, inner_w), CP_TITLE()))
         lines.append(("", 0))
     for label, value in fields:
         label_part = f"{label}: "
@@ -472,7 +594,7 @@ def text_input_modal(stdscr, prompt: str, *, title: str = "Input", initial: str 
             win.erase()
             win.box()
             safe_addnstr(win, 0, max(2, (box_w - cell_width(title) - 2) // 2),
-                         f" {title} ", box_w - 4, CP_HDR())
+                         f" {title} ", box_w - 4, CP_TITLE())
             safe_addnstr(win, 2, 2, fit_cells(prompt, box_w - 4), box_w - 4, 0)
             safe_addnstr(win, 3, 2, fit_cells("> " + buffer, box_w - 4), box_w - 4, curses.A_BOLD)
             safe_addnstr(win, box_h - 2, 2, fit_cells(" Enter:ok  Esc:cancel ", box_w - 4), box_w - 4, CP_DIM())
@@ -527,7 +649,7 @@ def preview_modal(stdscr, content: str, *, title: str = "Preview") -> None:
             win.erase()
             win.box()
             safe_addnstr(win, 0, max(2, (box_w - cell_width(title) - 2) // 2),
-                         f" {title} ", box_w - 4, CP_HDR())
+                         f" {title} ", box_w - 4, CP_TITLE())
             visible = raw_lines[scroll:scroll + inner_h]
             for i, ln in enumerate(visible):
                 lineno = scroll + i + 1
