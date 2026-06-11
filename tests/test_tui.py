@@ -5659,3 +5659,423 @@ def test_launch_tui_returns_0_on_clean_exit(monkeypatch):
     (line 419)."""
     monkeypatch.setattr("curses.wrapper", lambda fn: None)
     assert axt.launch_tui() == 0
+
+
+# ─── spawn_terminal_at (cst open_in_new_terminal port) ───────────────────────
+
+
+def _capture_popen(monkeypatch):
+    """Record every subprocess.Popen(argv, **kw) call; return the list."""
+    calls = []
+
+    def fake_popen(argv, **kw):
+        calls.append((argv, kw))
+        return MagicMock()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    return calls
+
+
+def test_spawn_terminal_iterm_uses_osascript(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/axt skill")
+    assert ok is True and info == "opened in iTerm"
+    argv = calls[0][0]
+    assert argv[0] == "osascript"
+    assert 'tell application "iTerm"' in argv[2]
+    assert "cd '/tmp/axt skill'" in argv[2]
+
+
+def test_spawn_terminal_apple_terminal(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and info == "opened in Terminal"
+    assert 'tell application "Terminal"' in calls[0][0][2]
+
+
+def test_spawn_terminal_unknown_term_program_suffix(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "FooTerm")
+    _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True
+    assert "opened in Terminal.app" in info
+    assert "unknown TERM_PROGRAM='FooTerm'" in info
+
+
+def test_spawn_terminal_unset_term_program_no_suffix(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.delenv("TERM_PROGRAM", raising=False)
+    _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and info == "opened in Terminal.app"
+
+
+def test_spawn_terminal_warp_falls_back_with_note(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "WarpTerminal")
+    _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and "Warp is not scriptable" in info
+
+
+def test_spawn_terminal_vscode_falls_back_with_note(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "vscode")
+    _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and "from vscode integrated terminal" in info
+
+
+def test_spawn_terminal_ghostty_cli(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/ghostty" if name == "ghostty" else None)
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and info == "opened in Ghostty"
+    assert calls[0][0] == ["/bin/ghostty", "--working-directory", "/tmp/x"]
+    # Second spawn is the AppleScript activate.
+    assert calls[1][0][0] == "osascript"
+
+
+def test_spawn_terminal_wezterm_cli(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "WezTerm")
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/wezterm" if name == "wezterm" else None)
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and info == "opened in WezTerm"
+    assert calls[0][0] == ["/bin/wezterm", "start", "--cwd", "/tmp/x"]
+
+
+def test_spawn_terminal_kitty_cli(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "kitty")
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/kitty" if name == "kitty" else None)
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and info == "opened in kitty"
+    assert calls[0][0] == ["/bin/kitty", "--detach", "--directory", "/tmp/x"]
+
+
+def test_spawn_terminal_alacritty_cli(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "Alacritty")
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/alacritty" if name == "alacritty" else None)
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and info == "opened in Alacritty"
+    assert calls[0][0] == ["/bin/alacritty", "--working-directory", "/tmp/x"]
+
+
+def test_spawn_terminal_ghostty_missing_falls_back(monkeypatch):
+    """TERM_PROGRAM matches ghostty but the binary is absent → Terminal.app."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "ghostty")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and "opened in Terminal.app" in info
+    assert calls[0][0][0] == "osascript"
+
+
+def test_spawn_terminal_osascript_oserror(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+
+    def boom(argv, **kw):
+        raise OSError("spawn denied")
+
+    monkeypatch.setattr("subprocess.Popen", boom)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is False and "osascript failed" in info
+
+
+def test_spawn_terminal_linux_gnome_terminal(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("TERMINAL", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/gnome-terminal" if name == "gnome-terminal" else None)
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and info == "opened in gnome-terminal"
+    assert calls[0][0] == ["/bin/gnome-terminal", "--working-directory", "/tmp/x"]
+
+
+def test_spawn_terminal_linux_env_terminal_first(monkeypatch):
+    """$TERMINAL is tried before the built-in candidate list; generic
+    terminals inherit cwd via Popen(cwd=...)."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("TERMINAL", "footerm")
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/footerm" if name == "footerm" else None)
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is True and info == "opened in footerm"
+    assert calls[0][0] == ["/bin/footerm"]
+    assert calls[0][1]["cwd"] == "/tmp/x"
+
+
+def test_spawn_terminal_linux_none_found(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("TERMINAL", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    ok, info = axt.spawn_terminal_at("/tmp/x")
+    assert ok is False and info == "no supported terminal emulator found"
+
+
+def test_spawn_terminal_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    ok, info = axt.spawn_terminal_at("C:/x")
+    assert ok is False and "unsupported platform" in info
+
+
+def test_spawn_terminal_cmux_binary_missing(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    ok, info = axt.spawn_terminal_at("/tmp/x", cmux_mode="workspace")
+    assert ok is False and info == "cmux binary not found"
+
+
+def test_spawn_terminal_cmux_workspace(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/cmux" if name == "cmux" else None)
+    calls = _capture_popen(monkeypatch)
+    ok, info = axt.spawn_terminal_at("/tmp/my-skill", cmux_mode="workspace")
+    assert ok is True and info == "opened in cmux workspace"
+    argv = calls[0][0]
+    assert argv[:2] == ["/bin/cmux", "new-workspace"]
+    assert argv[argv.index("--cwd") + 1] == "/tmp/my-skill"
+    assert argv[argv.index("--name") + 1] == "axt:my-skill"
+
+
+def test_spawn_terminal_cmux_window(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/cmux" if name == "cmux" else None)
+    runs = []
+
+    def fake_run(argv, **kw):
+        runs.append(argv)
+        r = MagicMock()
+        r.returncode = 0
+        r.stderr = ""
+        if argv[1] == "new-window":
+            r.stdout = "window window:7\n"
+        elif argv[1] == "list-workspaces":
+            r.stdout = "tab workspace:42 active\n"
+        else:
+            r.stdout = ""
+        return r
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    ok, info = axt.spawn_terminal_at("/tmp/x", cmux_mode="window")
+    assert ok is True and info == "opened in cmux window"
+    send = next(argv for argv in runs if argv[1] == "send")
+    assert send[send.index("--workspace") + 1] == "workspace:42"
+    assert "cd /tmp/x" in send[-1]
+
+
+def test_spawn_terminal_cmux_window_create_fails(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: "/bin/cmux" if name == "cmux" else None)
+
+    def fake_run(argv, **kw):
+        r = MagicMock()
+        r.returncode = 1
+        r.stdout = ""
+        r.stderr = "nope"
+        return r
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    ok, info = axt.spawn_terminal_at("/tmp/x", cmux_mode="window")
+    assert ok is False and "cmux new-window failed" in info
+
+
+# ─── cmux_open_mode_modal ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("key,expected", [
+    (ord("t"), "workspace"),
+    (10, "workspace"),  # Enter defaults to workspace tab
+    (ord("w"), "window"),
+    (27, None),  # Esc cancels
+])
+def test_cmux_open_mode_modal_keys(monkeypatch, key, expected):
+    scr = _make_stdscr()
+    win, _calls = _make_modal_win([key])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    assert axt.cmux_open_mode_modal(scr) == expected
+
+
+def test_cmux_open_mode_modal_newwin_failure(monkeypatch):
+    scr = _make_stdscr()
+    monkeypatch.setattr("curses.newwin",
+                        lambda *a, **kw: (_ for _ in ()).throw(curses.error("too small")))
+    assert axt.cmux_open_mode_modal(scr) is None
+
+
+# ─── _item_terminal_dir per item type ────────────────────────────────────────
+
+
+def test_item_terminal_dir_skill_resolves_symlink(tmp_path):
+    real = tmp_path / "real-skill"
+    real.mkdir()
+    link = tmp_path / "linked-skill"
+    link.symlink_to(real)
+    skill = axt.SkillInfo(name="s", path=str(link), is_symlink=True, source="user")
+    assert axt._item_terminal_dir("skills", skill) == str(real.resolve())
+
+
+def test_item_terminal_dir_command_uses_parent(tmp_path):
+    f = tmp_path / "cmds" / "deploy.md"
+    f.parent.mkdir()
+    f.write_text("x")
+    cmd = axt.CommandInfo(name="deploy", source="user", source_path=str(f),
+                          description="", content="")
+    assert axt._item_terminal_dir("commands", cmd) == str(f.parent)
+
+
+def test_item_terminal_dir_command_empty_source_path():
+    cmd = axt.CommandInfo(name="x", source="user", source_path="",
+                          description="", content="")
+    assert axt._item_terminal_dir("commands", cmd) is None
+
+
+def test_item_terminal_dir_plugin_and_market():
+    plugin = axt.PluginInfo(id="p@m", name="p", marketplace="m", version="1",
+                            install_path="/plug/dir", scope="user",
+                            installed_at="", last_updated="")
+    assert axt._item_terminal_dir("plugins", plugin) == "/plug/dir"
+    market = axt.MarketplaceInfo(name="m", source=None,
+                                 install_location="/mkt/dir", last_updated="")
+    assert axt._item_terminal_dir("market", market) == "/mkt/dir"
+
+
+def test_item_terminal_dir_hook_uses_parent(tmp_path):
+    f = tmp_path / "settings.json"
+    f.write_text("{}")
+    hook = axt.HookInfo(event="PreToolUse", matcher="*", source="user",
+                        source_path=str(f), type="command")
+    assert axt._item_terminal_dir("hooks", hook) == str(tmp_path)
+
+
+def test_item_terminal_dir_mcp_scopes(monkeypatch, tmp_path):
+    plugin = axt.PluginInfo(id="pid@m", name="p", marketplace="m", version="1",
+                            install_path="/plug/pid", scope="user",
+                            installed_at="", last_updated="")
+    monkeypatch.setattr("axt.list_installed_plugins", lambda path: [plugin])
+    srv_plugin = axt.McpServerInfo(name="s", plugin_id="pid@m", command="x",
+                                   args=(), env=(), scope="plugin")
+    assert axt._item_terminal_dir("mcp", srv_plugin) == "/plug/pid"
+    srv_orphan = axt.McpServerInfo(name="s", plugin_id="gone@m", command="x",
+                                   args=(), env=(), scope="plugin")
+    assert axt._item_terminal_dir("mcp", srv_orphan) is None
+    srv_user = axt.McpServerInfo(name="s", plugin_id="", command="x",
+                                 args=(), env=(), scope="user")
+    assert axt._item_terminal_dir("mcp", srv_user) == str(axt.PATHS.claude_dir)
+    srv_proj = axt.McpServerInfo(name="s", plugin_id="", command="x",
+                                 args=(), env=(), scope="project")
+    assert axt._item_terminal_dir("mcp", srv_proj) == str(Path.cwd())
+
+
+def test_item_terminal_dir_none_item_and_unknown_sub():
+    assert axt._item_terminal_dir("skills", None) is None
+    assert axt._item_terminal_dir("vault", object()) is None
+
+
+# ─── `o` key: open terminal at item path ─────────────────────────────────────
+
+
+def _skills_state(tmp_path):
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    state = axt.TuiState()
+    state.ext_sub_tab = "skills"
+    state.ext_cache["skills"] = [axt.SkillInfo(
+        name="my-skill", path=str(skill_dir), is_symlink=False, source="user")]
+    state.ext_selected["skills"] = 0
+    state.stdscr_callbacks = {"stdscr": object()}
+    return state, skill_dir
+
+
+def test_subtab_o_opens_terminal(monkeypatch, tmp_path):
+    monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
+    opened = []
+    monkeypatch.setattr("axt.spawn_terminal_at",
+                        lambda cwd, cmux_mode=None: opened.append((cwd, cmux_mode)) or (True, "opened in Terminal"))
+    state, skill_dir = _skills_state(tmp_path)
+    assert axt._handle_subtab_action(state, "skills", ord("o")) == "opened in Terminal"
+    assert opened == [(str(skill_dir.resolve()), None)]
+
+
+def test_subtab_o_path_not_found(monkeypatch, tmp_path):
+    monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
+    state, skill_dir = _skills_state(tmp_path)
+    state.ext_cache["skills"] = [axt.SkillInfo(
+        name="gone", path=str(tmp_path / "missing"), is_symlink=False, source="user")]
+    msg = axt._handle_subtab_action(state, "skills", ord("o"))
+    assert msg is not None and msg.startswith("Path not found:")
+
+
+def test_subtab_o_no_item_returns_none(monkeypatch):
+    monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
+    state = axt.TuiState()
+    state.ext_cache["skills"] = []
+    state.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(state, "skills", ord("o")) is None
+
+
+def test_subtab_o_mcp_without_dir(monkeypatch):
+    monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
+    monkeypatch.setattr("axt.list_installed_plugins", lambda path: [])
+    state = axt.TuiState()
+    state.ext_cache["mcp"] = [axt.McpServerInfo(
+        name="s", plugin_id="gone@m", command="x", args=(), env=(), scope="plugin")]
+    state.ext_selected["mcp"] = 0
+    state.stdscr_callbacks = {"stdscr": object()}
+    assert axt._handle_subtab_action(state, "mcp", ord("o")) == "No directory for this item"
+
+
+def test_subtab_o_cmux_chooser_cancel(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "ws-1")
+    monkeypatch.setattr("axt.cmux_open_mode_modal", lambda stdscr: None)
+    state, _ = _skills_state(tmp_path)
+    assert axt._handle_subtab_action(state, "skills", ord("o")) == "Cancelled"
+
+
+def test_subtab_o_cmux_chooser_workspace(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMUX_WORKSPACE_ID", "ws-1")
+    monkeypatch.setattr("axt.cmux_open_mode_modal", lambda stdscr: "workspace")
+    opened = []
+    monkeypatch.setattr("axt.spawn_terminal_at",
+                        lambda cwd, cmux_mode=None: opened.append(cmux_mode) or (True, "opened in cmux workspace"))
+    state, _ = _skills_state(tmp_path)
+    assert axt._handle_subtab_action(state, "skills", ord("o")) == "opened in cmux workspace"
+    assert opened == ["workspace"]
+
+
+def test_vault_o_opens_terminal_at_parent_of_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
+    f = tmp_path / "deploy.md"
+    f.write_text("x")
+    opened = []
+    monkeypatch.setattr("axt.spawn_terminal_at",
+                        lambda cwd, cmux_mode=None: opened.append(cwd) or (True, "opened in Terminal"))
+    state = axt.TuiState()
+    state.vault_items = [axt.VaultItem(name="deploy", type="command",
+                                       path=str(f), description="")]
+    state.vault_selected = 0
+    assert axt.handle_vault_input(state, ord("o")) == "opened in Terminal"
+    assert opened == [str(tmp_path)]
+
+
+def test_vault_o_spawn_failure_toast(monkeypatch, tmp_path):
+    monkeypatch.delenv("CMUX_WORKSPACE_ID", raising=False)
+    d = tmp_path / "skill"
+    d.mkdir()
+    monkeypatch.setattr("axt.spawn_terminal_at",
+                        lambda cwd, cmux_mode=None: (False, "boom"))
+    state = axt.TuiState()
+    state.vault_items = [axt.VaultItem(name="s", type="skill",
+                                       path=str(d), description="")]
+    state.vault_selected = 0
+    assert axt.handle_vault_input(state, ord("o")) == "Terminal open failed: boom"

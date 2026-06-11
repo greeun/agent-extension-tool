@@ -80,8 +80,12 @@ Vault
   m             Migrate ~/.claude/skills,commands,agents → vault
   S             Sync .claude/<sub>/ symlinks with .axt-profile.json
   r             Refresh (cheap, no cross-project walk)
+  o             Open a new terminal at the item's storage path
 
 Extensions sub-tab actions
+  All sub-tabs: o=open a new terminal at the item's directory
+                (matches your terminal via TERM_PROGRAM; inside cmux a
+                 workspace/window chooser appears first)
   Plugins:      e=enable (global)  d=disable (global)
                 E=enable (project) D=disable (project)
                 x=uninstall (confirm)
@@ -163,10 +167,10 @@ def _render_frame(stdscr, state: TuiState) -> None:
         else:
             shortcuts = (
                 "1-3:tab  [/]:sub  j/k:nav  Space:project  g:global  "
-                "Enter:apply  F:filter  s:sort  /:search  i:import  f:scan  M:mode  m:migrate  S:sync  r:refresh  ?:help  q:quit"
+                "Enter:apply  F:filter  s:sort  /:search  i:import  f:scan  M:mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
-        shortcuts = "1-3:tab  [/]:sub  j/k:nav  r:refresh  ?:help  q:quit"
+        shortcuts = "1-3:tab  [/]:sub  j/k:nav  o:term  r:refresh  ?:help  q:quit"
     elif tab_key == "context":
         shortcuts = "1-3:tab  j/k:nav  P:project pane  e:edit  r:refresh  ?:help  q:quit"
     else:

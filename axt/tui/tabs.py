@@ -659,6 +659,10 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         state.vault_searching = True
         state.vault_search = ""
         return "/: type to filter, Enter to apply, Esc to cancel"
+    elif key == ord("o") and current:
+        # Open a new terminal at the item's storage path (file → parent dir).
+        p = Path(current.path)
+        return _open_terminal_for_dir(state, str(p if p.is_dir() else p.parent))
     elif key == ord(" ") and current and current.type != "plugin":
         # Toggle pending project link for the selected item.
         if current.name in state.vault_pending_project:
@@ -1937,8 +1941,61 @@ def _selected_item(state: TuiState, sub: str) -> Any:
     return None
 
 
+def _item_terminal_dir(sub: str, item: Any) -> Optional[str]:
+    """Directory a new terminal should open in for an Extensions sub-tab item.
+
+    Skills resolve symlinks to the real storage path; file-backed items
+    (commands/agents/hooks) open at the file's parent directory. MCP servers
+    map scope → plugin install dir / ~/.claude / project cwd."""
+    if item is None:
+        return None
+    if sub == "skills":
+        try:
+            return str(Path(item.path).resolve())
+        except OSError:
+            return item.path
+    if sub in ("commands", "agents", "hooks"):
+        sp = getattr(item, "source_path", "") or ""
+        if not sp:
+            return None
+        p = Path(sp)
+        return str(p if p.is_dir() else p.parent)
+    if sub == "plugins":
+        return item.install_path
+    if sub == "market":
+        return item.install_location
+    if sub == "mcp":
+        if item.scope == "plugin" and item.plugin_id:
+            for p in list_installed_plugins(PATHS.installed_plugins):
+                if p.id == item.plugin_id:
+                    return p.install_path
+            return None
+        if item.scope == "user":
+            return str(PATHS.claude_dir)
+        return str(Path.cwd())  # project / project-file scopes
+    return None
+
+
+def _open_terminal_for_dir(state: TuiState, directory: Optional[str]) -> Optional[str]:
+    """Shared `o`-key body: validate `directory`, pick a cmux mode when
+    running inside cmux, spawn the terminal, and return the toast message."""
+    if not directory:
+        return "No directory for this item"
+    if not os.path.isdir(directory):
+        return f"Path not found: {directory}"
+    cb = state.stdscr_callbacks
+    stdscr = cb.get("stdscr") if cb else None
+    cmux_mode: Optional[str] = None
+    if os.environ.get("CMUX_WORKSPACE_ID") and stdscr is not None:
+        cmux_mode = cmux_open_mode_modal(stdscr)
+        if cmux_mode is None:
+            return "Cancelled"
+    ok, info = spawn_terminal_at(directory, cmux_mode=cmux_mode)
+    return info if ok else f"Terminal open failed: {info}"
+
+
 def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
-    """Sub-tab-specific actions (l/u/a/s/r/p/e/x). Returns status message."""
+    """Sub-tab-specific actions (l/u/a/s/r/p/e/x/o). Returns status message."""
     # Note: stdscr-bound actions (confirm_modal, text_input_modal,
     # preview_modal, open_in_editor) are wired through _tab_stdscr_actions
     # because handler functions don't have stdscr. We use a callback.
@@ -1946,6 +2003,13 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
     if not cb:
         return None  # No interactive context available (e.g. tests)
     stdscr = cb.get("stdscr")
+
+    # ── All sub-tabs: o=open a new terminal at the item's directory ───────
+    if key == ord("o"):
+        item = _selected_item(state, sub)
+        if item is None:
+            return None
+        return _open_terminal_for_dir(state, _item_terminal_dir(sub, item))
 
     # ── Plugins: e/d=global, E/D=project, x=uninstall i=info ───────────────
     if sub == "plugins":

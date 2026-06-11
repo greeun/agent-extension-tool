@@ -130,10 +130,11 @@ Space       project 토글     s           정렬(name/type/vault/added/updated/
 Enter       적용 또는 detail i           import to vault (global-only)
 Esc         폐기/뒤로        f           scan mode toggle (default/full)
 /           검색             m           migrate (글로벌→vault)
-                             S           sync project
+o           터미널 열기       S           sync project
 ```
 
 ### 2.6 키바인딩 (서브탭별 고유)
+- **공통(모든 서브탭)**: `o` 포커스된 항목의 저장 경로에서 새 터미널 열기 (cst 방식 — TERM_PROGRAM 매칭, cmux 안에서는 workspace/window 선택 모달)
 - **Skills**: `u` unlink, `l` link (path 입력)
 - **Hooks**: `p` preview (dry-run)
 - **Plugins**: `/` 필터, `i` install wizard, detail mode action list

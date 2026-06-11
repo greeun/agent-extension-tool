@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import curses
 import os
+import shlex
+import shutil
 import subprocess
+import sys
 import unicodedata
 from dataclasses import dataclass
 from typing import Optional
@@ -707,5 +710,244 @@ def open_in_editor(stdscr, path: os.PathLike[str] | str) -> bool:
     except curses.error:
         pass
     return rc == 0
+
+
+# ── terminal-window spawning (cst `open_in_new_terminal` port) ──────────────
+
+
+def _applescript_escape(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _popen_detached(argv: list[str], cwd: Optional[str] = None) -> None:
+    """Spawn `argv` fully detached from the TUI (no stdio, own session)."""
+    subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+
+def _activate_macos_app(app_name: str) -> None:
+    """Bring a macOS app to the foreground via AppleScript. Fire-and-forget;
+    failures are silent."""
+    try:
+        _popen_detached(["osascript", "-e",
+                         f'tell application "{app_name}" to activate'])
+    except OSError:
+        pass
+
+
+def cmux_open_mode_modal(stdscr) -> Optional[str]:
+    """cmux open-mode chooser: workspace tab vs new window (cst port).
+
+    Returns "workspace", "window", or None (cancel)."""
+    h, w = stdscr.getmaxyx()
+    box_w = min(56, max(40, w - 6))
+    box_h = 7
+    y0 = max(0, (h - box_h) // 2)
+    x0 = max(0, (w - box_w) // 2)
+    try:
+        win = curses.newwin(box_h, box_w, y0, x0)
+    except curses.error:
+        return None
+    win.keypad(True)
+    try:
+        win.box()
+        title = " cmux: Open Mode "
+        safe_addnstr(win, 0, max(2, (box_w - cell_width(title)) // 2), title,
+                     box_w - 4, CP_TITLE())
+        safe_addnstr(win, 2, 3, "[t] Workspace tab  (current window)", box_w - 6, 0)
+        safe_addnstr(win, 3, 3, "[w] New window", box_w - 6, 0)
+        safe_addnstr(win, box_h - 2, 3, " t / w / Esc cancel ", box_w - 6,
+                     curses.A_BOLD)
+        win.refresh()
+        while True:
+            k = win.getch()
+            if k in (ord("t"), ord("T")) or is_enter(k):
+                return "workspace"
+            if k in (ord("w"), ord("W")):
+                return "window"
+            if k == KEY_ESC:
+                return None
+    finally:
+        del win
+        stdscr.touchwin()
+        stdscr.refresh()
+
+
+def _spawn_terminal_cmux(cwd: str, cmux_mode: str) -> tuple[bool, str]:
+    """Open `cwd` in cmux: a workspace tab or a new window (cst port)."""
+    cmux_bin = shutil.which("cmux")
+    if not cmux_bin:
+        return False, "cmux binary not found"
+    try:
+        if cmux_mode == "window":
+            result = subprocess.run(
+                [cmux_bin, "new-window"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return False, f"cmux new-window failed: {result.stderr.strip()}"
+            parts = result.stdout.strip().split()
+            win_id = parts[1] if len(parts) >= 2 else None
+            if not win_id:
+                return False, "cmux new-window returned no window id"
+            ws_result = subprocess.run(
+                [cmux_bin, "list-workspaces", "--window", win_id],
+                capture_output=True, text=True, timeout=5,
+            )
+            ws_ref = None
+            for line in ws_result.stdout.strip().splitlines():
+                for tok in line.split():
+                    if tok.startswith("workspace:"):
+                        ws_ref = tok
+                        break
+                if ws_ref:
+                    break
+            if ws_ref:
+                subprocess.run(
+                    [cmux_bin, "send", "--workspace", ws_ref,
+                     f"cd {shlex.quote(cwd)}\\n"],
+                    capture_output=True, timeout=5,
+                )
+            return True, "opened in cmux window"
+        _popen_detached([cmux_bin, "new-workspace",
+                         "--name", f"axt:{os.path.basename(cwd) or cwd}",
+                         "--cwd", cwd])
+        return True, "opened in cmux workspace"
+    except OSError as e:
+        return False, f"cmux spawn failed: {e}"
+    except subprocess.TimeoutExpired:
+        return False, "cmux command timed out"
+
+
+def spawn_terminal_at(cwd: str, cmux_mode: Optional[str] = None) -> tuple[bool, str]:
+    """Open a new terminal window with an interactive shell at `cwd`.
+
+    Port of cst's `open_in_new_terminal` adapter, minus the resume command:
+    match the user's current terminal (TERM_PROGRAM) first, fall back to
+    Terminal.app on macOS / a candidate list on Linux. Returns (ok, info);
+    `info` names the terminal used or carries the error for the status toast.
+
+    When `cmux_mode` is "workspace" or "window", open via cmux instead of a
+    native terminal window.
+    """
+    if cmux_mode:
+        return _spawn_terminal_cmux(cwd, cmux_mode)
+
+    shell_cmd = f"cd {shlex.quote(cwd)}"
+
+    if sys.platform == "darwin":
+        tp = os.environ.get("TERM_PROGRAM", "")
+        tp_l = tp.lower()
+        escaped = _applescript_escape(shell_cmd)
+
+        def _run_osascript(script: str, label: str) -> tuple[bool, str]:
+            try:
+                _popen_detached(["osascript", "-e", script])
+                return True, f"opened in {label}"
+            except OSError as e:
+                return False, f"osascript failed: {e}"
+
+        def _run_cli(argv: list[str], label: str,
+                     activate_name: Optional[str] = None) -> tuple[bool, str]:
+            try:
+                _popen_detached(argv)
+                if activate_name:
+                    _activate_macos_app(activate_name)
+                return True, f"opened in {label}"
+            except OSError as e:
+                return False, f"{label} spawn failed: {e}"
+
+        terminal_app_script = (
+            'tell application "Terminal"\n'
+            '  activate\n'
+            f'  do script "{escaped}"\n'
+            "end tell"
+        )
+        iterm_script = (
+            'tell application "iTerm"\n'
+            '  activate\n'
+            '  set newWindow to (create window with default profile)\n'
+            f'  tell current session of newWindow to write text "{escaped}"\n'
+            "end tell"
+        )
+
+        # Match the user's current terminal first.
+        if "iterm" in tp_l:
+            return _run_osascript(iterm_script, "iTerm")
+        if "ghostty" in tp_l:
+            p = shutil.which("ghostty")
+            if p:
+                return _run_cli([p, "--working-directory", cwd],
+                                "Ghostty", activate_name="Ghostty")
+        if "wezterm" in tp_l:
+            p = shutil.which("wezterm")
+            if p:
+                return _run_cli([p, "start", "--cwd", cwd],
+                                "WezTerm", activate_name="WezTerm")
+        if "kitty" in tp_l:
+            p = shutil.which("kitty")
+            if p:
+                return _run_cli([p, "--detach", "--directory", cwd],
+                                "kitty", activate_name="kitty")
+        if "alacritty" in tp_l:
+            p = shutil.which("alacritty")
+            if p:
+                return _run_cli([p, "--working-directory", cwd],
+                                "Alacritty", activate_name="Alacritty")
+        if tp == "Apple_Terminal":
+            return _run_osascript(terminal_app_script, "Terminal")
+        if "warp" in tp_l:
+            # Warp has no public scripting API; fall back to Terminal.app.
+            ok, info = _run_osascript(terminal_app_script, "Terminal.app")
+            return ok, f"{info}  (Warp is not scriptable)"
+        if tp_l in ("vscode", "cursor"):
+            ok, info = _run_osascript(terminal_app_script, "Terminal.app")
+            return ok, f"{info}  (from {tp} integrated terminal)"
+
+        # Unknown / unset TERM_PROGRAM → default to Terminal.app.
+        ok, info = _run_osascript(terminal_app_script, "Terminal.app")
+        suffix = f"  (unknown TERM_PROGRAM={tp!r})" if tp else ""
+        return ok, info + suffix
+
+    if sys.platform.startswith("linux"):
+        candidates: list[str] = []
+        env_term = os.environ.get("TERMINAL")
+        if env_term:
+            candidates.append(env_term)
+        candidates.extend([
+            "x-terminal-emulator", "gnome-terminal", "konsole",
+            "alacritty", "kitty", "wezterm", "xterm",
+        ])
+        for term in candidates:
+            path = shutil.which(term)
+            if not path:
+                continue
+            try:
+                if term == "gnome-terminal":
+                    _popen_detached([path, "--working-directory", cwd])
+                elif term == "konsole":
+                    _popen_detached([path, "--workdir", cwd])
+                elif term == "wezterm":
+                    _popen_detached([path, "start", "--cwd", cwd])
+                elif term == "kitty":
+                    _popen_detached([path, "--detach", "--directory", cwd])
+                elif term == "alacritty":
+                    _popen_detached([path, "--working-directory", cwd])
+                else:
+                    # xterm, x-terminal-emulator, $TERMINAL, … — the spawned
+                    # terminal starts its shell in the inherited cwd.
+                    _popen_detached([path], cwd=cwd)
+                return True, f"opened in {term}"
+            except OSError:
+                continue
+        return False, "no supported terminal emulator found"
+
+    return False, f"unsupported platform: {sys.platform}"
 
 
