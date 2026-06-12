@@ -625,6 +625,52 @@ def collect_mcp_servers(
     return servers
 
 
+def set_mcp_disabled(
+    name: str,
+    *,
+    disabled: bool,
+    claude_config_path: os.PathLike[str] | str | None = None,
+    project_dir: os.PathLike[str] | str | None = None,
+) -> None:
+    """Toggle a server's presence in a project's ``disabledMcpServers`` list.
+
+    Mirrors Claude Code's only native per-project MCP switch: a name listed
+    under ``projects[<dir>].disabledMcpServers`` in ``~/.claude.json`` is not
+    started for that project. ``disabled=True`` adds the name; ``False`` removes
+    it. The switch is by name, so any scope (plugin/user/project/project-file)
+    can be silenced for the current project. ``claude_config_path`` /
+    ``project_dir`` default to ``PATHS.claude_config`` and the current directory.
+    """
+    cfg_path = Path(claude_config_path) if claude_config_path is not None else PATHS.claude_config
+    proj = str(Path(project_dir) if project_dir is not None else Path.cwd())
+
+    config = read_json(cfg_path, fallback={})
+    if not isinstance(config, dict):
+        config = {}
+    projects = config.get("projects")
+    if not isinstance(projects, dict):
+        projects = {}
+        config["projects"] = projects
+    entry = projects.get(proj)
+    if not isinstance(entry, dict):
+        entry = {}
+        projects[proj] = entry
+
+    current = entry.get("disabledMcpServers")
+    names = [str(x) for x in current] if isinstance(current, list) else []
+    if disabled:
+        if name not in names:
+            names.append(name)
+    else:
+        names = [n for n in names if n != name]
+
+    if names:
+        entry["disabledMcpServers"] = names
+    else:
+        entry.pop("disabledMcpServers", None)
+    write_json_atomic(cfg_path, config)
+
+
 # ─── Skill ───────────────────────────────────────────────────────────────────
 
 
@@ -897,53 +943,61 @@ class HookInfo:
     condition: Optional[str] = None
     once: Optional[bool] = None
     version: str = ""  # parent plugin's version when source=="plugin"
+    disabled: bool = False  # parked under `disabledHooks` (axt's off switch)
 
 
 def _extract_hooks(
     settings: dict[str, Any], source: str, source_path: str, *, version: str = "",
 ) -> list[HookInfo]:
-    """Pull hook definitions out of one settings/hooks.json blob."""
-    raw_map = settings.get("hooks")
-    if not isinstance(raw_map, dict):
-        return []
+    """Pull hook definitions out of one settings/hooks.json blob.
+
+    Reads the live ``hooks`` map and axt's parked ``disabledHooks`` mirror
+    (same shape); the latter yields ``HookInfo`` with ``disabled=True``.
+    Claude Code itself ignores ``disabledHooks``, so a parked hook never runs.
+    """
     out: list[HookInfo] = []
-    for event in HOOK_EVENTS:
-        rules = raw_map.get(event)
-        if not isinstance(rules, list):
+    for map_key, is_disabled in (("hooks", False), ("disabledHooks", True)):
+        raw_map = settings.get(map_key)
+        if not isinstance(raw_map, dict):
             continue
-        for rule in rules:
-            if not isinstance(rule, dict):
+        for event in HOOK_EVENTS:
+            rules = raw_map.get(event)
+            if not isinstance(rules, list):
                 continue
-            matcher = rule.get("matcher") or "*"
-            hooks_list = rule.get("hooks")
-            if not isinstance(hooks_list, list):
-                continue
-            for hook in hooks_list:
-                if not isinstance(hook, dict):
+            for rule in rules:
+                if not isinstance(rule, dict):
                     continue
-                hook_type = hook.get("type") if hook.get("type") in HOOK_TYPES else "command"
-                out.append(
-                    HookInfo(
-                        event=event,
-                        matcher=matcher,
-                        source=source,
-                        source_path=source_path,
-                        type=hook_type,
-                        command=hook.get("command"),
-                        url=hook.get("url"),
-                        server=hook.get("server"),
-                        tool=hook.get("tool"),
-                        prompt=hook.get("prompt"),
-                        model=hook.get("model"),
-                        timeout=hook.get("timeout"),
-                        status_message=hook.get("statusMessage"),
-                        async_=hook.get("async") or None,
-                        async_rewake=hook.get("asyncRewake") or None,
-                        condition=hook.get("if"),
-                        once=hook.get("once") or None,
-                        version=version,
+                matcher = rule.get("matcher") or "*"
+                hooks_list = rule.get("hooks")
+                if not isinstance(hooks_list, list):
+                    continue
+                for hook in hooks_list:
+                    if not isinstance(hook, dict):
+                        continue
+                    hook_type = hook.get("type") if hook.get("type") in HOOK_TYPES else "command"
+                    out.append(
+                        HookInfo(
+                            event=event,
+                            matcher=matcher,
+                            source=source,
+                            source_path=source_path,
+                            type=hook_type,
+                            command=hook.get("command"),
+                            url=hook.get("url"),
+                            server=hook.get("server"),
+                            tool=hook.get("tool"),
+                            prompt=hook.get("prompt"),
+                            model=hook.get("model"),
+                            timeout=hook.get("timeout"),
+                            status_message=hook.get("statusMessage"),
+                            async_=hook.get("async") or None,
+                            async_rewake=hook.get("asyncRewake") or None,
+                            condition=hook.get("if"),
+                            once=hook.get("once") or None,
+                            version=version,
+                            disabled=is_disabled,
+                        )
                     )
-                )
     return out
 
 
@@ -1062,6 +1116,124 @@ def get_hook_detail(hook: HookInfo) -> str:
     if hook.type in ("prompt", "agent"):
         return (hook.prompt or "")[:60]
     return ""
+
+
+def _hook_identity(hook: HookInfo) -> dict[str, Any]:
+    """Identifying subset of an inner hook dict: its type + payload field."""
+    ident: dict[str, Any] = {"type": hook.type}
+    for field_name, value in (
+        ("command", hook.command),
+        ("url", hook.url),
+        ("server", hook.server),
+        ("tool", hook.tool),
+        ("prompt", hook.prompt),
+    ):
+        if value is not None:
+            ident[field_name] = value
+    return ident
+
+
+def _hook_dict_matches(hook_dict: dict[str, Any], ident: dict[str, Any]) -> bool:
+    """True when a raw hook dict carries the same type + payload as ``ident``."""
+    hook_type = hook_dict.get("type") if hook_dict.get("type") in HOOK_TYPES else "command"
+    if hook_type != ident.get("type"):
+        return False
+    for key, value in ident.items():
+        if key == "type":
+            continue
+        if hook_dict.get(key) != value:
+            return False
+    return True
+
+
+def set_hook_disabled(
+    settings_path: os.PathLike[str] | str,
+    hook: HookInfo,
+    *,
+    disabled: bool,
+) -> bool:
+    """Move one hook between the live ``hooks`` map and a parked ``disabledHooks``
+    mirror inside the SAME settings file.
+
+    Claude Code has no native per-hook switch: an entry under ``hooks`` always
+    runs. axt's off switch relocates the entry to a sibling ``disabledHooks``
+    key (identical shape) that Claude Code ignores and our atomic writer
+    preserves — so a disabled hook stops running while its full definition
+    survives for a lossless re-enable. ``disabled=True`` moves hooks→disabled,
+    ``False`` moves it back.
+
+    Operates at single-hook granularity: only the matching inner hook dict is
+    moved, splitting/merging the enclosing matcher rule as needed. Returns True
+    when a matching hook was found and moved; False when nothing matched (it is
+    already in the requested state, or no longer present in the file).
+
+    Plugin-sourced hooks live in a plugin's ``hooks/hooks.json`` and are not
+    file-managed here — callers must refuse ``hook.source == "plugin"``.
+    """
+    src_key = "hooks" if disabled else "disabledHooks"
+    dst_key = "disabledHooks" if disabled else "hooks"
+
+    settings = _read_settings(settings_path)
+    src_map = settings.get(src_key)
+    if not isinstance(src_map, dict):
+        return False
+    rules = src_map.get(hook.event)
+    if not isinstance(rules, list):
+        return False
+
+    ident = _hook_identity(hook)
+    moved: Optional[dict[str, Any]] = None
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        if (rule.get("matcher") or "*") != hook.matcher:
+            continue
+        hooks_list = rule.get("hooks")
+        if not isinstance(hooks_list, list):
+            continue
+        for i, hook_dict in enumerate(hooks_list):
+            if isinstance(hook_dict, dict) and _hook_dict_matches(hook_dict, ident):
+                moved = hooks_list.pop(i)
+                break
+        if moved is not None:
+            if not hooks_list:
+                rules.remove(rule)
+            break
+    if moved is None:
+        return False
+
+    # Prune the now-empty source containers.
+    if not rules:
+        src_map.pop(hook.event, None)
+    if not src_map:
+        settings.pop(src_key, None)
+
+    # Insert into the destination, merging into a same-matcher rule when one
+    # already exists so we don't grow duplicate matcher blocks.
+    dst_map = settings.get(dst_key)
+    if not isinstance(dst_map, dict):
+        dst_map = {}
+        settings[dst_key] = dst_map
+    dst_rules = dst_map.get(hook.event)
+    if not isinstance(dst_rules, list):
+        dst_rules = []
+        dst_map[hook.event] = dst_rules
+    target_rule = None
+    for rule in dst_rules:
+        if (
+            isinstance(rule, dict)
+            and (rule.get("matcher") or "*") == hook.matcher
+            and isinstance(rule.get("hooks"), list)
+        ):
+            target_rule = rule
+            break
+    if target_rule is None:
+        target_rule = {"matcher": hook.matcher, "hooks": []}
+        dst_rules.append(target_rule)
+    target_rule["hooks"].append(moved)
+
+    write_json_atomic(settings_path, settings)
+    return True
 
 
 # ── Section 5: Vault ─────────────────────────────────────────────────────────

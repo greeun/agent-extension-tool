@@ -1064,3 +1064,93 @@ def test_vault_install_success(tmp_path: Path, monkeypatch):
     assert code == 0
     assert "Installed" in out
     assert (tmp_path / "vault" / "skills" / "src-pkg" / "SKILL.md").exists()
+
+
+# ─── mcp enable / disable ────────────────────────────────────────────────────
+
+
+def test_mcp_disable_writes_project_list(tmp_path: Path, monkeypatch):
+    cfg = tmp_path / ".claude.json"
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.setattr("axt.PATHS", axt.Paths(claude_config=cfg))
+    monkeypatch.chdir(project)
+    code, out, _ = _run(["mcp", "disable", "ctx7"])
+    assert code == 0
+    assert "disabled" in out
+    assert json.loads(cfg.read_text())["projects"][str(project)]["disabledMcpServers"] == ["ctx7"]
+
+
+def test_mcp_enable_removes_name(tmp_path: Path, monkeypatch):
+    cfg = tmp_path / ".claude.json"
+    project = tmp_path / "proj"
+    project.mkdir()
+    cfg.write_text(json.dumps({"projects": {str(project): {"disabledMcpServers": ["ctx7"]}}}))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(claude_config=cfg))
+    monkeypatch.chdir(project)
+    code, out, _ = _run(["mcp", "enable", "ctx7"])
+    assert code == 0
+    assert "enabled" in out
+    assert "disabledMcpServers" not in json.loads(cfg.read_text())["projects"][str(project)]
+
+
+# ─── hook list / enable / disable ────────────────────────────────────────────
+
+
+def _hooks_paths(tmp_path: Path):
+    return axt.Paths(
+        settings=tmp_path / "settings.json",
+        installed_plugins=tmp_path / "installed_plugins.json",
+    )
+
+
+def test_hook_list_empty(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", _hooks_paths(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = _run(["hook", "list"])
+    assert code == 0
+    assert "No hooks found." in out
+
+
+def test_hook_disable_then_enable_by_index(tmp_path: Path, monkeypatch):
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({
+        "hooks": {"Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo bye"}]}]}
+    }))
+    monkeypatch.setattr("axt.PATHS", _hooks_paths(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    code, out, _ = _run(["hook", "disable", "0"])
+    assert code == 0 and "disabled" in out
+    data = json.loads(settings.read_text())
+    assert "Stop" not in data.get("hooks", {})
+    assert data["disabledHooks"]["Stop"][0]["hooks"][0]["command"] == "echo bye"
+
+    # Index 0 is now the parked hook; re-enable it.
+    code, out, _ = _run(["hook", "enable", "0"])
+    assert code == 0 and "enabled" in out
+    data = json.loads(settings.read_text())
+    assert data["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo bye"
+
+
+def test_hook_disable_out_of_range(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", _hooks_paths(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = _run(["hook", "disable", "5"])
+    assert code == 1
+
+
+def test_hook_disable_refuses_plugin_hook(tmp_path: Path, monkeypatch):
+    install = tmp_path / "plug"
+    (install / "hooks").mkdir(parents=True)
+    (install / "hooks" / "hooks.json").write_text(json.dumps(
+        {"hooks": {"Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "p"}]}]}}))
+    ip = tmp_path / "installed_plugins.json"
+    ip.write_text(json.dumps({"version": 2, "plugins": {
+        "p@m": [{"scope": "user", "installPath": str(install), "version": "1", "installedAt": "", "lastUpdated": ""}]
+    }}))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(settings=tmp_path / "nope.json", installed_plugins=ip))
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = _run(["hook", "disable", "0"])
+    assert code == 1
+    assert "read-only" in out

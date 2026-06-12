@@ -231,3 +231,55 @@ def test_collect_tolerates_malformed_config(tmp_path: Path):
     cfg = tmp_path / ".claude.json"
     cfg.write_text("[1, 2, 3]")  # valid JSON but not an object
     assert axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path) == []
+
+
+# ─── set_mcp_disabled: project-scoped disabledMcpServers toggle ───────────────
+
+
+def test_set_mcp_disabled_adds_name(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    axt.set_mcp_disabled("ctx7", disabled=True, claude_config_path=cfg, project_dir=proj)
+    data = json.loads(cfg.read_text())
+    assert data["projects"][str(proj)]["disabledMcpServers"] == ["ctx7"]
+
+
+def test_set_mcp_disabled_then_reflected_in_collect(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    cfg.write_text(json.dumps({"mcpServers": {"ctx7": {"command": "node"}}}))
+    axt.set_mcp_disabled("ctx7", disabled=True, claude_config_path=cfg, project_dir=proj)
+    s = axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=proj)[0]
+    assert s.name == "ctx7" and s.disabled is True
+
+
+def test_set_mcp_enable_removes_name_and_prunes_key(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    cfg.write_text(json.dumps({"projects": {str(proj): {"disabledMcpServers": ["ctx7"], "other": 1}}}))
+    axt.set_mcp_disabled("ctx7", disabled=False, claude_config_path=cfg, project_dir=proj)
+    entry = json.loads(cfg.read_text())["projects"][str(proj)]
+    assert "disabledMcpServers" not in entry
+    assert entry["other"] == 1  # unrelated keys preserved
+
+
+def test_set_mcp_disabled_idempotent(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    axt.set_mcp_disabled("a", disabled=True, claude_config_path=cfg, project_dir=proj)
+    axt.set_mcp_disabled("a", disabled=True, claude_config_path=cfg, project_dir=proj)
+    names = json.loads(cfg.read_text())["projects"][str(proj)]["disabledMcpServers"]
+    assert names == ["a"]
+
+
+def test_set_mcp_disabled_tolerates_malformed_config(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    cfg.write_text("[1, 2, 3]")  # valid JSON, not an object
+    axt.set_mcp_disabled("a", disabled=True, claude_config_path=cfg, project_dir=proj)
+    assert json.loads(cfg.read_text())["projects"][str(proj)]["disabledMcpServers"] == ["a"]

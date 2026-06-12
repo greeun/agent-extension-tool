@@ -270,6 +270,80 @@ def cli_mcp_info(args) -> int:
     return 0
 
 
+def cli_mcp_enable(args) -> int:
+    set_mcp_disabled(args.name, disabled=False)
+    print(_green(f'✓ MCP "{args.name}" enabled (project). Restart Claude Code to apply.'))
+    return 0
+
+
+def cli_mcp_disable(args) -> int:
+    set_mcp_disabled(args.name, disabled=True)
+    print(_yellow(f'○ MCP "{args.name}" disabled (project). Restart Claude Code to apply.'))
+    return 0
+
+
+# hook
+
+
+def _cli_hooks() -> list:
+    return list_hooks(
+        user_settings_path=PATHS.settings,
+        project_dir=Path.cwd(),
+        installed_plugins_path=PATHS.installed_plugins,
+    )
+
+
+def cli_hook_list(args) -> int:
+    hooks = _cli_hooks()
+    if not hooks:
+        print("No hooks found.")
+        return 0
+    print(_bold(f" {'#'.ljust(3)} {'Event'.ljust(20)} {'Matcher'.ljust(12)} {'Type'.ljust(9)} {'Source'.ljust(8)} Detail"))
+    print("─" * 78)
+    for i, h in enumerate(hooks):
+        flag = _red(" [off]") if h.disabled else ""
+        print(f" {str(i).ljust(3)} {h.event.ljust(20)} {(h.matcher or '*').ljust(12)} {h.type.ljust(9)} {h.source.ljust(8)} {get_hook_detail(h)[:40]}{flag}")
+    print(f"\n {len(hooks)} hook(s)")
+    print(_dim(" Toggle by index from this list: axt hook disable <#> / axt hook enable <#>"))
+    return 0
+
+
+def _resolve_hook(index: int):
+    hooks = _cli_hooks()
+    if index < 0 or index >= len(hooks):
+        return None, hooks
+    return hooks[index], hooks
+
+
+def _cli_hook_toggle(args, *, disabled: bool) -> int:
+    hook, hooks = _resolve_hook(args.index)
+    if hook is None:
+        upper = len(hooks) - 1
+        print(_red(f"Hook index {args.index} out of range (0..{upper})." if hooks else "No hooks found."))
+        return 1
+    verb = "disabled" if disabled else "enabled"
+    if hook.disabled == disabled:
+        print(_dim(f"Hook {args.index} ({hook.event}) already {verb}."))
+        return 0
+    if hook.source == "plugin":
+        print(_red("Plugin hooks are read-only; manage them in the plugin itself."))
+        return 1
+    if set_hook_disabled(hook.source_path, hook, disabled=disabled):
+        glyph = _yellow("○") if disabled else _green("✓")
+        print(f"{glyph} Hook {args.index} ({hook.event}) {verb}. Restart Claude Code to apply.")
+        return 0
+    print(_red("Hook not found in its settings file (it may have changed)."))
+    return 1
+
+
+def cli_hook_enable(args) -> int:
+    return _cli_hook_toggle(args, disabled=False)
+
+
+def cli_hook_disable(args) -> int:
+    return _cli_hook_toggle(args, disabled=True)
+
+
 # plan
 
 def cli_plan_overview(args) -> int:
@@ -875,9 +949,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sp_mkt.add_parser("remove", help="Unregister a marketplace"); p.add_argument("name"); p.set_defaults(func=cli_market_remove)
 
     # mcp
-    sp_mcp = sub.add_parser("mcp", help="View MCP servers").add_subparsers(dest="action", required=True)
+    sp_mcp = sub.add_parser("mcp", help="View and toggle MCP servers").add_subparsers(dest="action", required=True)
     p = sp_mcp.add_parser("list", help="List MCP servers from active plugins"); p.set_defaults(func=cli_mcp_list)
     p = sp_mcp.add_parser("info", help="Show MCP server details"); p.add_argument("name"); p.set_defaults(func=cli_mcp_info)
+    p = sp_mcp.add_parser("enable", help="Enable an MCP server in this project"); p.add_argument("name"); p.set_defaults(func=cli_mcp_enable)
+    p = sp_mcp.add_parser("disable", help="Disable an MCP server in this project"); p.add_argument("name"); p.set_defaults(func=cli_mcp_disable)
+
+    # hook
+    sp_hook = sub.add_parser("hook", help="View and toggle hooks").add_subparsers(dest="action", required=True)
+    p = sp_hook.add_parser("list", help="List hooks with toggle index"); p.set_defaults(func=cli_hook_list)
+    p = sp_hook.add_parser("enable", help="Enable a hook by index (from `hook list`)"); p.add_argument("index", type=int); p.set_defaults(func=cli_hook_enable)
+    p = sp_hook.add_parser("disable", help="Disable a hook by index (from `hook list`)"); p.add_argument("index", type=int); p.set_defaults(func=cli_hook_disable)
 
     # plan
     sp_plan = sub.add_parser("plan", help="View plan usage and cost projections")

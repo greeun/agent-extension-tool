@@ -5,7 +5,7 @@
 > **v1.0.0: Claude-only.** 이전 multi-platform (v0.2.x) 지원은 제거되었다. 사용량 / 비용 / 플랜 / 컨텍스트 분석은 모두 Claude 한정.
 
 집계 결과:
-- **CLI 명령**: 10개 그룹 × 총 35개 서브명령 (`tui` 포함)
+- **CLI 명령**: 11개 그룹 × 총 40개 서브명령 (`tui` 포함)
 - **TUI 탭**: 4개 메인 + Extensions 8개 서브탭 + Scope 글로벌 필터
 - **Usage 플랫폼**: Claude 단일 → `UnifiedUsageEntry` 어댑터 → 모델별 pricing
 
@@ -31,11 +31,20 @@ TUI 대시보드 실행.
 | `sync [name]` | 선택적 이름 | 단일 또는 전체 원격 동기화 |
 | `remove <name>` | 이름 | 등록 해제 + 설치 dir 삭제(소유 시) |
 
-### 1.4 `axt mcp` (2)
+### 1.4 `axt mcp` (4)
 | 서브명령 | 인자 | 설명 |
 |---|---|---|
 | `list` | — | 활성 플러그인의 MCP 서버 표 |
 | `info <name>` | 이름 | command/args/env 상세 |
+| `enable <name>` | 이름 | 현재 프로젝트의 `disabledMcpServers`에서 제거 |
+| `disable <name>` | 이름 | 현재 프로젝트의 `disabledMcpServers`에 추가 (Claude Code 재시작 필요) |
+
+### 1.4b `axt hook` (3)
+| 서브명령 | 인자 | 설명 |
+|---|---|---|
+| `list` | — | 훅 표 (토글용 인덱스 + `[off]` 표시) |
+| `enable <index>` | `hook list` 인덱스 | `disabledHooks` → `hooks` 복원 |
+| `disable <index>` | `hook list` 인덱스 | `hooks` → 같은 파일의 `disabledHooks`로 이동. plugin 훅은 거부 |
 
 ### 1.5 `axt plan` (2)
 | 서브명령 | 인자 | 설명 |
@@ -137,9 +146,11 @@ U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 �
 ### 2.6 키바인딩 (서브탭별 고유)
 - **공통(모든 서브탭)**: `o` 포커스된 항목의 저장 경로에서 새 터미널 열기 (cst 방식 — TERM_PROGRAM 매칭, cmux 안에서는 workspace/window 선택 모달)
 - **Skills**: `u` unlink, `l` link (path 입력)
-- **Hooks**: `p` preview (dry-run)
+- **MCP**: `e` enable, `d` disable (현재 프로젝트 `disabledMcpServers`)
+- **Hooks**: `e` enable, `d` disable (설정 파일 내 `hooks`↔`disabledHooks` 이동, plugin 훅 제외), `p` preview (dry-run)
 - **Plugins**: `/` 필터, `i` install wizard, detail mode action list
 - **Market**: `s` sync, `r` remove, `a` add (2-step name→source)
+- **Plugins / MCP / Hooks**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
 
 ### 2.7 Context 탭 모드
 컨텍스트 윈도우 분석 (`categories → sources → preview`) + 5h/7d 쿼터 바 + cost impact 라인.
@@ -218,8 +229,10 @@ Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarCh
 - `link_skill`, `unlink_skill` (Windows fail-safe)
 
 ### 3.8 mcp (Section 4)
-- 타입: `McpServerInfo` (name, pluginId, command, args, env)
+- 타입: `McpServerInfo` (name, pluginId, command, args, env, disabled)
 - `list_mcp_servers(installed_plugins)` — plugin.json에서 mcpServers 추출
+- `collect_mcp_servers(...)` — plugin + user/project/.mcp.json 병합, `disabledMcpServers` 반영
+- `set_mcp_disabled(name, disabled=...)` — `~/.claude.json` `projects[<dir>].disabledMcpServers` 토글 (프로젝트 단위)
 
 ### 3.9 commands / agents (Section 4)
 - 타입: `CommandSource | AgentSource = "user"|"project"|"plugin"`
@@ -227,8 +240,9 @@ Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarCh
 - `.md` frontmatter description 추출
 
 ### 3.10 hooks (Section 4)
-- 타입: `HookType`, `HookSource = "user"|"project"|"local"|"plugin"`, `HookEntry`, `HookRule`, `HookInfo`, `HookPreviewResult`
-- `list_hooks` (4 소스 병합), `preview_hook` (dry-run, `sh -c`), `get_hook_detail`
+- 타입: `HookType`, `HookSource = "user"|"project"|"local"|"plugin"`, `HookEntry`, `HookRule`, `HookInfo` (`disabled` 플래그 포함), `HookPreviewResult`
+- `list_hooks` (4 소스 병합 + `disabledHooks` 미러 파싱), `preview_hook` (dry-run, `sh -c`), `get_hook_detail`
+- `set_hook_disabled(settings_path, hook, disabled=...)` — 같은 설정 파일 내 `hooks`↔`disabledHooks` 단일 훅 이동. Claude Code는 `disabledHooks` 무시 → 무손실 토글. plugin 훅은 호출자가 거부
 - 다수 이벤트 (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, …)
 
 ### 3.11 project_context (Section 9)

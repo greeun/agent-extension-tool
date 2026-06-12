@@ -93,6 +93,8 @@ class TuiState:
     ext_sub_tab: str = "vault"                     # one of EXTENSION_SUB_TABS keys
     ext_cache: dict[str, Any] = field(default_factory=dict)
     ext_selected: dict[str, int] = field(default_factory=dict)
+    ext_detail_focused: bool = False  # Tab → focus the bottom detail panel (plugins/mcp/hooks)
+    ext_detail_scroll: int = 0
 
     # Usage data caches (None = not loaded yet).
     usage_entries: Optional[list] = None
@@ -1745,6 +1747,130 @@ def _render_simple_list(stdscr, state, y0, h, w, key, columns, rows):
                  header_rule=False)  # match Vault: header attaches to the list
 
 
+def _plugin_detail_fields(plugin, enabled_g, enabled_p) -> tuple[str, list[tuple[str, str]]]:
+    """(title, label/value pairs) for the Plugin detail panel."""
+    def _state(v) -> str:
+        return "enabled" if v is True else ("disabled" if v is False else "unset")
+
+    fields: list[tuple[str, str]] = [
+        ("ID", plugin.id),
+        ("Version", plugin.version or "—"),
+        ("Marketplace", plugin.marketplace or "—"),
+        ("Scope", plugin.scope or "—"),
+        ("Global", _state(enabled_g.get(plugin.id))),
+        ("Project", _state(enabled_p.get(plugin.id))),
+    ]
+    if plugin.author:
+        fields.append(("Author", plugin.author))
+    if plugin.description:
+        fields.append(("Description", plugin.description))
+    if plugin.homepage:
+        fields.append(("Homepage", plugin.homepage))
+    if plugin.repository:
+        fields.append(("Repository", plugin.repository))
+    if plugin.install_path:
+        fields.append(("Path", plugin.install_path))
+    if plugin.last_updated:
+        fields.append(("Updated", plugin.last_updated[:10]))
+    return plugin.name, fields
+
+
+def _mcp_detail_fields(server) -> tuple[str, list[tuple[str, str]]]:
+    """(title, label/value pairs) for the MCP detail panel."""
+    fields: list[tuple[str, str]] = [
+        ("Scope", server.scope),
+        ("Transport", server.transport),
+        ("Status", "disabled (this project)" if server.disabled else "enabled"),
+    ]
+    if server.plugin_id:
+        fields.append(("Plugin", server.plugin_id))
+    if server.version:
+        fields.append(("Version", server.version))
+    if server.transport == "stdio":
+        fields.append(("Command", " ".join([server.command, *server.args_list]).strip() or "—"))
+        if server.env_dict:
+            fields.append(("Env", ", ".join(f"{k}={v}" for k, v in server.env_dict.items())))
+    else:
+        fields.append(("URL", server.url or "—"))
+    return server.name, fields
+
+
+def _hook_detail_fields(hook) -> tuple[str, list[tuple[str, str]]]:
+    """(title, label/value pairs) for the Hook detail panel."""
+    fields: list[tuple[str, str]] = [
+        ("Matcher", hook.matcher or "*"),
+        ("Type", hook.type),
+        ("Source", hook.source),
+        ("Status", "disabled" if hook.disabled else "enabled"),
+    ]
+    if hook.type == "command":
+        fields.append(("Command", hook.command or "—"))
+    elif hook.type == "http":
+        fields.append(("URL", hook.url or "—"))
+    elif hook.type == "mcp_tool":
+        fields.append(("Server", hook.server or "—"))
+        fields.append(("Tool", hook.tool or "—"))
+    elif hook.type in ("prompt", "agent"):
+        if hook.model:
+            fields.append(("Model", hook.model))
+        fields.append(("Prompt", hook.prompt or "—"))
+    if hook.timeout is not None:
+        fields.append(("Timeout", f"{hook.timeout}ms"))
+    if hook.condition:
+        fields.append(("If", hook.condition))
+    if hook.once:
+        fields.append(("Once", "true"))
+    if hook.async_:
+        fields.append(("Async", "true"))
+    if hook.version:
+        fields.append(("Version", hook.version))
+    if hook.source_path:
+        fields.append(("File", hook.source_path))
+    return hook.event, fields
+
+
+# Sub-tabs that render a bottom detail panel (Tab-focusable + scrollable).
+_SUBTABS_WITH_DETAIL: tuple[str, ...] = ("plugins", "mcp", "hooks")
+
+
+def _blur_ext_detail(state: TuiState) -> None:
+    """Drop detail-panel focus and reset its scroll (e.g. on sub-tab change)."""
+    state.ext_detail_focused = False
+    state.ext_detail_scroll = 0
+
+
+def _render_list_with_detail(stdscr, state, y0, h, w, key, columns, rows, items, field_fn):
+    """Selectable list with a read-only detail panel pinned to the bottom.
+
+    ``field_fn(item)`` returns ``(title, [(label, value), ...])`` for the
+    selected row. ``items`` is the cached object list parallel to ``rows``.
+    Used by the MCP and Hooks sub-tabs.
+    """
+    state.ext_selected.setdefault(key, 0)
+    state.ext_selected[key] = max(0, min(state.ext_selected[key], max(0, len(rows) - 1)))
+    if not rows:
+        safe_addnstr(stdscr, y0 + 2, 2, f"No {key} found.", w - 4, CP_DIM())
+        return
+    # Detail panel claims the bottom ~40% (7–16 rows) but never starves the
+    # list below a few visible rows. When it can't show everything, Tab focuses
+    # it and j/k scroll (see handle_extensions_input).
+    detail_h = max(7, min(16, int(h * 0.4)))
+    detail_h = min(detail_h, max(0, h - 4))
+    table_h = max(1, h - detail_h)
+    render_table(stdscr, y0, 0, table_h, w, columns, rows,
+                 selected=state.ext_selected[key], show_header=True,
+                 header_rule=False)
+    if detail_h >= 3:
+        idx = state.ext_selected[key]
+        if 0 <= idx < len(items):
+            title, fields = field_fn(items[idx])
+            state.ext_detail_scroll = render_detail_panel(
+                stdscr, y0 + table_h, 0, detail_h, w, title, fields,
+                scroll=state.ext_detail_scroll,
+                focused=state.ext_detail_focused,
+            )
+
+
 def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     """Extensions parent tab with sub-tab navigation."""
     _render_subtab_bar(
@@ -1857,7 +1983,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             TableColumn("detail", "Detail", max(20, w - 78)),
         ]
         rows = [{
-            "event": h.event,
+            "event": h.event + (" [off]" if h.disabled else ""),
             "ver": h.version or "─",
             "type": h.type,
             "source": h.source,
@@ -1882,7 +2008,17 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     else:
         return
 
-    _render_simple_list(stdscr, state, sub_y, sub_h, w, sub, cols, rows)
+    if sub == "plugins":
+        _render_list_with_detail(
+            stdscr, state, sub_y, sub_h, w, sub, cols, rows, data,
+            lambda p: _plugin_detail_fields(p, enabled_g, enabled_p),
+        )
+    elif sub == "mcp":
+        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _mcp_detail_fields)
+    elif sub == "hooks":
+        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _hook_detail_fields)
+    else:
+        _render_simple_list(stdscr, state, sub_y, sub_h, w, sub, cols, rows)
 
 
 def _cycle_sub_tab(state: TuiState, direction: int) -> None:
@@ -1962,9 +2098,11 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
         return handle_vault_input(state, key)
 
     if key == ord("["):
+        _blur_ext_detail(state)
         _cycle_sub_tab(state, -1)
         return f"Sub-tab: {state.ext_sub_tab}"
     if key == ord("]"):
+        _blur_ext_detail(state)
         _cycle_sub_tab(state, 1)
         return f"Sub-tab: {state.ext_sub_tab}"
     if key == ord("r"):
@@ -1979,21 +2117,50 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
     if sub == "vault":
         return handle_vault_input(state, key)
 
+    # Tab toggles focus into the bottom detail panel (sub-tabs that have one).
+    if key in (ord("\t"), curses.KEY_BTAB) and sub in _SUBTABS_WITH_DETAIL:
+        if not state.ext_cache.get(sub):
+            return None
+        state.ext_detail_focused = not state.ext_detail_focused
+        state.ext_detail_scroll = 0
+        return "Detail focused — j/k scroll, Tab to blur" if state.ext_detail_focused else None
+
+    # While the detail panel is focused, navigation keys scroll it instead of
+    # moving the list selection. Action keys (e/d/p/o/…) still fall through.
+    if state.ext_detail_focused and sub in _SUBTABS_WITH_DETAIL:
+        if key in (ord("j"), curses.KEY_DOWN):
+            state.ext_detail_scroll += 1
+            return None
+        if key in (ord("k"), curses.KEY_UP):
+            state.ext_detail_scroll = max(0, state.ext_detail_scroll - 1)
+            return None
+        if key == curses.KEY_NPAGE:
+            state.ext_detail_scroll += 10
+            return None
+        if key == curses.KEY_PPAGE:
+            state.ext_detail_scroll = max(0, state.ext_detail_scroll - 10)
+            return None
+        return _handle_subtab_action(state, sub, key)
+
     # Simple list navigation for the other sub-tabs.
     data = state.ext_cache.get(sub, [])
     n = len(data)
     sel = state.ext_selected.get(sub, 0)
     if key in (ord("j"), curses.KEY_DOWN):
         state.ext_selected[sub] = min(n - 1, sel + 1) if n else 0
+        state.ext_detail_scroll = 0  # new selection → detail back to top
         return None
     elif key in (ord("k"), curses.KEY_UP):
         state.ext_selected[sub] = max(0, sel - 1)
+        state.ext_detail_scroll = 0
         return None
     elif key == curses.KEY_NPAGE:
         state.ext_selected[sub] = min(n - 1, sel + 10) if n else 0
+        state.ext_detail_scroll = 0
         return None
     elif key == curses.KEY_PPAGE:
         state.ext_selected[sub] = max(0, sel - 10)
+        state.ext_detail_scroll = 0
         return None
     return _handle_subtab_action(state, sub, key)
 
@@ -2128,6 +2295,23 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                     return f"Uninstall failed: {exc}"
             return "Cancelled"
 
+    # ── MCP: e=enable d=disable in this project's disabledMcpServers ───────
+    if sub == "mcp":
+        server = _selected_item(state, "mcp")
+        if server is None:
+            return None
+        if key in (ord("e"), ord("d")):
+            want_disabled = key == ord("d")
+            if server.disabled == want_disabled:
+                return f"MCP {server.name} already {'disabled' if want_disabled else 'enabled'}"
+            try:
+                set_mcp_disabled(server.name, disabled=want_disabled)
+            except OSError as exc:
+                return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
+            state.ext_cache.pop("mcp", None)
+            _invalidate_context(state)
+            return f"{'Disabled' if want_disabled else 'Enabled'} MCP {server.name} (project)"
+
     # ── Skills: l=link new path, u=unlink selected (confirmed) ─────────────
     if sub == "skills" and stdscr:
         if key == ord("l"):
@@ -2214,12 +2398,28 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                     return f"Remove failed: {exc}"
             return "Cancelled"
 
-    # ── Hooks: p=preview hook execution in a scrollable modal ──────────────
-    if sub == "hooks" and stdscr:
-        if key == ord("p"):
-            hook = _selected_item(state, "hooks")
-            if hook is None:
-                return None
+    # ── Hooks: e=enable d=disable (move rule within its settings file),
+    #          p=preview hook execution in a scrollable modal ───────────────
+    if sub == "hooks":
+        hook = _selected_item(state, "hooks")
+        if hook is None:
+            return None
+        if key in (ord("e"), ord("d")):
+            want_disabled = key == ord("d")
+            if hook.disabled == want_disabled:
+                return f"Hook already {'disabled' if want_disabled else 'enabled'}"
+            if hook.source == "plugin":
+                return "Plugin hooks are read-only (manage them in the plugin)"
+            try:
+                moved = set_hook_disabled(hook.source_path, hook, disabled=want_disabled)
+            except OSError as exc:
+                return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
+            if not moved:
+                return "Hook not found in its settings file"
+            state.ext_cache.pop("hooks", None)
+            _invalidate_context(state)
+            return f"{'Disabled' if want_disabled else 'Enabled'} hook {hook.event} ({hook.source})"
+        if key == ord("p") and stdscr:
             try:
                 result = preview_hook(hook)
             except OSError as exc:

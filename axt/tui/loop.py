@@ -92,9 +92,14 @@ Extensions sub-tab actions
                 x=uninstall (confirm)
                 Status column shows G/P: ● enabled  ○ disabled  · unset
   Skills:       l=link new path (input)  u=unlink (confirm)
+  MCP:          e=enable  d=disable (this project's disabledMcpServers)
   Marketplace:  a=add (source+name input)  s=sync (selected)  x=remove (confirm)
   Commands/Agents: e=open source file in $EDITOR
-  Hooks:        p=preview hook execution (scrollable modal)
+  Hooks:        e=enable  d=disable (moves the rule within its settings file)
+                p=preview hook execution (scrollable modal)
+                [off] = parked; plugin-sourced hooks are read-only
+  Plugins/MCP/Hooks: a detail panel sits below the list. Tab focuses it,
+                j/k (or PgUp/PgDn) scroll it, Tab again blurs back to the list.
 
 Context
   Enter         Context: category source list preview
@@ -119,6 +124,21 @@ Globals
   q / Q         Quit
   Esc           Quit only at the main-tab layer; otherwise climbs one layer up
 """
+
+
+# Per-sub-tab action hints shown in the status bar (Extensions tab, non-vault
+# sub-tabs). Vault has its own richer status line built inline in
+# `_render_frame`. Keys mirror EXTENSION_SUB_TABS in tabs.py; keep terse so the
+# composed line stays readable before the status bar truncates it.
+_SUBTAB_SHORTCUTS: dict[str, str] = {
+    "skills":   "l:link  u:unlink",
+    "commands": "e:edit",
+    "agents":   "e:edit",
+    "mcp":      "e:enable  d:disable  Tab:detail",
+    "hooks":    "e:enable  d:disable  p:preview  Tab:detail",
+    "plugins":  "e/d:on/off(G)  E/D:on/off(P)  x:uninstall  Tab:detail",
+    "market":   "a:add  s:sync  x:remove",
+}
 
 
 def _render_frame(stdscr, state: TuiState) -> None:
@@ -171,7 +191,12 @@ def _render_frame(stdscr, state: TuiState) -> None:
                 "Enter:apply  F:filter  s:sort  /:search  i:import  f:scan  M:mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
-        shortcuts = "1-3:tab  [/]:sub  j/k:nav  o:term  r:refresh  ?:help  q:quit"
+        actions = _SUBTAB_SHORTCUTS.get(state.ext_sub_tab, "")
+        parts = ["1-3:tab", "[/]:sub", "j/k:nav"]
+        if actions:
+            parts.append(actions)
+        parts += ["o:term", "r:refresh", "?:help", "q:quit"]
+        shortcuts = "  ".join(parts)
     elif tab_key == "context":
         shortcuts = "1-3:tab  j/k:nav  P:project pane  e:edit  r:refresh  ?:help  q:quit"
     else:

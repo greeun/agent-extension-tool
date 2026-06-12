@@ -1482,6 +1482,35 @@ def test_render_frame_shows_cwd_line(tmp_path, monkeypatch):
     assert cwd_rows == [30 - 2]
 
 
+def _ext_idx() -> int:
+    return next(i for i, t in enumerate(axt.MAIN_TABS) if t[0] == "extensions")
+
+
+def test_status_bar_shows_mcp_toggle_shortcuts(monkeypatch):
+    """MCP sub-tab status bar advertises e:enable / d:disable."""
+    scr = _make_stdscr(rows=30, cols=200)
+    state = axt.TuiState()
+    state.tab_idx = _ext_idx()
+    state.ext_sub_tab = "mcp"
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "e:enable" in flat
+    assert "d:disable" in flat
+
+
+def test_status_bar_shows_hooks_toggle_shortcuts(monkeypatch):
+    """Hooks sub-tab status bar advertises e:enable / d:disable / p:preview."""
+    scr = _make_stdscr(rows=30, cols=200)
+    state = axt.TuiState()
+    state.tab_idx = _ext_idx()
+    state.ext_sub_tab = "hooks"
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "e:enable" in flat
+    assert "d:disable" in flat
+    assert "p:preview" in flat
+
+
 # ─── Non-Vault Extensions sub-tabs: no duplicated row number ─────────────────
 
 
@@ -1519,6 +1548,113 @@ def test_extensions_plugins_sub_tab_no_duplicate_number_column():
             assert len(number_cells) <= 1
         finally:
             axt.PATHS = original
+
+
+def _flat(scr) -> str:
+    return "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+
+
+def test_mcp_sub_tab_renders_detail_panel():
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [axt.McpServerInfo(
+        name="ctx7", plugin_id="", command="node", args=("server.js",),
+        env=(("K", "V"),), scope="user", transport="stdio", disabled=True,
+    )]
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 0, 28, 120)
+    flat = _flat(scr)
+    assert "Scope:" in flat
+    assert "Transport:" in flat
+    assert "Status:" in flat
+    assert "disabled" in flat
+    assert "Command:" in flat
+
+
+def test_hooks_sub_tab_renders_detail_panel():
+    state = axt.TuiState()
+    state.ext_sub_tab = "hooks"
+    state.ext_cache["hooks"] = [axt.HookInfo(
+        event="PreToolUse", matcher="Bash", source="user",
+        source_path="/u/settings.json", type="command", command="echo hi",
+    )]
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 0, 28, 120)
+    flat = _flat(scr)
+    assert "Matcher:" in flat
+    assert "Type:" in flat
+    assert "Command:" in flat
+    assert "File:" in flat
+
+
+def test_plugins_sub_tab_renders_detail_panel(tmp_path, monkeypatch):
+    monkeypatch.setattr("axt.PATHS", axt.Paths(settings=tmp_path / "s.json"))
+    state = axt.TuiState()
+    state.ext_sub_tab = "plugins"
+    state.ext_cache["plugins"] = [axt.PluginInfo(
+        id="plug@m", name="plug", marketplace="m", version="1.2",
+        install_path="/p", scope="user", installed_at="", last_updated="2026-01-01",
+    )]
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 0, 28, 120)
+    flat = _flat(scr)
+    assert "ID:" in flat
+    assert "Marketplace:" in flat
+    assert "Global:" in flat
+    assert "Project:" in flat
+
+
+def test_ext_detail_tab_focus_and_scroll():
+    import curses
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [axt.McpServerInfo(
+        name="s", plugin_id="", command="node", args=(), env=(), scope="user",
+    )]
+    # Tab focuses the detail panel.
+    axt.handle_extensions_input(state, ord("\t"))
+    assert state.ext_detail_focused is True
+    # j/k scroll the panel, not the (single-row) selection.
+    axt.handle_extensions_input(state, ord("j"))
+    assert state.ext_detail_scroll == 1
+    axt.handle_extensions_input(state, ord("k"))
+    assert state.ext_detail_scroll == 0
+    # Tab again blurs.
+    axt.handle_extensions_input(state, ord("\t"))
+    assert state.ext_detail_focused is False
+
+
+def test_ext_detail_tab_noop_without_data():
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = []
+    axt.handle_extensions_input(state, ord("\t"))
+    assert state.ext_detail_focused is False
+
+
+def test_ext_detail_scroll_resets_on_selection_move():
+    import curses
+    state = axt.TuiState()
+    state.ext_sub_tab = "hooks"
+    state.ext_cache["hooks"] = [
+        axt.HookInfo(event="Stop", matcher="*", source="user", source_path="/x", type="command", command="a"),
+        axt.HookInfo(event="Stop", matcher="*", source="user", source_path="/x", type="command", command="b"),
+    ]
+    state.ext_detail_scroll = 5
+    axt.handle_extensions_input(state, ord("j"))  # move selection
+    assert state.ext_selected["hooks"] == 1
+    assert state.ext_detail_scroll == 0
+
+
+def test_ext_detail_blurred_on_subtab_cycle():
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [axt.McpServerInfo(name="s", plugin_id="", command="x", args=(), env=())]
+    state.ext_detail_focused = True
+    state.ext_detail_scroll = 3
+    axt.handle_extensions_input(state, ord("]"))  # next sub-tab
+    assert state.ext_detail_focused is False
+    assert state.ext_detail_scroll == 0
 
 
 def test_extensions_subtab_header_has_no_underline_rule():

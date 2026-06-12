@@ -303,3 +303,97 @@ def test_list_hooks_plugin_path_missing_hooks_json(tmp_path: Path):
     }))
     hooks = axt.list_hooks(user_settings_path=tmp_path / "nope.json", installed_plugins_path=ip)
     assert hooks == []
+
+
+# ── disabledHooks parsing + set_hook_disabled toggle ─────────────────────────
+
+
+def test_extract_hooks_parses_disabled_mirror():
+    settings = {
+        "hooks": {"Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "live"}]}]},
+        "disabledHooks": {"Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "parked"}]}]},
+    }
+    out = axt._extract_hooks(settings, "user", "/x")
+    by_cmd = {h.command: h for h in out}
+    assert by_cmd["live"].disabled is False
+    assert by_cmd["parked"].disabled is True
+
+
+def _hook(event, matcher, command, source_path):
+    return axt.HookInfo(event=event, matcher=matcher, source="user",
+                        source_path=source_path, type="command", command=command)
+
+
+def test_set_hook_disabled_round_trip(tmp_path: Path):
+    sp = tmp_path / "settings.json"
+    sp.write_text(json.dumps({
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}]},
+        "permissions": {"allow": []},  # unrelated key must survive
+    }))
+    h = _hook("PreToolUse", "Bash", "echo hi", str(sp))
+
+    assert axt.set_hook_disabled(sp, h, disabled=True) is True
+    data = json.loads(sp.read_text())
+    assert "PreToolUse" not in data.get("hooks", {})
+    assert data["disabledHooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo hi"
+    assert data["permissions"] == {"allow": []}
+
+    # Re-enable from the parked mirror; everything returns to `hooks`.
+    h_off = axt.HookInfo(event="PreToolUse", matcher="Bash", source="user",
+                         source_path=str(sp), type="command", command="echo hi", disabled=True)
+    assert axt.set_hook_disabled(sp, h_off, disabled=False) is True
+    data = json.loads(sp.read_text())
+    assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "echo hi"
+    assert "disabledHooks" not in data
+
+
+def test_set_hook_disabled_only_targets_matching_inner_hook(tmp_path: Path):
+    sp = tmp_path / "settings.json"
+    sp.write_text(json.dumps({
+        "hooks": {"Stop": [{"matcher": "*", "hooks": [
+            {"type": "command", "command": "a"},
+            {"type": "command", "command": "b"},
+        ]}]}
+    }))
+    h = _hook("Stop", "*", "a", str(sp))
+    assert axt.set_hook_disabled(sp, h, disabled=True) is True
+    data = json.loads(sp.read_text())
+    remaining = [hk["command"] for hk in data["hooks"]["Stop"][0]["hooks"]]
+    assert remaining == ["b"]  # sibling stays live
+    assert data["disabledHooks"]["Stop"][0]["hooks"][0]["command"] == "a"
+
+
+def test_set_hook_disabled_returns_false_when_absent(tmp_path: Path):
+    sp = tmp_path / "settings.json"
+    sp.write_text(json.dumps({"hooks": {"Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "a"}]}]}}))
+    missing = _hook("Stop", "*", "nope", str(sp))
+    assert axt.set_hook_disabled(sp, missing, disabled=True) is False
+    # File untouched.
+    assert json.loads(sp.read_text())["hooks"]["Stop"][0]["hooks"][0]["command"] == "a"
+
+
+def test_set_hook_disabled_merges_into_existing_matcher_rule(tmp_path: Path):
+    sp = tmp_path / "settings.json"
+    sp.write_text(json.dumps({
+        "hooks": {"Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "a"}]}]},
+        "disabledHooks": {"Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "z"}]}]},
+    }))
+    h = _hook("Stop", "*", "a", str(sp))
+    assert axt.set_hook_disabled(sp, h, disabled=True) is True
+    data = json.loads(sp.read_text())
+    rules = data["disabledHooks"]["Stop"]
+    assert len(rules) == 1  # merged, not a second matcher block
+    cmds = [hk["command"] for hk in rules[0]["hooks"]]
+    assert cmds == ["z", "a"]
+    assert "Stop" not in data.get("hooks", {})
+
+
+def test_list_hooks_surfaces_disabled_flag(tmp_path: Path):
+    user_path = tmp_path / "settings.json"
+    user_path.write_text(json.dumps({
+        "disabledHooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "off-cmd"}]}]},
+    }))
+    hooks = axt.list_hooks(user_settings_path=user_path)
+    assert len(hooks) == 1
+    assert hooks[0].disabled is True
+    assert hooks[0].command == "off-cmd"

@@ -11,8 +11,9 @@ Python + curses package, pure stdlib runtime. The older TypeScript+Ink line (v0.
 - **Vault** — per-project `.axt-profile.json` + global `~/.claude/vault/`, with link/unlink/sync/migrate/import.
 - **Plugin management** — list, enable/disable, inspect, search, and remove plugins from Claude marketplace registries.
 - **Skills** — list standalone skills, link/unlink directories into `~/.claude/skills/`.
-- **MCP servers** — view servers declared by active plugins or settings.
-- **Hooks / Commands / Agents** — discover across user, project, and plugin scopes.
+- **MCP servers** — view servers declared by active plugins or settings; enable/disable per project (`disabledMcpServers`).
+- **Hooks** — discover across user, project, local, and plugin scopes; enable/disable user/project/local hooks (parked under `disabledHooks`, plugin hooks read-only).
+- **Commands / Agents** — discover across user, project, and plugin scopes.
 - **Marketplace system** — register GitHub repos, git URLs, or local directories as plugin marketplaces and sync them.
 - **Usage tracking** — Claude token usage and cost with per-model pricing; today / week / month / 5-hour billing blocks / session views.
 - **Plan budget** — plan overview with daily / weekly / monthly projections and budget bars.
@@ -74,6 +75,7 @@ axt
 axt plugin list
 axt skill list
 axt mcp list
+axt hook list
 axt market list
 axt usage today
 axt vault list
@@ -83,6 +85,8 @@ axt context analyze
 axt market add github:user/repo
 axt market sync
 axt plugin enable <plugin-id>
+axt mcp disable <server-name>      # project-scoped (disabledMcpServers)
+axt hook disable <index>          # index from `axt hook list`
 axt vault link-global <type> <name>
 ```
 
