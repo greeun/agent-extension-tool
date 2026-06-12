@@ -145,12 +145,19 @@ U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 �
 
 ### 2.6 키바인딩 (서브탭별 고유)
 - **공통(모든 서브탭)**: `o` 포커스된 항목의 저장 경로에서 새 터미널 열기 (cst 방식 — TERM_PROGRAM 매칭, cmux 안에서는 workspace/window 선택 모달)
+- **공통(모든 서브탭)**: `s` 정렬 순환 (Vault와 동일 방식 — 활성 정렬 컬럼 헤더에 ▲/▼ 표시, 상태바에 `s:sort(<key>)` 노출). 서브탭별 순환 키:
+  - **Plugins**: Name→Version→Marketplace
+  - **Skills**: Name→Source→Type
+  - **Commands** / **Agents**: Name→Source
+  - **MCP**: Name→Scope→Transport
+  - **Hooks**: Event→Type→Source
+  - **Market**: Name→Source→Updated
 - **Skills**: `u` unlink, `l` link (path 입력)
 - **MCP**: `e` enable, `d` disable (현재 프로젝트 `disabledMcpServers`)
 - **Hooks**: `e` enable, `d` disable (설정 파일 내 `hooks`↔`disabledHooks` 이동, plugin 훅 제외), `p` preview (dry-run)
 - **Plugins**: `/` 필터, `i` install wizard, detail mode action list
-- **Market**: `s` sync, `r` remove, `a` add (2-step name→source)
-- **Plugins / MCP / Hooks**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
+- **Market**: `S` sync (대문자 — `s`는 정렬로 이동), `r` remove, `a` add (2-step name→source)
+- **모든 서브탭 (Vault / Skills / Commands / Agents / MCP / Hooks / Plugins / Market)**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
 
 ### 2.7 Context 탭 모드
 컨텍스트 윈도우 분석 (`categories → sources → preview`) + 5h/7d 쿼터 바 + cost impact 라인.

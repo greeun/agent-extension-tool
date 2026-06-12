@@ -342,6 +342,22 @@ def render_title_bar(stdscr, y: int, h: int, w: int, title: str, *,
     return y + used, max(0, h - used)
 
 
+def render_section_header(stdscr, y: int, w: int, label: str) -> None:
+    """Draw a stacked-section header as a distinct band: a left block marker
+    ``▌``, the label, then a ``─`` rule filling to the right edge.
+
+    A bare ``CP_TITLE()`` text row is just bright text; when several stack
+    above tables (the Context tab: Rate limits / Context sources / Project
+    files) they blur into one block with no visible boundary. The marker plus
+    the trailing rule make each section's start unmistakable in BOTH themes —
+    without a reverse bar, which ``CP_TITLE()`` deliberately avoids on light
+    backgrounds (a full-width solid fill reads as a glaring band on white).
+    """
+    prefix = f"▌ {label} "
+    rule = "─" * max(0, (w - 1) - cell_width(prefix))
+    safe_addnstr(stdscr, y, 0, fit_cells(prefix + rule, w - 1), w - 1, CP_TITLE())
+
+
 def render_table(
     stdscr,
     y: int,

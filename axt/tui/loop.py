@@ -31,6 +31,7 @@ from axt.tui.tabs import (  # noqa: F401 — `_`-prefixed names that wildcard sk
     _at_top_of_content,
     _cycle_sub_tab,
     sub_tab_has_focusable_content,
+    subtab_sort_label,
     tab_has_focusable_content,
     tab_has_sub_tab,
 )
@@ -87,23 +88,36 @@ Extensions sub-tab actions
   All sub-tabs: o=open a new terminal at the item's directory
                 (matches your terminal via TERM_PROGRAM; inside cmux a
                  workspace/window chooser appears first)
+  All sub-tabs: s=cycle sort (the sorted column's header is marked ▲/▼;
+                active key shown as s:sort(<key>) in the status bar)
+                  Plugins  Name→Version→Marketplace
+                  Skills   Name→Source→Type
+                  Commands Name→Source     Agents  Name→Source
+                  MCP      Name→Scope→Transport
+                  Hooks    Event→Type→Source
+                  Market   Name→Source→Updated
   Plugins:      e=enable (global)  d=disable (global)
                 E=enable (project) D=disable (project)
                 x=uninstall (confirm)
                 Status column shows G/P: ● enabled  ○ disabled  · unset
   Skills:       l=link new path (input)  u=unlink (confirm)
   MCP:          e=enable  d=disable (this project's disabledMcpServers)
-  Marketplace:  a=add (source+name input)  s=sync (selected)  x=remove (confirm)
+  Marketplace:  a=add (source+name input)  S=sync (selected)  x=remove (confirm)
   Commands/Agents: e=open source file in $EDITOR
   Hooks:        e=enable  d=disable (moves the rule within its settings file)
                 p=preview hook execution (scrollable modal)
                 [off] = parked; plugin-sourced hooks are read-only
-  Plugins/MCP/Hooks: a detail panel sits below the list. Tab focuses it,
+  All sub-tabs: a detail panel sits below the list. Tab focuses it,
                 j/k (or PgUp/PgDn) scroll it, Tab again blurs back to the list.
 
 Context
-  Enter         Context: category source list preview
-  e             Context: open first source file in $EDITOR
+  Tab           Switch focus: Context sources ↔ Project files pane
+                (the focused pane's detail panel border turns cyan)
+  j / k         Move selection within the focused pane
+  Enter         Sources: category source list preview
+                Project files: preview the focused file's content
+  e             Sources: open first source file in $EDITOR
+                Project files: open the focused file in $EDITOR
   P             Toggle the per-project files pane on/off (this tab only)
 
 linked vs enabled (activation mechanism)
@@ -131,13 +145,13 @@ Globals
 # `_render_frame`. Keys mirror EXTENSION_SUB_TABS in tabs.py; keep terse so the
 # composed line stays readable before the status bar truncates it.
 _SUBTAB_SHORTCUTS: dict[str, str] = {
-    "skills":   "l:link  u:unlink",
-    "commands": "e:edit",
-    "agents":   "e:edit",
+    "skills":   "l:link  u:unlink  Tab:detail",
+    "commands": "e:edit  Tab:detail",
+    "agents":   "e:edit  Tab:detail",
     "mcp":      "e:enable  d:disable  Tab:detail",
     "hooks":    "e:enable  d:disable  p:preview  Tab:detail",
     "plugins":  "e/d:on/off(G)  E/D:on/off(P)  x:uninstall  Tab:detail",
-    "market":   "a:add  s:sync  x:remove",
+    "market":   "a:add  S:sync  x:remove  Tab:detail",
 }
 
 
@@ -191,14 +205,19 @@ def _render_frame(stdscr, state: TuiState) -> None:
                 "Enter:apply  F:filter  s:sort  /:search  i:import  f:scan  M:mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
-        actions = _SUBTAB_SHORTCUTS.get(state.ext_sub_tab, "")
+        sub = state.ext_sub_tab
+        actions = _SUBTAB_SHORTCUTS.get(sub, "")
         parts = ["1-3:tab", "[/]:sub", "j/k:nav"]
+        sort_label = subtab_sort_label(state, sub)
+        if sort_label:
+            parts.append(f"s:sort({sort_label})")
         if actions:
             parts.append(actions)
         parts += ["o:term", "r:refresh", "?:help", "q:quit"]
         shortcuts = "  ".join(parts)
     elif tab_key == "context":
-        shortcuts = "1-3:tab  j/k:nav  P:project pane  e:edit  r:refresh  ?:help  q:quit"
+        focus_hint = "Tab:focus  " if state.context_show_project else ""
+        shortcuts = f"1-3:tab  {focus_hint}j/k:nav  P:project pane  e:edit  Enter:preview  r:refresh  ?:help  q:quit"
     else:
         shortcuts = "1-3:tab  j/k:nav  r:refresh  ?:help  q:quit"
     render_status_bar(stdscr, h - 1, w, shortcuts, state.status)

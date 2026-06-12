@@ -93,6 +93,9 @@ class TuiState:
     ext_sub_tab: str = "vault"                     # one of EXTENSION_SUB_TABS keys
     ext_cache: dict[str, Any] = field(default_factory=dict)
     ext_selected: dict[str, int] = field(default_factory=dict)
+    # Active sort key per non-vault sub-tab (mirrors `vault_sort`). Empty →
+    # the first entry of that sub-tab's `_SUBTAB_SORT_SPECS` is the default.
+    ext_sort: dict[str, str] = field(default_factory=dict)
     ext_detail_focused: bool = False  # Tab → focus the bottom detail panel (plugins/mcp/hooks)
     ext_detail_scroll: int = 0
 
@@ -120,6 +123,10 @@ class TuiState:
     context_selected: int = 0
     # Toggle the bottom "Project files" pane on the Context tab (P key, tab-local).
     context_show_project: bool = True
+    # Which Context-tab pane owns the keyboard: "sources" (the context-window
+    # breakdown) or "project" (the Project files list). Tab cycles between them
+    # when the project pane is visible; j/k/Enter/e route to the focused pane.
+    context_pane: str = "sources"
 
     # Project tab.
     project_items: Optional[list] = None
@@ -509,33 +516,21 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
 
     state.vault_selected = max(0, min(state.vault_selected, len(filtered) - 1))
 
-    # ── Layout: right panel on wide terminals, bottom panel on narrow ones.
-    # The threshold (w < 100) is chosen so an 80-column terminal — where the
-    # right panel's inner width drops to ~26 cells and long Path/Description
-    # fields wrap aggressively — switches to a full-width bottom panel.
-    # Layout split uses the body rect (table_y_top / table_h_full) returned by
+    # ── Layout: detail panel pinned to the bottom of the list, at every width.
+    # Unified with the other Extensions sub-tabs (see _render_list_with_detail)
+    # so every sub-tab reads the same way. Earlier builds switched to a
+    # right-side panel on wide terminals (w >= 100); that split was dropped.
+    # The split uses the body rect (table_y_top / table_h_full) returned by
     # render_title_bar above — no per-renderer reserved-row arithmetic, so the
     # region always fills down to the last body row.
-    bottom_layout = w < 100
-    if bottom_layout:
-        detail_h = max(8, min(16, int(h * 0.35)))
-        # Never let the panel eat the entire list; reserve at least 3 list rows.
-        detail_h = min(detail_h, max(1, table_h_full - 3))
-        table_w = w
-        table_h = max(0, table_h_full - detail_h)
-        detail_x = 0
-        detail_w = w
-        detail_y = table_y_top + table_h
-    else:
-        # Table gets 70% of the width so the Name column is not starved by the
-        # seven fixed columns. The detail panel keeps the remaining ~30%, which
-        # still holds the Path/Description fields (they wrap when needed).
-        table_w = int(w * 0.70)
-        table_h = table_h_full
-        detail_x = table_w
-        detail_w = w - table_w
-        detail_y = table_y_top
-        detail_h = table_h_full
+    detail_h = max(8, min(16, int(h * 0.35)))
+    # Never let the panel eat the entire list; reserve at least 3 list rows.
+    detail_h = min(detail_h, max(1, table_h_full - 3))
+    table_w = w
+    table_h = max(0, table_h_full - detail_h)
+    detail_x = 0
+    detail_w = w
+    detail_y = table_y_top + table_h
 
     # Columns: # / Name / Ver / Type / Vault / Project / Global / Used in.
     # "Vault" semantics:  ✓ = item is in ~/.axt/vault/  ;  global = only in ~/.claude/{type}s/
@@ -1438,8 +1433,13 @@ def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
 
 
 def _render_context_sources(stdscr, state: TuiState, y0: int, h: int, w: int,
-                            analysis: ContextAnalysis, rows: list) -> None:
-    """Render the context-sources table + detail panel within (y0, h)."""
+                            analysis: ContextAnalysis, rows: list,
+                            focused: bool = True) -> None:
+    """Render the context-sources table + detail panel within (y0, h).
+
+    ``focused`` highlights the detail-panel border (cyan vs dim) so the user
+    can see which Context-tab pane currently owns the keyboard.
+    """
     # Layout: table on left (~55%), detail on right.
     table_w = int(w * 0.55)
     detail_x = table_w
@@ -1475,27 +1475,59 @@ def _render_context_sources(stdscr, state: TuiState, y0: int, h: int, w: int,
     if not detail_fields:
         detail_fields = [("(empty)", "—")]
     render_detail_panel(stdscr, y0, detail_x, h, detail_w,
-                        title=current.label, fields=detail_fields)
+                        title=current.label, fields=detail_fields, focused=focused)
 
 
-def _render_project_files_pane(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
-    """Render the per-project context file list (CLAUDE.md, settings, memory…)."""
+def _project_item_detail_fields(item) -> list[tuple[str, str]]:
+    """(label, value) pairs for the focused Project files item's detail panel."""
+    preview = "\n".join(item.content.splitlines()[:12]) if item.content else ""
+    return [
+        ("Source", item.source),
+        ("Lines", str(item.lines)),
+        ("Path", item.path),
+        ("Preview", preview or "—"),
+    ]
+
+
+def _render_project_files_pane(stdscr, state: TuiState, y0: int, h: int, w: int,
+                               focused: bool = False) -> None:
+    """Render the per-project context file list (CLAUDE.md, settings, memory…)
+    as a table + detail panel, mirroring the Context sources pane above it.
+
+    ``focused`` highlights the detail-panel border so the active pane is clear.
+    """
     _ensure_project_loaded(state)
     items = state.project_items or []
-    body_y, body_h = render_title_bar(
-        stdscr, y0, h, w, f" Project files — {Path.cwd().name}  ({len(items)} files)")
+    render_section_header(stdscr, y0, w,
+        f"Project files — {Path.cwd().name}  ({len(items)} files)")
+    body_y, body_h = y0 + 1, max(1, h - 1)
     if not items:
         safe_addnstr(stdscr, body_y, 2, "No project context files found.", w - 4, CP_DIM())
         return
+
+    state.project_selected = max(0, min(state.project_selected, len(items) - 1))
+
+    # Layout: table on left (~55%), detail on right — same split as the
+    # Context sources pane so the two stacked panes read consistently.
+    table_w = int(w * 0.55)
+    detail_x = table_w
+    detail_w = w - table_w
+
     columns = [
-        TableColumn("name", "Name", max(20, w - 22)),
+        TableColumn("name", "Name", max(20, table_w - 18)),
         TableColumn("source", "Source", 8),
         TableColumn("lines", "Lines", 6),
     ]
     rows_data = [{"name": i.name, "source": i.source, "lines": str(i.lines)}
                  for i in items]
-    render_table(stdscr, body_y, 0, max(1, body_h), w, columns, rows_data,
+    render_table(stdscr, body_y, 0, body_h, table_w, columns, rows_data,
                  selected=state.project_selected, show_header=True)
+
+    current = items[state.project_selected]
+    render_detail_panel(stdscr, body_y, detail_x, body_h, detail_w,
+                        title=current.name,
+                        fields=_project_item_detail_fields(current),
+                        scroll=state.project_scroll, focused=focused)
 
 
 def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
@@ -1510,36 +1542,42 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
         f" Context — {format_tokens(analysis.total_tokens)} / {format_tokens(analysis.context_window_size)} "
         f"({analysis.used_percent:.1f}%)  model={analysis.model}")
 
-    # ── Section 1: rate-limit quota bars (5h / 7d) under a labeled header so
-    # the three stacked panes (rate limits / context sources / project files)
-    # read as distinct sections instead of one undivided block.
-    safe_addnstr(stdscr, body_y, 0, fit_cells(" Rate limits", w - 1), w - 1, CP_TITLE())
+    # ── Section 1: rate-limit quota bars (5h / 7d) under a section-header band
+    # (▌ marker + trailing rule) so the three stacked panes (rate limits /
+    # context sources / project files) read as distinct sections instead of one
+    # undivided block of bright CP_TITLE text rows.
+    render_section_header(stdscr, body_y, w, "Rate limits")
     rl_rows = _render_rate_limit_bars(stdscr, body_y + 1, w)
 
-    # ── Section 2: live context-window token breakdown, under its own header.
-    sources_hdr_y = body_y + 1 + rl_rows
-    safe_addnstr(stdscr, sources_hdr_y, 0, fit_cells(
-        f" Context sources — {format_tokens(analysis.total_tokens)} tok in live window",
-        w - 1), w - 1, CP_TITLE())
+    # ── Section 2: live context-window token breakdown, under its own band. A
+    # blank spacer row separates it from the rate bars above.
+    sources_hdr_y = body_y + 1 + rl_rows + 1
+    render_section_header(stdscr, sources_hdr_y, w,
+        f"Context sources — {format_tokens(analysis.total_tokens)} tok in live window")
     y_body = sources_hdr_y + 1
 
     # Reserve 2 rows at the bottom: cost line + spacing.
     body_h = max(1, h - (y_body - y0) - 2)
 
     # The bottom "Project files" pane is toggled by P (tab-local). When off,
-    # context sources fill the whole body.
+    # context sources fill the whole body and always own the keyboard.
     show_project = state.context_show_project
+    if not show_project:
+        state.context_pane = "sources"
     project_h = max(6, body_h // 3) if show_project else 0
     sources_h = max(1, body_h - project_h)
+    project_focused = show_project and state.context_pane == "project"
 
     rows = _context_rows(analysis)
     if rows:
-        _render_context_sources(stdscr, state, y_body, sources_h, w, analysis, rows)
+        _render_context_sources(stdscr, state, y_body, sources_h, w, analysis, rows,
+                                focused=not project_focused)
     else:
         safe_addnstr(stdscr, y_body + 1, 2, "No context sources detected.", w - 4, CP_DIM())
 
     if show_project:
-        _render_project_files_pane(stdscr, state, y_body + sources_h, project_h, w)
+        _render_project_files_pane(stdscr, state, y_body + sources_h, project_h, w,
+                                   focused=project_focused)
 
     # Cost impact line at the bottom.
     ci = analysis.cost_impact
@@ -1551,6 +1589,19 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
 
 
 def handle_context_input(state: TuiState, key: int) -> Optional[str]:
+    # Tab cycles keyboard focus between the two stacked panes — but only when
+    # the Project files pane is actually visible (P toggles it).
+    if key == KEY_TAB:
+        if not state.context_show_project:
+            return None
+        state.context_pane = "project" if state.context_pane == "sources" else "sources"
+        return f"Focus: {'Project files' if state.context_pane == 'project' else 'Context sources'}"
+
+    # When the Project files pane owns focus, route navigation/actions there
+    # (reuses the project handler: j/k select, Enter previews, e edits, r reloads).
+    if state.context_show_project and state.context_pane == "project":
+        return handle_project_input(state, key)
+
     rows = _context_rows(state.context_analysis) if state.context_analysis else []
     n = len(rows)
     if key in (ord("j"), curses.KEY_DOWN):
@@ -1744,18 +1795,6 @@ def _ensure_subtab_loaded(state: TuiState, sub_key: str) -> None:
         state.ext_cache["market"] = list_marketplaces(PATHS.known_marketplaces)
 
 
-def _render_simple_list(stdscr, state, y0, h, w, key, columns, rows):
-    """Render a simple selectable list for a sub-tab."""
-    state.ext_selected.setdefault(key, 0)
-    state.ext_selected[key] = max(0, min(state.ext_selected[key], max(0, len(rows) - 1)))
-    if not rows:
-        safe_addnstr(stdscr, y0 + 2, 2, f"No {key} found.", w - 4, CP_DIM())
-        return
-    render_table(stdscr, y0, 0, h, w, columns, rows,
-                 selected=state.ext_selected[key], show_header=True,
-                 header_rule=False)  # match Vault: header attaches to the list
-
-
 def _plugin_detail_fields(plugin, enabled_g, enabled_p) -> tuple[str, list[tuple[str, str]]]:
     """(title, label/value pairs) for the Plugin detail panel."""
     def _state(v) -> str:
@@ -1838,8 +1877,187 @@ def _hook_detail_fields(hook) -> tuple[str, list[tuple[str, str]]]:
     return hook.event, fields
 
 
+def _agent_detail_fields(agent) -> tuple[str, list[tuple[str, str]]]:
+    """(title, label/value pairs) for the Agent detail panel."""
+    fields: list[tuple[str, str]] = [
+        ("Source", agent.source),
+        ("Version", agent.version or "—"),
+    ]
+    if agent.plugin:
+        fields.append(("Plugin", agent.plugin))
+    if agent.description:
+        fields.append(("Description", agent.description))
+    if agent.source_path:
+        fields.append(("File", agent.source_path))
+    return agent.name, fields
+
+
+def _skill_detail_fields(skill) -> tuple[str, list[tuple[str, str]]]:
+    """(title, label/value pairs) for the Skill detail panel."""
+    fields: list[tuple[str, str]] = [
+        ("Source", skill.source),
+        ("Version", skill.version or "—"),
+        ("Type", "symlink" if skill.is_symlink else "dir"),
+    ]
+    if skill.plugin:
+        fields.append(("Plugin", skill.plugin))
+    fields.append(("Path", skill.path))
+    if skill.target:
+        fields.append(("Target", skill.target))
+    return skill.name, fields
+
+
+def _command_detail_fields(command) -> tuple[str, list[tuple[str, str]]]:
+    """(title, label/value pairs) for the Command detail panel."""
+    fields: list[tuple[str, str]] = [
+        ("Source", command.source),
+        ("Version", command.version or "—"),
+    ]
+    if command.plugin:
+        fields.append(("Plugin", command.plugin))
+    if command.description:
+        fields.append(("Description", command.description))
+    if command.source_path:
+        fields.append(("File", command.source_path))
+    return f"/{command.name}", fields
+
+
+def _market_detail_fields(market) -> tuple[str, list[tuple[str, str]]]:
+    """(title, label/value pairs) for the Marketplace detail panel."""
+    src = market.source
+    fields: list[tuple[str, str]] = [
+        ("Source", src.kind if src else "—"),
+    ]
+    if src:
+        if src.repo:
+            fields.append(("Repo", src.repo))
+        if src.url:
+            fields.append(("URL", src.url))
+        if src.path:
+            fields.append(("Path", src.path))
+    if market.install_location:
+        fields.append(("Location", market.install_location))
+    if market.last_updated:
+        fields.append(("Updated", market.last_updated[:10]))
+    return market.name, fields
+
+
 # Sub-tabs that render a bottom detail panel (Tab-focusable + scrollable).
-_SUBTABS_WITH_DETAIL: tuple[str, ...] = ("plugins", "mcp", "hooks")
+# Every non-Vault sub-tab now has one; Vault renders its own bottom panel.
+_SUBTABS_WITH_DETAIL: tuple[str, ...] = (
+    "plugins", "mcp", "hooks", "agents", "skills", "commands", "market",
+)
+
+
+def _lc(v: Any) -> str:
+    """Case-fold a possibly-None string for stable, case-insensitive sorting."""
+    return (v or "").lower()
+
+
+# Per-sub-tab `s`-cycle sort definitions for the non-vault Extensions sub-tabs,
+# mirroring the Vault sort cycle. Pressing `s` advances `state.ext_sort[sub]`
+# to the next key here. Each spec is:
+#   (key, keyfunc, reverse, marked_col, glyph)
+# where `marked_col` is the TableColumn.key whose header gets the ▲/▼ `glyph`
+# (the visible "sorted by this column" cue), or None for no column mark.
+_SortSpec = tuple[str, Callable[[Any], Any], bool, Optional[str], str]
+_SUBTAB_SORT_SPECS: dict[str, tuple[_SortSpec, ...]] = {
+    "plugins": (
+        ("name",    lambda p: _lc(p.name),                    False, "name",    "▲"),
+        ("version", lambda p: (_lc(p.version), _lc(p.name)),  False, "version", "▲"),
+        ("market",  lambda p: (_lc(p.marketplace), _lc(p.name)), False, "market", "▲"),
+    ),
+    "skills": (
+        ("name",   lambda s: _lc(s.name),                     False, "name",   "▲"),
+        ("source", lambda s: (_lc(s.source), _lc(s.name)),    False, "source", "▲"),
+        ("type",   lambda s: (s.is_symlink, _lc(s.name)),     False, "type",   "▲"),
+    ),
+    "commands": (
+        ("name",   lambda c: _lc(c.name),                     False, "name",   "▲"),
+        ("source", lambda c: (_lc(c.source), _lc(c.name)),    False, "source", "▲"),
+    ),
+    "agents": (
+        ("name",   lambda a: _lc(a.name),                     False, "name",   "▲"),
+        ("source", lambda a: (_lc(a.source), _lc(a.name)),    False, "source", "▲"),
+    ),
+    "mcp": (
+        ("name",      lambda s: _lc(s.name),                       False, "name",      "▲"),
+        ("scope",     lambda s: (_lc(s.scope), _lc(s.name)),       False, "scope",     "▲"),
+        ("transport", lambda s: (_lc(s.transport), _lc(s.name)),   False, "transport", "▲"),
+    ),
+    "hooks": (
+        ("event",  lambda h: (_lc(h.event), _lc(h.type)),     False, "event",  "▲"),
+        ("type",   lambda h: (_lc(h.type), _lc(h.event)),     False, "type",   "▲"),
+        ("source", lambda h: (_lc(h.source), _lc(h.event)),   False, "source", "▲"),
+    ),
+    "market": (
+        ("name",    lambda m: _lc(m.name),                        False, "name",    "▲"),
+        ("kind",    lambda m: (_lc(m.source.kind), _lc(m.name)),  False, "kind",    "▲"),
+        ("updated", lambda m: m.last_updated or "",               True,  "updated", "▼"),
+    ),
+}
+
+
+def _subtab_sort_spec(state: TuiState, sub: str) -> Optional[_SortSpec]:
+    """Active sort spec for `sub`, or None if the sub-tab has no sort cycle."""
+    specs = _SUBTAB_SORT_SPECS.get(sub)
+    if not specs:
+        return None
+    cur = state.ext_sort.get(sub, specs[0][0])
+    return next((s for s in specs if s[0] == cur), specs[0])
+
+
+def _subtab_sorted(state: TuiState, sub: str, data: list) -> list:
+    """Return `data` sorted by the sub-tab's active sort key (stable).
+
+    Falls back to the original order if the data lacks an expected attribute
+    (defensive — keeps a malformed cache from blanking the list)."""
+    spec = _subtab_sort_spec(state, sub)
+    if spec is None or not data:
+        return data
+    _, keyfunc, reverse, _, _ = spec
+    try:
+        return sorted(data, key=keyfunc, reverse=reverse)
+    except (TypeError, AttributeError):
+        return data
+
+
+def _subtab_view(state: TuiState, sub: str) -> list:
+    """The displayed (sorted) item list for `sub` — the single ordering shared
+    by render and the input handlers so selection indices stay aligned."""
+    return _subtab_sorted(state, sub, state.ext_cache.get(sub, []))
+
+
+def _mark_sorted_column(state: TuiState, sub: str, cols: list) -> list:
+    """Append the ▲/▼ glyph to the header of the column the list is sorted by."""
+    spec = _subtab_sort_spec(state, sub)
+    if spec is None:
+        return cols
+    _, _, _, marked_col, glyph = spec
+    if not marked_col or not glyph:
+        return cols
+    return [
+        TableColumn(c.key, f"{c.label} {glyph}", c.width) if c.key == marked_col else c
+        for c in cols
+    ]
+
+
+def _cycle_subtab_sort(state: TuiState, sub: str) -> None:
+    """Advance the active sort key for `sub` to the next entry in its cycle."""
+    specs = _SUBTAB_SORT_SPECS.get(sub)
+    if not specs:
+        return
+    keys = [s[0] for s in specs]
+    cur = state.ext_sort.get(sub, keys[0])
+    i = keys.index(cur) if cur in keys else 0
+    state.ext_sort[sub] = keys[(i + 1) % len(keys)]
+    state.ext_selected[sub] = 0
+
+
+def subtab_sort_label(state: TuiState, sub: str) -> str:
+    """Active sort key name for `sub` (for status hints), or "" if no cycle."""
+    spec = _subtab_sort_spec(state, sub)
+    return spec[0] if spec else ""
 
 
 def _blur_ext_detail(state: TuiState) -> None:
@@ -1897,7 +2115,9 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         return
 
     _ensure_subtab_loaded(state, sub)
-    data = state.ext_cache.get(sub, [])
+    # Sorted view (state.ext_sort) — the same ordering _selected_item uses, so
+    # the row the user acts on always matches the highlighted row.
+    data = _subtab_view(state, sub)
 
     # Non-Vault sub-tabs use the default render_table prefix (` N`/`▸N`) for
     # row numbering — no separate `#` data column needed (it would duplicate).
@@ -2017,6 +2237,9 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     else:
         return
 
+    # Annotate the active sort column's header with ▲/▼ (mirrors Vault).
+    cols = _mark_sorted_column(state, sub, cols)
+
     if sub == "plugins":
         _render_list_with_detail(
             stdscr, state, sub_y, sub_h, w, sub, cols, rows, data,
@@ -2026,8 +2249,14 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _mcp_detail_fields)
     elif sub == "hooks":
         _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _hook_detail_fields)
-    else:
-        _render_simple_list(stdscr, state, sub_y, sub_h, w, sub, cols, rows)
+    elif sub == "agents":
+        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _agent_detail_fields)
+    elif sub == "skills":
+        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _skill_detail_fields)
+    elif sub == "commands":
+        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _command_detail_fields)
+    elif sub == "market":
+        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _market_detail_fields)
 
 
 def _cycle_sub_tab(state: TuiState, direction: int) -> None:
@@ -2083,6 +2312,8 @@ def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
             return state.vault_selected == 0
         return state.ext_selected.get(state.ext_sub_tab, 0) == 0
     if tab_key == "context":
+        if state.context_show_project and state.context_pane == "project":
+            return state.project_selected == 0
         return state.context_selected == 0
     if tab_key == "usage":
         return state.usage_scroll == 0
@@ -2125,6 +2356,13 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
     sub = state.ext_sub_tab
     if sub == "vault":
         return handle_vault_input(state, key)
+
+    # `s` cycles the active sub-tab's sort (mirrors Vault). Handled here, ahead
+    # of detail-focus and list nav, so it works regardless of focus. Sub-tabs
+    # without a sort cycle ignore it. (Market's old `s`=sync moved to `S`.)
+    if key == ord("s") and sub in _SUBTAB_SORT_SPECS:
+        _cycle_subtab_sort(state, sub)
+        return f"Sort: {state.ext_sort.get(sub)}"
 
     # Tab toggles focus into the bottom detail panel (sub-tabs that have one).
     if key in (ord("\t"), curses.KEY_BTAB) and sub in _SUBTABS_WITH_DETAIL:
@@ -2175,8 +2413,11 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
 
 
 def _selected_item(state: TuiState, sub: str) -> Any:
-    """Return the currently selected item in the given Extensions sub-tab."""
-    data = state.ext_cache.get(sub, [])
+    """Return the currently selected item in the given Extensions sub-tab.
+
+    Uses the same sorted view as the renderer so the selection index resolves
+    to the row actually highlighted on screen."""
+    data = _subtab_view(state, sub)
     sel = state.ext_selected.get(sub, 0)
     if 0 <= sel < len(data):
         return data[sel]
@@ -2389,7 +2630,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
         m = _selected_item(state, "market")
         if m is None:
             return None
-        if key == ord("s"):
+        if key == ord("S"):  # `s` is the sort cycle; sync moved to `S`
             try:
                 result = sync_marketplace(PATHS.known_marketplaces, m.name)
                 state.ext_cache.pop("market", None)

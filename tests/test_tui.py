@@ -102,6 +102,72 @@ def test_context_tab_hides_project_files_section_when_toggle_off(monkeypatch, tm
     assert "Project files" not in flat
 
 
+def test_context_tab_default_pane_is_sources():
+    assert axt.TuiState().context_pane == "sources"
+
+
+def test_context_tab_tab_key_toggles_pane_focus():
+    """Tab cycles focus between Context sources and Project files panes."""
+    state = axt.TuiState()  # context_show_project defaults True
+    assert state.context_pane == "sources"
+    msg = axt.handle_context_input(state, axt.KEY_TAB)
+    assert state.context_pane == "project"
+    assert "Project files" in msg
+    axt.handle_context_input(state, axt.KEY_TAB)
+    assert state.context_pane == "sources"
+
+
+def test_context_tab_tab_key_noop_when_project_pane_hidden():
+    """With the Project files pane off, Tab does nothing (no pane to focus)."""
+    state = axt.TuiState()
+    state.context_show_project = False
+    assert axt.handle_context_input(state, axt.KEY_TAB) is None
+    assert state.context_pane == "sources"
+
+
+def test_context_tab_jk_routes_to_focused_project_pane():
+    """When the Project files pane owns focus, j/k drive project_selected, not
+    context_selected (the keys are routed to the project handler)."""
+    state = axt.TuiState()
+    state.project_items = [
+        axt.ProjectContextItem(name=f"f{i}", source="project",
+                               path=f"/p/{i}", content="x\n", lines=1)
+        for i in range(3)
+    ]
+    state.context_pane = "project"
+    before_ctx = state.context_selected
+    axt.handle_context_input(state, ord("j"))
+    assert state.project_selected == 1
+    assert state.context_selected == before_ctx  # sources selection untouched
+
+
+def test_at_top_of_content_tracks_focused_pane():
+    """↑-climb-out uses the focused pane's selection, so navigating the project
+    list doesn't prematurely bounce focus out of the content layer."""
+    state = axt.TuiState()
+    state.context_pane = "project"
+    state.context_selected = 0
+    state.project_selected = 3
+    assert axt._at_top_of_content(state, "context") is False
+    state.project_selected = 0
+    assert axt._at_top_of_content(state, "context") is True
+
+
+def test_context_tab_project_pane_has_detail_panel(monkeypatch, tmp_path):
+    """The Project files pane renders a detail panel exposing the focused
+    file's metadata (Source / Path / Lines)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# heading\nbody line\n")
+    scr = _make_stdscr(rows=40, cols=140)
+    state = axt.TuiState()
+    state.context_analysis = _make_empty_context_analysis()
+    axt.render_context_tab(scr, state, y0=3, h=34, w=140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Source:" in flat
+    assert "Path:" in flat
+    assert "Lines:" in flat
+
+
 def test_tui_state_initial_focus_is_main_tab():
     """Default focus on mainTab so arrow-key navigation is immediately
     discoverable (the ▶ marker appears on the tab bar from frame 1)."""
@@ -174,6 +240,44 @@ def test_render_title_bar_returns_body_rect_and_uses_cp_title():
             "search prompt should render on the row below the title"
     finally:
         axt.tui_init_colors("dark")
+
+
+# ─── render_section_header — stacked-section band ────────────────────────────
+
+
+def test_render_section_header_draws_marker_and_rule_fill():
+    """A section band leads with the ▌ marker, shows the label, and fills the
+    rest of the row with a ─ rule so it reads as a divider, not bare text."""
+    axt.tui_init_colors("dark")
+    try:
+        scr = _make_stdscr(rows=20, cols=60)
+        axt.render_section_header(scr, 4, 60, "Rate limits")
+        band = next(c[2] for c in scr.calls if c[0] == 4 and c[1] == 0)
+        assert band.startswith("▌ Rate limits ")
+        assert band.endswith("─")
+        # Marker + label + rule fills the full width (w - 1 cells).
+        assert axt.cell_width(band) == 59
+        attr = next(c[4] for c in scr.calls if c[0] == 4 and c[1] == 0)
+        assert attr & curses.A_BOLD, "dark section band uses CP_TITLE accent"
+    finally:
+        axt.tui_init_colors("dark")
+
+
+def test_context_tab_renders_three_section_bands(monkeypatch, tmp_path):
+    """Context tab's stacked panes each get a ▌ section band so their
+    boundaries are visible (the reported 'sections blur together' fix)."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# test\nproject level\n")
+    scr = _make_stdscr(rows=40, cols=140)
+    state = axt.TuiState()
+    state.context_analysis = _make_empty_context_analysis()
+    axt.render_context_tab(scr, state, y0=3, h=34, w=140)
+    bands = [c[2] for c in scr.calls
+             if len(c) >= 3 and isinstance(c[2], str) and c[2].startswith("▌ ")]
+    joined = "".join(bands)
+    assert "Rate limits" in joined
+    assert "Context sources" in joined
+    assert "Project files" in joined
 
 
 # ─── render_table — the bug-source test ──────────────────────────────────────
@@ -259,8 +363,9 @@ def _seed_vault_for_render(s):
     s.vault_selected = 0
 
 
-def test_render_vault_tab_uses_right_layout_when_wide():
-    """w=120: detail panel is drawn at x = int(120 * 0.70) (right side)."""
+def test_render_vault_tab_uses_bottom_layout_when_wide():
+    """w=120: detail panel is pinned to the bottom (x=0, below the table) just
+    like the narrow case — the right-side layout was dropped for UI unity."""
     scr = _make_stdscr(rows=30, cols=120)
     s = axt.TuiState()
     _seed_vault_for_render(s)
@@ -268,8 +373,8 @@ def test_render_vault_tab_uses_right_layout_when_wide():
     top = _detail_panel_top_left(scr.calls)
     assert top is not None, "detail panel was not rendered"
     y, x = top
-    assert x == int(120 * 0.70), f"expected right layout at x=84, got x={x}"
-    assert y == 3, f"expected detail top y=3, got y={y}"
+    assert x == 0, f"expected bottom layout at x=0, got x={x}"
+    assert y > 3, f"expected detail below table (y>3), got y={y}"
 
 
 def test_render_vault_tab_fills_to_bottom_no_blank_band():
@@ -364,21 +469,17 @@ def test_render_vault_tab_uses_bottom_layout_when_narrow():
     assert y > 3, f"expected detail below table (y>3), got y={y}"
 
 
-def test_render_vault_tab_layout_threshold_at_100():
-    """w=99 → bottom; w=100 → right. Single threshold, no hysteresis."""
+def test_render_vault_tab_bottom_layout_at_every_width():
+    """No width threshold: the detail panel is at x=0 (bottom) at narrow AND
+    wide widths. The old w>=100 right-side switch was removed."""
     s = axt.TuiState()
     _seed_vault_for_render(s)
 
-    scr99 = _make_stdscr(rows=30, cols=99)
-    axt.render_vault_tab(scr99, s, y0=2, h=25, w=99)
-    x99 = _detail_panel_top_left(scr99.calls)[1]
-    assert x99 == 0, f"w=99 must use bottom layout (x=0), got x={x99}"
-
-    scr100 = _make_stdscr(rows=30, cols=100)
-    axt.render_vault_tab(scr100, s, y0=2, h=25, w=100)
-    x100 = _detail_panel_top_left(scr100.calls)[1]
-    assert x100 == int(100 * 0.70), \
-        f"w=100 must use right layout (x={int(100 * 0.70)}), got x={x100}"
+    for w in (99, 100, 140):
+        scr = _make_stdscr(rows=30, cols=w)
+        axt.render_vault_tab(scr, s, y0=2, h=25, w=w)
+        x = _detail_panel_top_left(scr.calls)[1]
+        assert x == 0, f"w={w} must use bottom layout (x=0), got x={x}"
 
 
 def test_render_vault_tab_bottom_height_clamped():
@@ -1679,11 +1780,13 @@ def test_extensions_subtab_header_has_no_underline_rule():
             state.ext_sub_tab = "plugins"
             scr = _make_stdscr(rows=20, cols=120)
             axt.render_extensions_tab(scr, state, 0, 18, 120)
-            # The header row carries the exact "Plugin" column label (the
-            # subtab bar shows "Plugins" plural, so an exact match avoids it).
+            # The header row carries the "Plugin" column label, now suffixed
+            # with the active-sort glyph ("Plugin ▲" — default sort is by name).
+            # The subtab bar shows "Plugins" plural, so matching the glyph form
+            # avoids it.
             header_y = next(c[0] for c in scr.calls
                             if len(c) >= 3 and isinstance(c[2], str)
-                            and c[2].strip() == "Plugin")
+                            and c[2].strip() == "Plugin ▲")
             below_y = header_y + 1
             for c in scr.calls:
                 if c[0] == below_y and c[1] == 0 and isinstance(c[2], str) and c[2].strip():
@@ -3994,7 +4097,7 @@ def test_subtab_action_market_sync(monkeypatch):
     ]
     s.ext_selected["market"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "market", ord("s"))
+    msg = axt._handle_subtab_action(s, "market", ord("S"))  # `s` is sort; sync = `S`
     assert msg is not None and "Synced m1" in msg
 
 
@@ -4492,8 +4595,10 @@ def test_render_vault_tab_used_in_detail_field(tmp_path, monkeypatch):
             axt.ProjectRef(path="/x/projB", name="projB"),
         ])
     }
-    scr = _make_stdscr(rows=30, cols=140)
-    axt.render_vault_tab(scr, s, 0, 26, 140)
+    # Bottom panel: render tall enough (detail_h clamps to 16) that all detail
+    # fields — "Used in" is the last — are visible without scrolling.
+    scr = _make_stdscr(rows=52, cols=140)
+    axt.render_vault_tab(scr, s, 0, 50, 140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Used in" in flat
     assert "projA" in flat
@@ -4850,7 +4955,7 @@ def test_subtab_action_market_sync_failure(monkeypatch):
     ]
     s.ext_selected["market"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "market", ord("s"))
+    msg = axt._handle_subtab_action(s, "market", ord("S"))  # `s` is sort; sync = `S`
     assert msg is not None and "Sync failed" in msg
 
 
@@ -6267,3 +6372,124 @@ def test_vault_o_spawn_failure_toast(monkeypatch, tmp_path):
                                        path=str(d), description="")]
     state.vault_selected = 0
     assert axt.handle_vault_input(state, ord("o")) == "Terminal open failed: boom"
+
+
+# ─── Non-vault sub-tab sort (ported from Vault) ───────────────────────────────
+
+
+def test_subtab_sort_label_defaults_to_first_spec():
+    """With no explicit choice, each sortable sub-tab reports its first key;
+    a sub-tab with no sort cycle reports ""."""
+    s = axt.TuiState()
+    assert axt.subtab_sort_label(s, "skills") == "name"
+    assert axt.subtab_sort_label(s, "mcp") == "name"
+    assert axt.subtab_sort_label(s, "market") == "name"
+    assert axt.subtab_sort_label(s, "hooks") == "event"
+    assert axt.subtab_sort_label(s, "vault") == ""  # vault has its own cycle
+
+
+def test_handle_extensions_input_s_cycles_sort_skills():
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [axt.SkillInfo(name="a", path="/x", is_symlink=False, source="user")]
+    axt.handle_extensions_input(s, ord("s"))
+    assert s.ext_sort["skills"] == "source"
+    axt.handle_extensions_input(s, ord("s"))
+    assert s.ext_sort["skills"] == "type"
+    axt.handle_extensions_input(s, ord("s"))
+    assert s.ext_sort["skills"] == "name"  # wraps
+
+
+def test_subtab_sort_resets_selection():
+    s = axt.TuiState()
+    s.ext_sub_tab = "mcp"
+    s.ext_cache["mcp"] = [axt.McpServerInfo(name=n, plugin_id="", command="c", args=(), env=())
+                          for n in ("a", "b", "c")]
+    s.ext_selected["mcp"] = 2
+    axt.handle_extensions_input(s, ord("s"))
+    assert s.ext_sort["mcp"] == "scope"
+    assert s.ext_selected["mcp"] == 0
+
+
+def test_subtab_view_reorders_by_active_key():
+    """Sorting by name orders alphabetically; switching to source groups by
+    source first. _subtab_view is the single ordering used everywhere."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name="zeta", path="/z", is_symlink=False, source="user"),
+        axt.SkillInfo(name="alpha", path="/a", is_symlink=False, source="plugin"),
+        axt.SkillInfo(name="mid", path="/m", is_symlink=False, source="user"),
+    ]
+    # Default: by name.
+    assert [i.name for i in axt._subtab_view(s, "skills")] == ["alpha", "mid", "zeta"]
+    # By source: plugin before user, name as tiebreak.
+    s.ext_sort["skills"] = "source"
+    assert [i.name for i in axt._subtab_view(s, "skills")] == ["alpha", "mid", "zeta"]
+    assert [i.source for i in axt._subtab_view(s, "skills")] == ["plugin", "user", "user"]
+
+
+def test_selected_item_follows_sorted_view():
+    """The item _handle_subtab_action acts on must be the highlighted (sorted)
+    row, not the raw cache order."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name="zeta", path="/z", is_symlink=False, source="user"),
+        axt.SkillInfo(name="alpha", path="/a", is_symlink=False, source="user"),
+    ]
+    s.ext_selected["skills"] = 0  # top row
+    # Default name sort puts "alpha" at row 0, even though it's cache index 1.
+    assert axt._selected_item(s, "skills").name == "alpha"
+
+
+def test_market_s_cycles_sort_does_not_sync(monkeypatch):
+    """`s` on Market now cycles sort instead of syncing; sync moved to `S`."""
+    synced = []
+    monkeypatch.setattr("axt.tui.tabs.sync_marketplace",
+                        lambda km, name: synced.append(name) or
+                        axt.SyncMarketplaceResult(before="a", after="b", updated=True))
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [
+        axt.MarketplaceInfo(name="m1",
+                            source=axt.MarketplaceSource(kind="directory", path="/p"),
+                            install_location="/loc", last_updated="2026-01-01")
+    ]
+    s.ext_selected["market"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt.handle_extensions_input(s, ord("s"))
+    assert s.ext_sort["market"] == "kind"
+    assert synced == []           # no sync triggered
+    assert "Sort:" in (msg or "")
+
+
+def test_render_marks_active_sort_column(monkeypatch):
+    """The sorted column's header shows ▲/▼; others stay plain."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "mcp"
+    s.ext_cache["mcp"] = [axt.McpServerInfo(name="srv", plugin_id="", command="c", args=(), env=())]
+    s.ext_sort["mcp"] = "scope"
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 22, 120)
+    headers = {c[2].strip() for c in scr.calls if len(c) >= 3 and isinstance(c[2], str)}
+    assert "Scope ▲" in headers      # active sort column marked
+    assert "Server" in headers       # name column unmarked
+
+
+def test_sort_cycle_keys_match_columns():
+    """Every spec's marked_col is a real column key for that sub-tab so the
+    ▲/▼ glyph always lands on an existing header."""
+    col_keys = {
+        "plugins":  {"name", "version", "status", "market"},
+        "skills":   {"name", "ver", "source", "type", "path"},
+        "commands": {"name", "ver", "source", "desc"},
+        "agents":   {"name", "ver", "source", "desc"},
+        "mcp":      {"name", "scope", "transport", "detail"},
+        "hooks":    {"event", "ver", "type", "source", "detail"},
+        "market":   {"name", "ver", "kind", "loc", "updated"},
+    }
+    for sub, specs in axt._SUBTAB_SORT_SPECS.items():
+        for key, _fn, _rev, marked, _glyph in specs:
+            assert marked is None or marked in col_keys[sub], \
+                f"{sub} sort {key!r} marks unknown column {marked!r}"
