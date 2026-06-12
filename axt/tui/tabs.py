@@ -1510,9 +1510,18 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
         f" Context — {format_tokens(analysis.total_tokens)} / {format_tokens(analysis.context_window_size)} "
         f"({analysis.used_percent:.1f}%)  model={analysis.model}")
 
-    # Rate-limit bars (5h / 7d quota) at the top so the user sees them first.
-    rl_rows = _render_rate_limit_bars(stdscr, body_y, w)
-    y_body = body_y + rl_rows + 1
+    # ── Section 1: rate-limit quota bars (5h / 7d) under a labeled header so
+    # the three stacked panes (rate limits / context sources / project files)
+    # read as distinct sections instead of one undivided block.
+    safe_addnstr(stdscr, body_y, 0, fit_cells(" Rate limits", w - 1), w - 1, CP_TITLE())
+    rl_rows = _render_rate_limit_bars(stdscr, body_y + 1, w)
+
+    # ── Section 2: live context-window token breakdown, under its own header.
+    sources_hdr_y = body_y + 1 + rl_rows
+    safe_addnstr(stdscr, sources_hdr_y, 0, fit_cells(
+        f" Context sources — {format_tokens(analysis.total_tokens)} tok in live window",
+        w - 1), w - 1, CP_TITLE())
+    y_body = sources_hdr_y + 1
 
     # Reserve 2 rows at the bottom: cost line + spacing.
     body_h = max(1, h - (y_body - y0) - 2)
