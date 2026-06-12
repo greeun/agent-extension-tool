@@ -132,7 +132,9 @@ class TuiState:
 
 
 _VAULT_FILTERS = ("all", "skill", "command", "agent", "plugin")
-_VAULT_SORTS = ("name", "type", "added", "updated", "project", "global", "used")
+# Cycle order follows the table column layout (Name → Type → Proj → Glob →
+# Used), then the two column-less timestamp sorts last.
+_VAULT_SORTS = ("name", "type", "project", "global", "used", "added", "updated")
 
 # Active sort key → (table column it annotates, direction glyph ▲ asc / ▼ desc).
 # Lets the Vault table header show which column the list is sorted by. The two

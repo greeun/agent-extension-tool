@@ -657,7 +657,7 @@ def test_handle_vault_input_sort_cycle():
     axt.handle_vault_input(s, ord("s"))
     assert s.vault_sort == "type"
     axt.handle_vault_input(s, ord("s"))
-    assert s.vault_sort == "added"
+    assert s.vault_sort == "project"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
