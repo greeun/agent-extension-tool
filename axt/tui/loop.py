@@ -74,7 +74,7 @@ Vault
   Tab           Toggle list ↔ detail panel focus
   /             Search input (type → Enter to apply, Esc to clear)
   F             Cycle filter (all/skill/command/agent/plugin)
-  s             Cycle sort key (incl. `used`, most-used first)
+  s             Cycle sort (Name→Type→Proj→Glob→Used→Added→Updated); active column header marked ▲/▼
   i             Import a global-only item into the vault (selected row)
   f             Scan ALL projects to populate `Used` (cached to disk)
   M             Toggle scan mode (default ↔ full) and re-scan

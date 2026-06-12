@@ -126,7 +126,7 @@ TUI 대시보드 실행.
 ```
 j/k ↓/↑     이동             g           global 토글
 PgUp/PgDn   페이지           Tab         필터(all/skill/command/agent/plugin)
-Space       project 토글     s           정렬(name/type/vault/added/updated/project/global)
+Space       project 토글     s           정렬 순환(컬럼순→added→updated), 활성 컬럼 헤더 ▲/▼
 Enter       적용 또는 detail i           import to vault (global-only)
 Esc         폐기/뒤로        f           scan mode toggle (default/full)
 /           검색             m           migrate (글로벌→vault)
