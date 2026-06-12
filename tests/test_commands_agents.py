@@ -20,6 +20,42 @@ def test_extract_description_from_frontmatter():
     assert axt._extract_md_description(raw) == "Run a thing"
 
 
+def test_extract_description_folded_block_scalar():
+    # `description: >` — value on following indented lines, space-folded.
+    raw = (
+        "---\n"
+        "name: cavecrew\n"
+        "description: >\n"
+        "  Read-only code locator. Returns file:line table\n"
+        "  for \"where is X defined\".\n"
+        "tools: [Read, Grep]\n"
+        "---\n# Body\n"
+    )
+    assert axt._extract_md_description(raw) == (
+        'Read-only code locator. Returns file:line table for "where is X defined".'
+    )
+
+
+def test_extract_description_literal_block_scalar():
+    # `description: |` — same folding, ends at the next sibling key.
+    raw = (
+        "---\n"
+        "description: |\n"
+        "  CTO-level lead agent.\n"
+        "  Sets technical direction.\n"
+        "model: opus\n"
+        "---\n"
+    )
+    assert axt._extract_md_description(raw) == (
+        "CTO-level lead agent. Sets technical direction."
+    )
+
+
+def test_extract_description_block_scalar_with_chomp_indicator():
+    raw = "---\ndescription: >-\n  Single line desc.\nname: x\n---\n"
+    assert axt._extract_md_description(raw) == "Single line desc."
+
+
 def test_extract_description_from_first_line_when_no_frontmatter():
     raw = "# Heading\n\nThis is the body of the file.\n"
     # First non-#, non--- line.

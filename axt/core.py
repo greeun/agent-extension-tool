@@ -851,16 +851,37 @@ class CommandInfo:
 
 # Regex twins of the TS `description:` extraction.
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
-_DESC_LINE_RE = re.compile(r'description:\s*"?([^"\n]+)"?')
+_DESC_LINE_RE = re.compile(r'^(?P<indent>[ \t]*)description:[ \t]*(?P<val>.*)$', re.MULTILINE)
+# YAML block scalar indicator: `|`/`>` with optional chomping/indent (`-`, `+`, digit).
+_BLOCK_SCALAR_RE = re.compile(r'^[|>][+\-0-9]*$')
 
 
 def _extract_md_description(raw: str) -> str:
-    """Extract description from frontmatter; fall back to first non-empty content line."""
+    """Extract description from frontmatter; fall back to first non-empty content line.
+
+    Handles YAML block scalars (`description: >` / `description: |`), whose value
+    lives on the following more-indented lines — a naive `key: value` grab would
+    capture only the `>`/`|` indicator. Folded into one space-joined string for
+    display (the detail panel wraps it anyway)."""
     fm = _FRONTMATTER_RE.match(raw)
     if fm:
-        m = _DESC_LINE_RE.search(fm.group(1))
+        block = fm.group(1)
+        m = _DESC_LINE_RE.search(block)
         if m:
-            return m.group(1).strip().strip('"')
+            val = m.group("val").strip()
+            if _BLOCK_SCALAR_RE.match(val):
+                key_indent = len(m.group("indent"))
+                folded: list[str] = []
+                for line in block[m.end():].split("\n"):
+                    if not line.strip():
+                        continue
+                    if len(line) - len(line.lstrip()) <= key_indent:
+                        break  # next sibling key — block scalar ends
+                    folded.append(line.strip())
+                if folded:
+                    return " ".join(folded)
+            elif val:
+                return val.strip('"').strip("'")
     for line in raw.split("\n"):
         stripped = line.strip()
         if stripped and not stripped.startswith("#") and not stripped.startswith("---"):
