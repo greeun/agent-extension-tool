@@ -231,8 +231,8 @@ Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarCh
 ### 3.8 mcp (Section 4)
 - 타입: `McpServerInfo` (name, pluginId, command, args, env, disabled)
 - `list_mcp_servers(installed_plugins)` — plugin.json에서 mcpServers 추출
-- `collect_mcp_servers(...)` — plugin + user/project/.mcp.json 병합, `disabledMcpServers` 반영
-- `set_mcp_disabled(name, disabled=...)` — `~/.claude.json` `projects[<dir>].disabledMcpServers` 토글 (프로젝트 단위)
+- `collect_mcp_servers(...)` — plugin + user/project/.mcp.json + claude.ai 커넥터(`claudeAiMcpEverConnected`, scope `claude.ai`) + built-in(`BUILTIN_MCP_SERVERS`, scope `built-in`) 병합. opt-out 소스는 `disabledMcpServers`, built-in은 opt-in(`enabledMcpServers`) 반영
+- `set_mcp_disabled(name, disabled=...)` — `~/.claude.json` `projects[<dir>]` 토글 (프로젝트 단위). built-in은 `enabledMcpServers`, 그 외는 `disabledMcpServers`
 
 ### 3.9 commands / agents (Section 4)
 - 타입: `CommandSource | AgentSource = "user"|"project"|"plugin"`

@@ -263,7 +263,7 @@ def cli_mcp_info(args) -> int:
         print(f"Command: {server.command} {' '.join(server.args_list)}".rstrip())
         if server.env_dict:
             print(f"Env: {json.dumps(server.env_dict)}")
-    else:
+    elif server.url:
         print(f"URL: {server.url}")
     if server.disabled:
         print(_red("Disabled in current project"))

@@ -1790,8 +1790,8 @@ def _mcp_detail_fields(server) -> tuple[str, list[tuple[str, str]]]:
         fields.append(("Command", " ".join([server.command, *server.args_list]).strip() or "—"))
         if server.env_dict:
             fields.append(("Env", ", ".join(f"{k}={v}" for k, v in server.env_dict.items())))
-    else:
-        fields.append(("URL", server.url or "—"))
+    elif server.url:
+        fields.append(("URL", server.url))
     return server.name, fields
 
 

@@ -300,7 +300,9 @@ def test_mcp_list_no_plugins(tmp_path: Path, monkeypatch):
     ))
     code, out, _ = _run(["mcp", "list"])
     assert code == 0
-    assert "No MCP servers" in out
+    # No configured servers, but built-ins are always available and listed.
+    assert "computer-use" in out
+    assert "built-in" in out
 
 
 def test_mcp_info_missing(tmp_path: Path, monkeypatch):

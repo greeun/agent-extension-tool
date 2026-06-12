@@ -566,9 +566,22 @@ def list_mcp_servers(installed_plugins: list[dict[str, str]] | list[PluginInfo])
     return servers
 
 
+# Built-in ("dynamic" scope) MCP servers are compiled into Claude Code and appear
+# in `/mcp` under "Built-in MCPs (always available)" — they live in no config file,
+# so the names are hardcoded here. Unlike other sources they are opt-in: disabled by
+# default, enabled per-project via `enabledMcpServers`. Refresh on Claude Code bumps.
+BUILTIN_MCP_SERVERS: tuple[str, ...] = ("computer-use",)
+
+
 def _disabled_mcp_names(project_entry: dict[str, Any]) -> set[str]:
     """Names listed under a project's `disabledMcpServers`."""
     raw = project_entry.get("disabledMcpServers")
+    return {str(x) for x in raw} if isinstance(raw, list) else set()
+
+
+def _enabled_mcp_names(project_entry: dict[str, Any]) -> set[str]:
+    """Names listed under a project's `enabledMcpServers` (built-in opt-in list)."""
+    raw = project_entry.get("enabledMcpServers")
     return {str(x) for x in raw} if isinstance(raw, list) else set()
 
 
@@ -581,14 +594,18 @@ def collect_mcp_servers(
     """Aggregate MCP servers from every local Claude source.
 
     Sources, in order:
-      1. installed plugin manifests           → scope ``plugin``
-      2. ``<claude.json>.mcpServers``          → scope ``user``
+      1. installed plugin manifests                   → scope ``plugin``
+      2. ``<claude.json>.mcpServers``                 → scope ``user``
       3. ``<claude.json>.projects[<dir>].mcpServers`` → scope ``project``
-      4. ``<dir>/.mcp.json`` ``mcpServers``    → scope ``project-file``
+      4. ``<dir>/.mcp.json`` ``mcpServers``           → scope ``project-file``
+      5. ``<claude.json>.claudeAiMcpEverConnected``   → scope ``claude.ai``
+      6. ``BUILTIN_MCP_SERVERS``                      → scope ``built-in``
 
-    A server whose name appears in the project's ``disabledMcpServers`` is kept
-    but flagged ``disabled=True``. ``claude_config_path`` / ``project_dir``
-    default to ``PATHS.claude_config`` and the current working directory.
+    Sources 1-5 are opt-out: a server whose name appears in the project's
+    ``disabledMcpServers`` is kept but flagged ``disabled=True``. Built-in
+    servers (source 6) are opt-in: flagged ``disabled=True`` unless the name is
+    in the project's ``enabledMcpServers``. ``claude_config_path`` /
+    ``project_dir`` default to ``PATHS.claude_config`` and the current directory.
     """
     cfg_path = Path(claude_config_path) if claude_config_path is not None else PATHS.claude_config
     proj = Path(project_dir) if project_dir is not None else Path.cwd()
@@ -606,6 +623,7 @@ def collect_mcp_servers(
         if isinstance(entry, dict):
             project_entry = entry
     disabled = _disabled_mcp_names(project_entry)
+    enabled = _enabled_mcp_names(project_entry)
 
     def _ingest(mcp_map: Any, scope: str) -> None:
         if not isinstance(mcp_map, dict):
@@ -622,6 +640,35 @@ def collect_mcp_servers(
     if isinstance(mcp_json, dict):
         _ingest(mcp_json.get("mcpServers"), "project-file")
 
+    # claude.ai cloud connectors: only the name is known locally (the definition
+    # lives server-side), so synthesize a remote entry. Opt-out, like plugins.
+    connectors = config.get("claudeAiMcpEverConnected")
+    if isinstance(connectors, list):
+        for name in connectors:
+            servers.append(McpServerInfo(
+                name=str(name),
+                plugin_id="",
+                command="",
+                args=(),
+                env=(),
+                scope="claude.ai",
+                transport="remote",
+                disabled=str(name) in disabled,
+            ))
+
+    # Built-in (dynamic) servers: opt-in, enabled only if listed per-project.
+    for name in BUILTIN_MCP_SERVERS:
+        servers.append(McpServerInfo(
+            name=name,
+            plugin_id="",
+            command="",
+            args=(),
+            env=(),
+            scope="built-in",
+            transport="built-in",
+            disabled=name not in enabled,
+        ))
+
     return servers
 
 
@@ -632,14 +679,15 @@ def set_mcp_disabled(
     claude_config_path: os.PathLike[str] | str | None = None,
     project_dir: os.PathLike[str] | str | None = None,
 ) -> None:
-    """Toggle a server's presence in a project's ``disabledMcpServers`` list.
+    """Toggle a server's enabled state in the project's ``~/.claude.json`` entry.
 
-    Mirrors Claude Code's only native per-project MCP switch: a name listed
-    under ``projects[<dir>].disabledMcpServers`` in ``~/.claude.json`` is not
-    started for that project. ``disabled=True`` adds the name; ``False`` removes
-    it. The switch is by name, so any scope (plugin/user/project/project-file)
-    can be silenced for the current project. ``claude_config_path`` /
-    ``project_dir`` default to ``PATHS.claude_config`` and the current directory.
+    Mirrors Claude Code's native per-project MCP switches. For most scopes
+    (plugin/user/project/project-file/claude.ai) the server is opt-out: the name
+    lives in ``projects[<dir>].disabledMcpServers`` while disabled. Built-in
+    (``BUILTIN_MCP_SERVERS``) servers are opt-in instead: the name lives in
+    ``enabledMcpServers`` while enabled. This routes ``disabled`` to the right
+    list so the call means the same thing for every scope. ``claude_config_path``
+    / ``project_dir`` default to ``PATHS.claude_config`` and the current directory.
     """
     cfg_path = Path(claude_config_path) if claude_config_path is not None else PATHS.claude_config
     proj = str(Path(project_dir) if project_dir is not None else Path.cwd())
@@ -656,18 +704,25 @@ def set_mcp_disabled(
         entry = {}
         projects[proj] = entry
 
-    current = entry.get("disabledMcpServers")
+    # Built-in servers are opt-in: presence in `enabledMcpServers` == enabled, so
+    # the name is added when enabling and removed when disabling (inverted list).
+    if name in BUILTIN_MCP_SERVERS:
+        key, present = "enabledMcpServers", not disabled
+    else:
+        key, present = "disabledMcpServers", disabled
+
+    current = entry.get(key)
     names = [str(x) for x in current] if isinstance(current, list) else []
-    if disabled:
+    if present:
         if name not in names:
             names.append(name)
     else:
         names = [n for n in names if n != name]
 
     if names:
-        entry["disabledMcpServers"] = names
+        entry[key] = names
     else:
-        entry.pop("disabledMcpServers", None)
+        entry.pop(key, None)
     write_json_atomic(cfg_path, config)
 
 

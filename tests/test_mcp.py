@@ -111,10 +111,15 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data))
 
 
+def _configured(servers: list) -> list:
+    """Drop the always-present built-in servers; keep only config/plugin sources."""
+    return [s for s in servers if s.scope != "built-in"]
+
+
 def test_collect_mcp_servers_empty_everything(tmp_path: Path):
-    assert axt.collect_mcp_servers(
+    assert _configured(axt.collect_mcp_servers(
         [], claude_config_path=tmp_path / "missing.json", project_dir=tmp_path
-    ) == []
+    )) == []
 
 
 def test_collect_user_scope_stdio(tmp_path: Path):
@@ -122,7 +127,7 @@ def test_collect_user_scope_stdio(tmp_path: Path):
     _write_json(cfg, {"mcpServers": {
         "context7": {"command": "npx", "args": ["-y", "ctx7"], "env": {"K": "v"}},
     }})
-    servers = axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path)
+    servers = _configured(axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path))
     assert len(servers) == 1
     s = servers[0]
     assert s.name == "context7"
@@ -169,11 +174,11 @@ def test_collect_project_scope(tmp_path: Path):
     _write_json(cfg, {"projects": {str(proj): {
         "mcpServers": {"lazyweb": {"command": "node"}},
     }}})
-    s = axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=proj)[0]
+    s = _configured(axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=proj))[0]
     assert s.name == "lazyweb"
     assert s.scope == "project"
     # A different project dir must NOT see it.
-    other = axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path)
+    other = _configured(axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path))
     assert other == []
 
 
@@ -208,10 +213,10 @@ def test_collect_combines_plugin_and_config_sources(tmp_path: Path):
     _make_plugin(install, {"name": "p1", "mcpServers": {"plugsrv": {"command": "node"}}})
     cfg = tmp_path / ".claude.json"
     _write_json(cfg, {"mcpServers": {"usersrv": {"command": "npx"}}})
-    servers = axt.collect_mcp_servers(
+    servers = _configured(axt.collect_mcp_servers(
         [{"id": "p1@m", "installPath": str(install)}],
         claude_config_path=cfg, project_dir=tmp_path,
-    )
+    ))
     assert {s.name for s in servers} == {"plugsrv", "usersrv"}
     assert {s.scope for s in servers} == {"plugin", "user"}
 
@@ -219,10 +224,10 @@ def test_collect_combines_plugin_and_config_sources(tmp_path: Path):
 def test_collect_missing_config_returns_plugin_only(tmp_path: Path):
     install = tmp_path / "p1"
     _make_plugin(install, {"name": "p1", "mcpServers": {"plugsrv": {"command": "node"}}})
-    servers = axt.collect_mcp_servers(
+    servers = _configured(axt.collect_mcp_servers(
         [{"id": "p1@m", "installPath": str(install)}],
         claude_config_path=tmp_path / "nope.json", project_dir=tmp_path,
-    )
+    ))
     assert [s.name for s in servers] == ["plugsrv"]
     assert servers[0].scope == "plugin"
 
@@ -230,7 +235,7 @@ def test_collect_missing_config_returns_plugin_only(tmp_path: Path):
 def test_collect_tolerates_malformed_config(tmp_path: Path):
     cfg = tmp_path / ".claude.json"
     cfg.write_text("[1, 2, 3]")  # valid JSON but not an object
-    assert axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path) == []
+    assert _configured(axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path)) == []
 
 
 # ─── set_mcp_disabled: project-scoped disabledMcpServers toggle ───────────────
@@ -283,3 +288,108 @@ def test_set_mcp_disabled_tolerates_malformed_config(tmp_path: Path):
     cfg.write_text("[1, 2, 3]")  # valid JSON, not an object
     axt.set_mcp_disabled("a", disabled=True, claude_config_path=cfg, project_dir=proj)
     assert json.loads(cfg.read_text())["projects"][str(proj)]["disabledMcpServers"] == ["a"]
+
+
+# ─── collect_mcp_servers: claude.ai cloud connectors ──────────────────────────
+# Connector names are tracked globally in ~/.claude.json `claudeAiMcpEverConnected`;
+# their definitions live server-side, so only the name is known locally. Opt-out:
+# default enabled, disabled per-project via `disabledMcpServers` (same as plugins).
+
+
+def test_collect_claude_ai_connector(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    _write_json(cfg, {"claudeAiMcpEverConnected": ["claude.ai Notion"]})
+    servers = [s for s in axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path)
+               if s.scope == "claude.ai"]
+    assert len(servers) == 1
+    s = servers[0]
+    assert s.name == "claude.ai Notion"
+    assert s.scope == "claude.ai"
+    assert s.transport == "remote"
+    assert s.disabled is False
+
+
+def test_collect_claude_ai_connector_disabled_in_project(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _write_json(cfg, {
+        "claudeAiMcpEverConnected": ["claude.ai Notion"],
+        "projects": {str(proj): {"disabledMcpServers": ["claude.ai Notion"]}},
+    })
+    s = axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=proj)[0]
+    assert s.name == "claude.ai Notion"
+    assert s.disabled is True
+
+
+def test_collect_claude_ai_ignores_non_list(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    _write_json(cfg, {"claudeAiMcpEverConnected": "nope"})
+    servers = [s for s in axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path)
+               if s.scope == "claude.ai"]
+    assert servers == []
+
+
+# ─── collect_mcp_servers: built-in (dynamic) servers ──────────────────────────
+# Built-ins are hardcoded in Claude Code (scope "dynamic", "always available"),
+# absent from any config file. Opt-in: default disabled, enabled per-project via
+# `enabledMcpServers`.
+
+
+def test_collect_builtin_default_disabled(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    _write_json(cfg, {})
+    servers = axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=tmp_path)
+    builtin = [s for s in servers if s.scope == "built-in"]
+    assert [s.name for s in builtin] == list(axt.BUILTIN_MCP_SERVERS)
+    cu = next(s for s in builtin if s.name == "computer-use")
+    assert cu.transport == "built-in"
+    assert cu.disabled is True  # opt-in, not enabled anywhere
+
+
+def test_collect_builtin_enabled_in_project(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _write_json(cfg, {"projects": {str(proj): {"enabledMcpServers": ["computer-use"]}}})
+    cu = next(
+        s for s in axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=proj)
+        if s.name == "computer-use"
+    )
+    assert cu.disabled is False
+
+
+# ─── set_mcp_disabled: built-in opt-in via enabledMcpServers ──────────────────
+
+
+def test_set_mcp_enable_builtin_uses_enabled_list(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    axt.set_mcp_disabled("computer-use", disabled=False, claude_config_path=cfg, project_dir=proj)
+    entry = json.loads(cfg.read_text())["projects"][str(proj)]
+    assert entry["enabledMcpServers"] == ["computer-use"]
+    assert "disabledMcpServers" not in entry
+
+
+def test_set_mcp_disable_builtin_removes_from_enabled_list(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _write_json(cfg, {"projects": {str(proj): {"enabledMcpServers": ["computer-use"], "x": 1}}})
+    axt.set_mcp_disabled("computer-use", disabled=True, claude_config_path=cfg, project_dir=proj)
+    entry = json.loads(cfg.read_text())["projects"][str(proj)]
+    assert "enabledMcpServers" not in entry  # pruned when empty
+    assert entry["x"] == 1
+
+
+def test_set_mcp_enable_builtin_reflected_in_collect(tmp_path: Path):
+    cfg = tmp_path / ".claude.json"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    axt.set_mcp_disabled("computer-use", disabled=False, claude_config_path=cfg, project_dir=proj)
+    cu = next(
+        s for s in axt.collect_mcp_servers([], claude_config_path=cfg, project_dir=proj)
+        if s.name == "computer-use"
+    )
+    assert cu.disabled is False
