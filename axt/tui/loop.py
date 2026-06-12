@@ -68,6 +68,7 @@ Navigation
 Vault
   Space         Toggle PROJECT link for selected item (pending)
   g             Toggle GLOBAL link for selected item (pending)
+  U             Unlink selected item from ALL projects that use it (confirm)
   Enter         Apply pending toggles (confirm y/N) OR focus detail panel
   Esc           Discard pending → clear search → blur detail panel (in that order)
   Tab           Toggle list ↔ detail panel focus
@@ -166,7 +167,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
             shortcuts = "Enter:apply pending (confirm)  Esc:discard  Space:project  g:global  j/k:nav"
         else:
             shortcuts = (
-                "1-3:tab  [/]:sub  j/k:nav  Space:project  g:global  "
+                "1-3:tab  [/]:sub  j/k:nav  Space:project  g:global  U:unlink-all  "
                 "Enter:apply  F:filter  s:sort  /:search  i:import  f:scan  M:mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":

@@ -131,6 +131,7 @@ Enter       적용 또는 detail i           import to vault (global-only)
 Esc         폐기/뒤로        f           scan mode toggle (default/full)
 /           검색             m           migrate (글로벌→vault)
 o           터미널 열기       S           sync project
+U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 모달)
 ```
 
 ### 2.6 키바인딩 (서브탭별 고유)

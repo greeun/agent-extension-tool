@@ -660,6 +660,58 @@ def test_handle_vault_input_sort_cycle():
     assert s.vault_sort == "added"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_handle_vault_input_unlink_from_all_projects(tmp_path, monkeypatch):
+    """`U` unlinks the selected item from every project the scan index lists:
+    symlinks removed, profiles cleaned, usage entry dropped."""
+    vault = tmp_path / "vault"
+    (vault / "skills" / "myskill").mkdir(parents=True)
+    (vault / "skills" / "myskill" / "SKILL.md").write_text("---\nname: myskill\n---\n")
+    skill = next(i for i in axt.list_vault_items(vault) if i.name == "myskill")
+
+    proj_a, proj_b = tmp_path / "proj-a", tmp_path / "proj-b"
+    proj_a.mkdir()
+    proj_b.mkdir()
+    axt.link_to_project(proj_a, skill)
+    axt.link_to_project(proj_b, skill)
+    assert (proj_a / ".claude" / "skills" / "myskill").is_symlink()
+    assert (proj_b / ".claude" / "skills" / "myskill").is_symlink()
+
+    s = axt.TuiState()
+    s.vault_items = [skill]
+    s.vault_usage_index = {
+        "skill:myskill": axt.ExtensionUsage(
+            type="skill",
+            name="myskill",
+            projects=[
+                axt.ProjectRef(path=str(proj_a), name="proj-a"),
+                axt.ProjectRef(path=str(proj_b), name="proj-b"),
+            ],
+        )
+    }
+    # Keep hermetic: don't write the real scan cache. No stdscr → skip confirm.
+    monkeypatch.setattr("axt.tui.tabs._save_scan_cache", lambda *a, **k: None)
+
+    msg = axt.handle_vault_input(s, ord("U"))
+
+    assert "2 project" in msg
+    assert not (proj_a / ".claude" / "skills" / "myskill").exists()
+    assert not (proj_b / ".claude" / "skills" / "myskill").exists()
+    assert axt.read_profile(proj_a).skills == ()
+    assert axt.read_profile(proj_b).skills == ()
+    assert "skill:myskill" not in s.vault_usage_index
+
+
+def test_handle_vault_input_unlink_from_all_no_projects():
+    """With no scan data the item is used nowhere → no-op with a hint message."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="lonely", type="skill", path="", description="")
+    ]
+    msg = axt.handle_vault_input(s, ord("U"))
+    assert "not used by any project" in msg
+
+
 # ─── launch_tui graceful failure ─────────────────────────────────────────────
 
 

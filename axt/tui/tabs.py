@@ -134,6 +134,18 @@ class TuiState:
 _VAULT_FILTERS = ("all", "skill", "command", "agent", "plugin")
 _VAULT_SORTS = ("name", "type", "added", "updated", "project", "global", "used")
 
+# Active sort key → (table column it annotates, direction glyph ▲ asc / ▼ desc).
+# Lets the Vault table header show which column the list is sorted by. The two
+# timestamp sorts ("added"/"updated") have no dedicated column, so they mark
+# nothing here — the title bar's `sort=` text still names them.
+_VAULT_SORT_MARK = {
+    "name": ("name", "▲"),
+    "type": ("type", "▲"),
+    "project": ("project", "▲"),
+    "global": ("global", "▲"),
+    "used": ("used", "▼"),
+}
+
 # Seconds after which `state.status` auto-clears so shortcut hints reappear.
 STATUS_TIMEOUT_S: float = 5.0
 
@@ -342,6 +354,47 @@ def _vault_apply_pending(state: TuiState) -> str:
     return f"Applied {applied}" + (f", {errors} errors" if errors else "")
 
 
+def _vault_unlink_from_all(state: TuiState, item: VaultItem) -> str:
+    """Unlink `item` from EVERY project that references it in the scan index.
+
+    The heavier sibling of the Space toggle, which only touches the current
+    project. Project list comes from `state.vault_usage_index` (populated by
+    `f`). When a stdscr is available a confirm modal lists the affected
+    projects; headless callers (tests) skip straight to applying. Each project
+    has its symlink removed and its `.axt-profile.json` entry dropped, and the
+    in-memory + on-disk scan index is kept in sync so the `Used` column reverts.
+    """
+    if item.type == "plugin":
+        return "Plugins use enabledPlugins, not symlinks — nothing to unlink."
+    projects = get_projects(state.vault_usage_index, item.type, item.name)
+    if not projects:
+        return f"{item.name!r} not used by any project (press `f` to scan)"
+    cb = state.stdscr_callbacks
+    stdscr = cb.get("stdscr") if cb else None
+    if stdscr is not None:
+        shown = "\n".join(f"  - {p.name}" for p in projects[:12])
+        more = f"\n  … and {len(projects) - 12} more" if len(projects) > 12 else ""
+        msg = f"Unlink {item.type}:{item.name} from {len(projects)} project(s)?\n{shown}{more}"
+        if not confirm_modal(stdscr, msg, title="Confirm unlink-all"):
+            return "Cancelled"
+    unlinked = 0
+    errors = 0
+    for p in projects:
+        try:
+            unlink_from_project(Path(p.path), item)
+            _usage_index_drop(state.vault_usage_index, item.type, item.name, p.path)
+            unlinked += 1
+        except (OSError, ValueError):
+            errors += 1
+    if unlinked:
+        _save_scan_cache(state.vault_usage_index, state.vault_scan_mode)
+        _invalidate_context(state)
+    _vault_load(state)
+    return f"Unlinked {item.name!r} from {unlinked} project(s)" + (
+        f", {errors} errors" if errors else ""
+    )
+
+
 def _vault_filtered(state: TuiState) -> list[VaultItem]:
     items = state.vault_items
     if state.vault_filter != "all":
@@ -495,15 +548,22 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # subtract a few more cells of safety so wrap can't eat the last column.
     cols_fixed = no_w + ver_w + type_w + vault_w + proj_w + glob_w + used_w
     name_w = max(10, table_w - cols_fixed - (4 + 2 * 8) - 4)
+    # Append a direction arrow to the header of the column the list is sorted by
+    # (each fixed column has +2 cells of slack, so the glyph never shifts data).
+    mark_col, mark_glyph = _VAULT_SORT_MARK.get(state.vault_sort, (None, ""))
+
+    def _lbl(key: str, text: str) -> str:
+        return f"{text} {mark_glyph}" if key == mark_col else text
+
     columns = [
         TableColumn("no", "#", no_w),
-        TableColumn("name", "Name", name_w),
+        TableColumn("name", _lbl("name", "Name"), name_w),
         TableColumn("ver", "Ver", ver_w),
-        TableColumn("type", "Type", type_w),
+        TableColumn("type", _lbl("type", "Type"), type_w),
         TableColumn("vault", "Vault", vault_w),
-        TableColumn("project", "Proj", proj_w),
-        TableColumn("global", "Glob", glob_w),
-        TableColumn("used", "Used", used_w),
+        TableColumn("project", _lbl("project", "Proj"), proj_w),
+        TableColumn("global", _lbl("global", "Glob"), glob_w),
+        TableColumn("used", _lbl("used", "Used"), used_w),
     ]
     rows: list[dict[str, str]] = []
     checked: set[int] = set()
@@ -676,6 +736,10 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         else:
             state.vault_pending_global.add(current.name)
         return None
+    elif key == ord("U") and current and current.type != "plugin":
+        # Unlink the selected item from every project that uses it (per the
+        # last scan). Confirms via modal; updates symlinks, profiles, index.
+        return _vault_unlink_from_all(state, current)
     elif is_enter(key) and (state.vault_pending_project or state.vault_pending_global):
         # Ask before committing pending toggles to disk. When no stdscr is
         # available (tests, headless) fall back to direct apply.
