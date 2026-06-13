@@ -130,10 +130,10 @@ class TuiState:
     # sub-tab's selected row). PgUp/PgDn scroll it; reset on selection move.
     context_detail_scroll: int = 0
 
-    # Project tab.
+    # Project context files (rendered as the Context tab's "project" sub-tab).
+    # Detail-panel scroll is owned by context_detail_scroll, not here.
     project_items: Optional[list] = None
     project_selected: int = 0
-    project_scroll: int = 0
 
     # Bridge between handler functions and curses-bound widgets. The handlers
     # don't receive stdscr (so they remain unit-testable), so we stash a dict
@@ -1713,18 +1713,14 @@ def _ensure_project_loaded(state: TuiState) -> None:
 
 
 def handle_project_input(state: TuiState, key: int) -> Optional[str]:
+    # Called only via handle_context_input on the "project" sub-tab. PgUp/PgDn
+    # (detail-panel scroll) are intercepted upstream and never reach here.
     items = state.project_items or []
     n = len(items)
     if key in (ord("j"), curses.KEY_DOWN):
         state.project_selected = min(n - 1, state.project_selected + 1) if n else 0
-        state.project_scroll = 0
     elif key in (ord("k"), curses.KEY_UP):
         state.project_selected = max(0, state.project_selected - 1)
-        state.project_scroll = 0
-    elif key == curses.KEY_NPAGE:
-        state.project_scroll += 10
-    elif key == curses.KEY_PPAGE:
-        state.project_scroll = max(0, state.project_scroll - 10)
     elif key == ord("r"):
         state.project_items = None
         return "Refreshed"

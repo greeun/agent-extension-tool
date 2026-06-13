@@ -3816,30 +3816,42 @@ def test_handle_context_input_e_no_file_in_category(monkeypatch):
 # ─── handle_project_input paging branches ────────────────────────────────────
 
 
-def test_handle_project_input_pgdn_pgup_scroll():
+def test_handle_context_input_pgdn_pgup_scrolls_shared_detail():
+    """PgUp/PgDn scroll the shared bottom detail panel (context_detail_scroll),
+    clamped at 0 — both Context sub-tabs share this scroll."""
     s = axt.TuiState()
-    s.project_items = [
-        axt.ProjectContextItem(name=f"f{i}", source="project",
-                               path=f"/p/f{i}", content="x", lines=1)
-        for i in range(5)
-    ]
-    axt.handle_project_input(s, curses.KEY_NPAGE)
-    assert s.project_scroll == 10
-    axt.handle_project_input(s, curses.KEY_PPAGE)
-    assert s.project_scroll == 0
+    axt.handle_context_input(s, curses.KEY_NPAGE)
+    assert s.context_detail_scroll == 10
+    axt.handle_context_input(s, curses.KEY_PPAGE)
+    assert s.context_detail_scroll == 0
+    # Already at top → PgUp clamps, no underflow.
+    axt.handle_context_input(s, curses.KEY_PPAGE)
+    assert s.context_detail_scroll == 0
 
 
-def test_handle_project_input_nav_resets_scroll():
+def test_handle_context_input_nav_and_cycle_reset_detail_scroll():
+    """Moving the selection (j/k) or cycling sub-tabs ([/]) resets the shared
+    detail scroll so the new selection's detail starts at the top."""
+    s = axt.TuiState()
+    s.context_analysis = _seed_context_analysis_with_sources()
+    s.context_detail_scroll = 7
+    axt.handle_context_input(s, ord("j"))
+    assert s.context_detail_scroll == 0
+    s.context_detail_scroll = 7
+    axt.handle_context_input(s, ord("]"))
+    assert s.context_sub_tab == "project"
+    assert s.context_detail_scroll == 0
+
+
+def test_handle_project_input_nav_moves_selection():
     s = axt.TuiState()
     s.project_items = [
         axt.ProjectContextItem(name=f"f{i}", source="project",
                                path=f"/p/f{i}", content="x", lines=1)
         for i in range(3)
     ]
-    s.project_scroll = 5
     axt.handle_project_input(s, ord("j"))
     assert s.project_selected == 1
-    assert s.project_scroll == 0
 
 
 def test_handle_project_input_refresh():
@@ -5489,18 +5501,16 @@ def test_load_project_context_skips_unreadable_md_memory(tmp_path, monkeypatch):
     assert not any("Memory: broken" in i.name for i in items)
 
 
-def test_handle_project_input_k_resets_scroll():
-    """`k` in the project pane moves selection up and resets scroll (1567-1568)."""
+def test_handle_project_input_k_moves_selection_up():
+    """`k` on the Project sub-tab moves the selection up."""
     s = axt.TuiState()
     s.project_items = [
         axt.ProjectContextItem(name="a", source="user", path="/a", content="x", lines=1),
         axt.ProjectContextItem(name="b", source="user", path="/b", content="y", lines=1),
     ]
     s.project_selected = 1
-    s.project_scroll = 7
     axt.handle_project_input(s, ord("k"))
     assert s.project_selected == 0
-    assert s.project_scroll == 0
 
 
 def test_ensure_subtab_loaded_commands(tmp_path, monkeypatch):
