@@ -86,6 +86,56 @@ def test_collect_context_with_claude_md(tmp_path: Path, monkeypatch):
     assert "CLAUDE.md (project)" in claude_mds[0].name
 
 
+def test_context_source_scope_classification(tmp_path: Path, monkeypatch):
+    """Project files are scope='project'; global/user/fixed sources stay 'global'."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (home / "CLAUDE.md").write_text("Global guidance.")
+    (proj / "CLAUDE.md").write_text("Project guidance.")
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json",
+    )
+    by_name = {s.name: s for s in sources}
+    assert by_name["CLAUDE.md (project)"].scope == "project"
+    assert by_name["CLAUDE.md (global)"].scope == "global"
+    # Fixed baseline sources are always global; git-status follows the project.
+    assert by_name["System Prompt"].scope == "global"
+    assert by_name["User Context"].scope == "global"
+    assert by_name["Git Status"].scope == "project"
+
+
+def test_context_rows_group_by_scope_project_first(tmp_path: Path, monkeypatch):
+    """_context_rows splits a category into (category, scope) rows and orders
+    every project row ahead of every global row."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (home / "CLAUDE.md").write_text("Global guidance, fairly long " * 5)
+    (proj / "CLAUDE.md").write_text("Project guidance.")
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+
+    analysis = axt.analyze_context(
+        home_dir=home, project_dir=proj,
+        installed_plugins_path=tmp_path / "ip.json", model="claude-opus-4-8",
+    )
+    rows = axt._context_rows(analysis)
+    # claude-md appears twice — once per scope — not collapsed into one row.
+    claude_rows = [r for r in rows if r.category == "claude-md"]
+    assert {r.scope for r in claude_rows} == {"project", "global"}
+    # No global row precedes any project row.
+    scopes = [r.scope for r in rows]
+    last_project = max((i for i, s in enumerate(scopes) if s == "project"), default=-1)
+    first_global = min((i for i, s in enumerate(scopes) if s == "global"), default=len(scopes))
+    assert last_project < first_global
+
+
 def test_analyze_context_includes_cost_impact(tmp_path: Path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()

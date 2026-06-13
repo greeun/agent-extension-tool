@@ -1368,6 +1368,7 @@ def _ensure_context_loaded(state: TuiState) -> None:
 @dataclass
 class _ContextCategoryRow:
     category: str
+    scope: str
     label: str
     items: int
     tokens: int
@@ -1375,31 +1376,35 @@ class _ContextCategoryRow:
 
 
 def _context_rows(analysis: ContextAnalysis) -> list[_ContextCategoryRow]:
-    by_cat: dict[str, list[ContextSource]] = {}
+    """Roll context sources up per (category, scope) so the Sources table can
+    show the current project's own context separately from the global baseline.
+    Rows sort project-first, then by tokens desc within each scope group."""
+    by_key: dict[tuple[str, str], list[ContextSource]] = {}
     for s in analysis.sources:
-        by_cat.setdefault(s.category, []).append(s)
+        by_key.setdefault((s.category, getattr(s, "scope", "global")), []).append(s)
     rows = []
-    for cat, src_list in by_cat.items():
+    for (cat, scope), src_list in by_key.items():
         tokens = sum(s.estimated_tokens for s in src_list)
         pct = sum(s.percentage for s in src_list)
         rows.append(_ContextCategoryRow(
             category=cat,
+            scope=scope,
             label=CATEGORY_LABELS.get(cat, cat),
             items=len(src_list),
             tokens=tokens,
             pct=pct,
         ))
-    rows.sort(key=lambda r: r.tokens, reverse=True)
+    rows.sort(key=lambda r: (0 if r.scope == "project" else 1, -r.tokens))
     return rows
 
 
 def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
-    """5h/7d rate-limit bars from ~/.claude/usage-snapshot.json. Returns rows used."""
+    """5h/7d rate-limit quotas from ~/.claude/usage-snapshot.json, drawn on a
+    single line as two color-coded segments. Returns rows used (always 1)."""
     rl = read_rate_limits(PATHS.usage_snapshot)
     if rl is None:
         safe_addnstr(stdscr, y, 2, "Rate limits: snapshot missing or stale", w - 4, CP_DIM())
         return 1
-    bar_w = min(30, w - 40)
 
     def fmt_eta(reset_at: Optional[datetime]) -> str:
         if not reset_at:
@@ -1411,27 +1416,31 @@ def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
         if secs < 3600:
             return f"{secs // 60}m"
         if secs < 86400:
-            return f"{secs // 3600}h {(secs % 3600) // 60}m"
+            return f"{secs // 3600}h{(secs % 3600) // 60}m"
         return f"{secs // 86400}d"
 
-    rows_used = 0
+    def quota_attr(pct: int) -> int:
+        return CP_ERR() if pct >= 90 else CP_OK() if pct < 60 else CP_INFO()
+
+    # Narrow bars so both quotas share one line; scale to width, clamp 6–14.
+    bar_w = max(6, min(14, (w - 40) // 2))
+    segments: list[tuple[str, int]] = []
     if rl.five_hour is not None:
-        filled = round((rl.five_hour / 100) * bar_w)
-        attr = CP_ERR() if rl.five_hour >= 90 else CP_OK() if rl.five_hour < 60 else CP_INFO()
-        bar = render_bar(filled, bar_w)
-        safe_addnstr(stdscr, y, 2, fit_cells(
-            f"5h quota:  {bar} {rl.five_hour:3d}%  reset in {fmt_eta(rl.five_hour_reset_at)}",
-            w - 4), w - 4, attr)
-        rows_used += 1
+        bar = render_bar(round((rl.five_hour / 100) * bar_w), bar_w)
+        segments.append((f"5h {bar} {rl.five_hour:3d}% ({fmt_eta(rl.five_hour_reset_at)})",
+                         quota_attr(rl.five_hour)))
     if rl.seven_day is not None:
-        filled = round((rl.seven_day / 100) * bar_w)
-        attr = CP_ERR() if rl.seven_day >= 90 else CP_OK() if rl.seven_day < 60 else CP_INFO()
-        bar = render_bar(filled, bar_w)
-        safe_addnstr(stdscr, y + rows_used, 2, fit_cells(
-            f"7d quota:  {bar} {rl.seven_day:3d}%  reset in {fmt_eta(rl.seven_day_reset_at)}",
-            w - 4), w - 4, attr)
-        rows_used += 1
-    return rows_used
+        bar = render_bar(round((rl.seven_day / 100) * bar_w), bar_w)
+        segments.append((f"7d {bar} {rl.seven_day:3d}% ({fmt_eta(rl.seven_day_reset_at)})",
+                         quota_attr(rl.seven_day)))
+
+    cursor = 2
+    for text, attr in segments:
+        if cursor >= w - 1:
+            break
+        safe_addnstr(stdscr, y, cursor, text, w - 1 - cursor, attr)
+        cursor += cell_width(text) + 4  # 4-cell gap between the two quotas
+    return 1
 
 
 def _render_context_sources_table(stdscr, state: TuiState, y0: int, h: int, w: int,
@@ -1446,13 +1455,15 @@ def _render_context_sources_table(stdscr, state: TuiState, y0: int, h: int, w: i
         return
     state.context_selected = max(0, min(state.context_selected, len(rows) - 1))
     columns = [
-        TableColumn("label", "Category", max(15, w - 35)),
+        TableColumn("label", "Category", max(15, w - 44)),
+        TableColumn("scope", "Scope", 9),
         TableColumn("items", "#", 4),
         TableColumn("tokens", "Tokens", 10),
         TableColumn("pct", "%", 8),
     ]
     table_rows = [{
         "label": r.label,
+        "scope": "project" if r.scope == "project" else "global",
         "items": str(r.items),
         "tokens": format_tokens(r.tokens),
         "pct": f"{r.pct:.1f}%",
@@ -1511,12 +1522,15 @@ def _context_detail_for(state: TuiState, analysis: ContextAnalysis,
     if rows and 0 <= state.context_selected < len(rows):
         current = rows[state.context_selected]
         fields: list[tuple[str, str]] = []
-        srcs = [s for s in analysis.sources if s.category == current.category]
+        srcs = [s for s in analysis.sources
+                if s.category == current.category
+                and getattr(s, "scope", "global") == current.scope]
         srcs.sort(key=lambda s: s.estimated_tokens, reverse=True)
         for s in srcs[:20]:
             hint = f" ({s.hint})" if s.hint else ""
             fields.append((s.name, f"{format_tokens(s.estimated_tokens)} tok{hint}"))
-        return current.label, (fields or [("(empty)", "—")])
+        scope_label = "project" if current.scope == "project" else "global"
+        return f"{current.label} — {scope_label}", (fields or [("(empty)", "—")])
     return "Context sources", [("(empty)", "—")]
 
 

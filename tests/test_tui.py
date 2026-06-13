@@ -2059,10 +2059,11 @@ def test_render_rate_limit_bars_with_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr("axt.PATHS", axt.Paths(usage_snapshot=snap))
     scr = _make_stdscr()
     rows = axt._render_rate_limit_bars(scr, 0, 100)
-    assert rows == 2
+    # Both quotas now share a single line.
+    assert rows == 1
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "5h quota" in flat
-    assert "7d quota" in flat
+    assert "5h" in flat and "14%" in flat
+    assert "7d" in flat and "8%" in flat
 
 
 # ─── Claude insights summary ─────────────────────────────────────────────────
@@ -5384,7 +5385,7 @@ def test_render_rate_limit_bars_no_reset_shows_dash(tmp_path, monkeypatch):
     used = axt._render_rate_limit_bars(scr, 0, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert used >= 1
-    assert "reset in —" in flat
+    assert "(—)" in flat
 
 
 def test_render_rate_limit_bars_reset_now_and_minutes(tmp_path, monkeypatch):
@@ -5401,7 +5402,7 @@ def test_render_rate_limit_bars_reset_now_and_minutes(tmp_path, monkeypatch):
     scr = _make_stdscr(rows=30, cols=120)
     axt._render_rate_limit_bars(scr, 0, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "reset in now" in flat
+    assert "(now)" in flat
 
 
 def test_render_rate_limit_minutes_eta(monkeypatch):
@@ -5422,7 +5423,7 @@ def test_render_rate_limit_minutes_eta(monkeypatch):
     axt._render_rate_limit_bars(scr, 0, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     _os.unlink(path)
-    assert "reset in 29m" in flat or "reset in 30m" in flat
+    assert "(29m)" in flat or "(30m)" in flat
 
 
 def test_render_context_sources_empty_category_detail(monkeypatch, tmp_path):
@@ -5444,11 +5445,11 @@ def test_render_context_sources_empty_category_detail(monkeypatch, tmp_path):
     # per-category filter in _context_detail_for yields the empty placeholder
     # (the shared bottom detail panel now owns this; tables are full-width).
     rows = [axt._ContextCategoryRow(
-        category="rules", label="Rules", items=0, tokens=0, pct=0.0)]
+        category="rules", scope="global", label="Rules", items=0, tokens=0, pct=0.0)]
     state = axt.TuiState()
     state.context_selected = 0
     title, fields = axt._context_detail_for(state, analysis, rows)
-    assert title == "Rules"
+    assert title == "Rules — global"
     assert ("(empty)", "—") in fields
 
 

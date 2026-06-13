@@ -3668,6 +3668,11 @@ class ContextSource:
     actionable: bool
     hint: Optional[str] = None
     content: Optional[str] = None
+    # "project" = contributed by the current project (project CLAUDE.md/settings,
+    # project skills/commands/agents/hooks, memory, git-status). "global" = the
+    # baseline injected into every session regardless of cwd (system prompt,
+    # global/user CLAUDE.md, global settings, plugins, MCP defs, user context).
+    scope: str = "global"
 
 
 @dataclass(frozen=True)
@@ -3707,7 +3712,8 @@ CATEGORY_LABELS: dict[str, str] = {
 }
 
 
-def _make_src(name: str, category: str, path: str, content: str, actionable: bool, hint: Optional[str] = None) -> ContextSource:
+def _make_src(name: str, category: str, path: str, content: str, actionable: bool,
+              hint: Optional[str] = None, scope: str = "global") -> ContextSource:
     return ContextSource(
         name=name,
         category=category,
@@ -3718,10 +3724,12 @@ def _make_src(name: str, category: str, path: str, content: str, actionable: boo
         actionable=actionable,
         hint=hint,
         content=content,
+        scope=scope,
     )
 
 
-def _make_fixed(name: str, category: str, tokens: int, content: Optional[str] = None) -> ContextSource:
+def _make_fixed(name: str, category: str, tokens: int, content: Optional[str] = None,
+                scope: str = "global") -> ContextSource:
     return ContextSource(
         name=name,
         category=category,
@@ -3732,7 +3740,15 @@ def _make_fixed(name: str, category: str, tokens: int, content: Optional[str] = 
         actionable=False,
         hint=None,
         content=content,
+        scope=scope,
     )
+
+
+def _scope_of_source(source: str) -> str:
+    """Map an item's `source` field (user/project/local/plugin/…) to the binary
+    context scope used by the Context tab: anything tied to the current project
+    tree is "project"; user-global, plugin, and built-in sources are "global"."""
+    return "project" if source in ("project", "project-file", "local") else "global"
 
 
 def get_claude_version() -> str:
@@ -3837,37 +3853,37 @@ def collect_context_sources(
 
     # 2. claude-md
     candidates_claude_md = [
-        ("CLAUDE.md (global)", home / "CLAUDE.md"),
-        ("CLAUDE.md (user)", home / ".claude" / "CLAUDE.md"),
-        ("CLAUDE.md (project)", proj / "CLAUDE.md"),
-        ("CLAUDE.md (project/.claude)", proj / ".claude" / "CLAUDE.md"),
-        ("CLAUDE.local.md (local)", proj / "CLAUDE.local.md"),
+        ("CLAUDE.md (global)", home / "CLAUDE.md", "global"),
+        ("CLAUDE.md (user)", home / ".claude" / "CLAUDE.md", "global"),
+        ("CLAUDE.md (project)", proj / "CLAUDE.md", "project"),
+        ("CLAUDE.md (project/.claude)", proj / ".claude" / "CLAUDE.md", "project"),
+        ("CLAUDE.local.md (local)", proj / "CLAUDE.local.md", "project"),
     ]
-    for name, p in candidates_claude_md:
+    for name, p, scope in candidates_claude_md:
         content = _safe_read_text(p)
         if content is not None:
-            sources.append(_make_src(name, "claude-md", str(p), content, actionable=True))
+            sources.append(_make_src(name, "claude-md", str(p), content, actionable=True, scope=scope))
 
     # 3. settings (global + per-project encoded path)
     project_settings_key = str(proj).replace("/", "-").lstrip("-")
     project_settings_dir = home / ".claude" / "projects" / project_settings_key
     candidates_settings = [
-        ("settings.json (global)", home / ".claude" / "settings.json"),
-        ("settings.local.json (global)", home / ".claude" / "settings.local.json"),
-        ("settings.json (project)", project_settings_dir / "settings.json"),
-        ("settings.local.json (project)", project_settings_dir / "settings.local.json"),
+        ("settings.json (global)", home / ".claude" / "settings.json", "global"),
+        ("settings.local.json (global)", home / ".claude" / "settings.local.json", "global"),
+        ("settings.json (project)", project_settings_dir / "settings.json", "project"),
+        ("settings.local.json (project)", project_settings_dir / "settings.local.json", "project"),
     ]
-    for name, p in candidates_settings:
+    for name, p, scope in candidates_settings:
         content = _safe_read_text(p)
         if content is not None:
-            sources.append(_make_src(name, "settings", str(p), content, actionable=True))
+            sources.append(_make_src(name, "settings", str(p), content, actionable=True, scope=scope))
 
     # 4. memory
     memory_dir = project_settings_dir / "memory"
     main = memory_dir / "MEMORY.md"
     main_content = _safe_read_text(main)
     if main_content is not None:
-        sources.append(_make_src("MEMORY.md", "memory", str(main), _truncate_memory(main_content), actionable=True))
+        sources.append(_make_src("MEMORY.md", "memory", str(main), _truncate_memory(main_content), actionable=True, scope="project"))
     for f in _safe_listdir(memory_dir):
         if not f.endswith(".md") or f == "MEMORY.md":
             continue
@@ -3875,7 +3891,7 @@ def collect_context_sources(
         c = _safe_read_text(p)
         if c is not None:
             stem = Path(f).stem
-            sources.append(_make_src(f"Memory: {stem}", "memory", str(p), c, actionable=True))
+            sources.append(_make_src(f"Memory: {stem}", "memory", str(p), c, actionable=True, scope="project"))
 
     # 5. skills
     try:
@@ -3892,7 +3908,8 @@ def collect_context_sources(
                         name = nm.group(1).strip().strip('"')
                     description = parse_yaml_description(body)
             text = f"- {name}: {description}"
-            sources.append(_make_src(skill.name, "skills", skill.path, text, actionable=True))
+            sources.append(_make_src(skill.name, "skills", skill.path, text, actionable=True,
+                                     scope=_scope_of_source(skill.source)))
     except OSError:
         pass
 
@@ -3928,7 +3945,8 @@ def collect_context_sources(
             if h.event not in ("SessionStart", "UserPromptSubmit"):
                 continue
             name = f"Hook: {h.event} ({h.type})"
-            sources.append(_make_fixed(name, "hooks", FIXED_HOOK_OUTPUT_TOKENS, build_hook_preview(h)))
+            sources.append(_make_fixed(name, "hooks", FIXED_HOOK_OUTPUT_TOKENS, build_hook_preview(h),
+                                       scope=_scope_of_source(h.source)))
     except OSError:
         pass
 
@@ -3936,7 +3954,8 @@ def collect_context_sources(
     try:
         for cmd in list_commands(project_dir=proj):
             text = f"- {cmd.name}: {cmd.description}"
-            sources.append(_make_src(cmd.name, "commands", cmd.source_path, text, actionable=True))
+            sources.append(_make_src(cmd.name, "commands", cmd.source_path, text, actionable=True,
+                                     scope=_scope_of_source(cmd.source)))
     except OSError:
         pass
 
@@ -3944,13 +3963,15 @@ def collect_context_sources(
     try:
         for agent in list_all_agents(project_dir=proj):
             text = f"- {agent.name}: {agent.description}"
-            sources.append(_make_src(agent.name, "agents", agent.source_path, text, actionable=True))
+            sources.append(_make_src(agent.name, "agents", agent.source_path, text, actionable=True,
+                                     scope=_scope_of_source(agent.source)))
     except OSError:
         pass
 
     # 11. git-status (fixed 150 tokens)
     git = get_git_status(proj)
-    sources.append(_make_fixed("Git Status", "git-status", 150, git or "No git repository or git not available."))
+    sources.append(_make_fixed("Git Status", "git-status", 150,
+                               git or "No git repository or git not available.", scope="project"))
 
     # 12. user-context (fixed)
     sources.append(_make_fixed(
