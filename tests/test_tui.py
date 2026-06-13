@@ -34,10 +34,10 @@ def test_main_tabs_three_resource_types():
     assert keys == ["extensions", "context", "usage"]
 
 
-def test_tui_state_defaults_context_show_project_on():
-    """Context-tab-local toggle for the project files pane defaults to on."""
+def test_tui_state_default_context_sub_tab_is_sources():
+    """Context tab opens on the Sources sub-tab."""
     s = axt.TuiState()
-    assert s.context_show_project is True
+    assert s.context_sub_tab == "sources"
 
 
 def test_render_frame_dispatches_usage_tab(monkeypatch):
@@ -52,12 +52,17 @@ def test_render_frame_dispatches_usage_tab(monkeypatch):
     assert calls == ["usage"]
 
 
-def test_cycle_sub_tab_rotates_only_extensions():
-    """_cycle_sub_tab rotates ext_sub_tab — Extensions is the only tab with sub-tabs."""
+def test_cycle_sub_tab_rotates_extensions_and_context():
+    """_cycle_sub_tab rotates the given tab's sub-tab field (Extensions + Context)."""
     state = axt.TuiState()
     assert state.ext_sub_tab == "vault"
-    axt._cycle_sub_tab(state, +1)
+    axt._cycle_sub_tab(state, "extensions", +1)
     assert state.ext_sub_tab == "skills"
+    assert state.context_sub_tab == "sources"  # untouched
+    axt._cycle_sub_tab(state, "context", +1)
+    assert state.context_sub_tab == "project"
+    axt._cycle_sub_tab(state, "context", +1)  # wraps back
+    assert state.context_sub_tab == "sources"
 
 
 def _make_empty_context_analysis():
@@ -72,15 +77,26 @@ def _make_empty_context_analysis():
     )
 
 
-def test_context_tab_includes_project_files_section_when_toggle_on(monkeypatch, tmp_path):
-    """With context_show_project=True (default), Context tab lists project
-    context files under a dedicated section header."""
+def _make_empty_context_analysis_with_source():
+    """Like _make_empty_context_analysis but with one source so the Sources
+    sub-tab has a focusable category row."""
+    src = axt.ContextSource(
+        name="CLAUDE.md", category="memory", estimated_tokens=100,
+        percentage=1.0, path="/p/CLAUDE.md", hint="", chars=400, actionable=True)
+    return axt.ContextAnalysis(
+        total_tokens=100, context_window_size=200_000, used_percent=0.1,
+        model="claude-sonnet", sources=[src],
+        cost_impact=_make_empty_context_analysis().cost_impact)
+
+
+def test_context_tab_shows_project_files_on_project_sub_tab(monkeypatch, tmp_path):
+    """The Project sub-tab lists project context files under its header."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "CLAUDE.md").write_text("# test\nproject level\n")
 
     scr = _make_stdscr(rows=40, cols=140)
     state = axt.TuiState()
-    assert state.context_show_project is True
+    state.context_sub_tab = "project"
     state.context_analysis = _make_empty_context_analysis()
     axt.render_context_tab(scr, state, y0=3, h=30, w=140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
@@ -88,64 +104,55 @@ def test_context_tab_includes_project_files_section_when_toggle_on(monkeypatch, 
     assert "CLAUDE.md" in flat
 
 
-def test_context_tab_hides_project_files_section_when_toggle_off(monkeypatch, tmp_path):
-    """With context_show_project=False, the per-project file list is hidden."""
+def test_context_tab_hides_project_files_on_sources_sub_tab(monkeypatch, tmp_path):
+    """The Sources sub-tab (default) does not render the Project files list."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "CLAUDE.md").write_text("# test\nshould not appear\n")
 
     scr = _make_stdscr(rows=40, cols=140)
-    state = axt.TuiState()
-    state.context_show_project = False
+    state = axt.TuiState()  # defaults to the sources sub-tab
     state.context_analysis = _make_empty_context_analysis()
     axt.render_context_tab(scr, state, y0=3, h=30, w=140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Project files" not in flat
 
 
-def test_context_tab_default_pane_is_sources():
-    assert axt.TuiState().context_pane == "sources"
+def test_context_tab_default_sub_tab_is_sources():
+    assert axt.TuiState().context_sub_tab == "sources"
 
 
-def test_context_tab_tab_key_toggles_pane_focus():
-    """Tab cycles focus between Context sources and Project files panes."""
-    state = axt.TuiState()  # context_show_project defaults True
-    assert state.context_pane == "sources"
-    msg = axt.handle_context_input(state, axt.KEY_TAB)
-    assert state.context_pane == "project"
-    assert "Project files" in msg
-    axt.handle_context_input(state, axt.KEY_TAB)
-    assert state.context_pane == "sources"
-
-
-def test_context_tab_tab_key_noop_when_project_pane_hidden():
-    """With the Project files pane off, Tab does nothing (no pane to focus)."""
+def test_context_tab_bracket_keys_cycle_sub_tabs():
+    """[ / ] cycle the Context sub-tab from the body (mirrors Extensions)."""
     state = axt.TuiState()
-    state.context_show_project = False
-    assert axt.handle_context_input(state, axt.KEY_TAB) is None
-    assert state.context_pane == "sources"
+    assert state.context_sub_tab == "sources"
+    msg = axt.handle_context_input(state, ord("]"))
+    assert state.context_sub_tab == "project"
+    assert "project" in msg
+    axt.handle_context_input(state, ord("["))
+    assert state.context_sub_tab == "sources"
 
 
-def test_context_tab_jk_routes_to_focused_project_pane():
-    """When the Project files pane owns focus, j/k drive project_selected, not
-    context_selected (the keys are routed to the project handler)."""
+def test_context_tab_jk_routes_to_project_sub_tab():
+    """On the Project sub-tab, j/k drive project_selected, not context_selected
+    (the keys are routed to the project handler)."""
     state = axt.TuiState()
     state.project_items = [
         axt.ProjectContextItem(name=f"f{i}", source="project",
                                path=f"/p/{i}", content="x\n", lines=1)
         for i in range(3)
     ]
-    state.context_pane = "project"
+    state.context_sub_tab = "project"
     before_ctx = state.context_selected
     axt.handle_context_input(state, ord("j"))
     assert state.project_selected == 1
     assert state.context_selected == before_ctx  # sources selection untouched
 
 
-def test_at_top_of_content_tracks_focused_pane():
-    """↑-climb-out uses the focused pane's selection, so navigating the project
-    list doesn't prematurely bounce focus out of the content layer."""
+def test_at_top_of_content_tracks_active_sub_tab():
+    """↑-climb-out uses the active sub-tab's selection, so navigating the
+    project list doesn't prematurely bounce focus out of the content layer."""
     state = axt.TuiState()
-    state.context_pane = "project"
+    state.context_sub_tab = "project"
     state.context_selected = 0
     state.project_selected = 3
     assert axt._at_top_of_content(state, "context") is False
@@ -154,13 +161,14 @@ def test_at_top_of_content_tracks_focused_pane():
 
 
 def test_context_tab_project_pane_has_detail_panel(monkeypatch, tmp_path):
-    """The Project files pane renders a detail panel exposing the focused
-    file's metadata (Source / Path / Lines)."""
+    """The shared bottom detail panel exposes the focused Project file's
+    metadata (Source / Path / Lines) when the Project pane owns the keyboard."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "CLAUDE.md").write_text("# heading\nbody line\n")
     scr = _make_stdscr(rows=40, cols=140)
     state = axt.TuiState()
     state.context_analysis = _make_empty_context_analysis()
+    state.context_sub_tab = "project"  # Project sub-tab → shared detail mirrors it
     axt.render_context_tab(scr, state, y0=3, h=34, w=140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Source:" in flat
@@ -263,21 +271,22 @@ def test_render_section_header_draws_marker_and_rule_fill():
         axt.tui_init_colors("dark")
 
 
-def test_context_tab_renders_three_section_bands(monkeypatch, tmp_path):
-    """Context tab's stacked panes each get a ▌ section band so their
-    boundaries are visible (the reported 'sections blur together' fix)."""
+def test_context_tab_renders_rate_limits_band_and_subtab_bar(monkeypatch, tmp_path):
+    """Context tab shows a persistent Rate limits band plus a Sources/Project
+    sub-tab bar (the sections-as-sub-tabs restructure)."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "CLAUDE.md").write_text("# test\nproject level\n")
     scr = _make_stdscr(rows=40, cols=140)
     state = axt.TuiState()
     state.context_analysis = _make_empty_context_analysis()
     axt.render_context_tab(scr, state, y0=3, h=34, w=140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     bands = [c[2] for c in scr.calls
              if len(c) >= 3 and isinstance(c[2], str) and c[2].startswith("▌ ")]
-    joined = "".join(bands)
-    assert "Rate limits" in joined
-    assert "Context sources" in joined
-    assert "Project files" in joined
+    assert any("Rate limits" in b for b in bands)
+    assert "Sub: " in flat
+    assert "Sources" in flat
+    assert "Project" in flat
 
 
 # ─── render_table — the bug-source test ──────────────────────────────────────
@@ -662,9 +671,9 @@ def test_render_tab_bar_shows_focus_marker_only_when_focused():
 
 def test_render_subtab_bar_shows_focus_marker_only_when_focused():
     scr_focused = _make_stdscr()
-    axt._render_subtab_bar(scr_focused, 0, 120, active_key="vault", focused=True)
+    axt._render_subtab_bar(scr_focused, 0, 120, axt.EXTENSION_SUB_TABS, active_key="vault", focused=True)
     scr_unfocused = _make_stdscr()
-    axt._render_subtab_bar(scr_unfocused, 0, 120, active_key="vault", focused=False)
+    axt._render_subtab_bar(scr_unfocused, 0, 120, axt.EXTENSION_SUB_TABS, active_key="vault", focused=False)
     flat_focused = "".join(c[2] for c in scr_focused.calls if len(c) >= 3 and isinstance(c[2], str))
     flat_unfocused = "".join(c[2] for c in scr_unfocused.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "▶" in flat_focused
@@ -846,8 +855,11 @@ def test_help_text_documents_tab_navigation():
     assert "main tab" in axt.HELP_TEXT
 
 
-def test_help_text_documents_context_project_pane_toggle():
-    assert "project files pane" in axt.HELP_TEXT.lower()
+def test_help_text_documents_context_sub_tabs():
+    help_lower = axt.HELP_TEXT.lower()
+    assert "sub-tab" in help_lower
+    assert "sources" in help_lower
+    assert "rate limits" in help_lower
 
 
 # ─── # column regression (the bug the user reported) ─────────────────────────
@@ -1433,7 +1445,7 @@ def test_vault_first_render_restores_scan_cache(tmp_path, monkeypatch):
 def test_subtab_bar_shows_brackets_around_active():
     """Active sub-tab is bracketed so it's visible even without color."""
     scr = _make_stdscr(rows=20, cols=120)
-    axt._render_subtab_bar(scr, 0, 120, active_key="skills")
+    axt._render_subtab_bar(scr, 0, 120, axt.EXTENSION_SUB_TABS, active_key="skills")
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "[ Skills ]" in flat
     assert "Sub:" in flat
@@ -1544,9 +1556,9 @@ def test_subtab_bar_focus_attr_differs_from_unfocused(tmp_path):
     """subTab focused → solid cyan chip (BOLD, no UNDERLINE);
     unfocused → bold cyan text with UNDERLINE (no fill)."""
     scr_focused = _make_stdscr()
-    axt._render_subtab_bar(scr_focused, 0, 120, active_key="plugins", focused=True)
+    axt._render_subtab_bar(scr_focused, 0, 120, axt.EXTENSION_SUB_TABS, active_key="plugins", focused=True)
     scr_unfocused = _make_stdscr()
-    axt._render_subtab_bar(scr_unfocused, 0, 120, active_key="plugins", focused=False)
+    axt._render_subtab_bar(scr_unfocused, 0, 120, axt.EXTENSION_SUB_TABS, active_key="plugins", focused=False)
     # Pull attr of the call that drew "[ Plugins ]".
     def attr_of_plugins(scr):
         for call in scr.calls:
@@ -2224,10 +2236,10 @@ def _tab_idx(key: str) -> int:
     return [t[0] for t in axt.MAIN_TABS].index(key)
 
 
-def test_tab_has_sub_tab_only_extensions():
+def test_tab_has_sub_tab_extensions_and_context():
     assert axt.tab_has_sub_tab("extensions") is True
-    for k in ("context", "usage"):
-        assert axt.tab_has_sub_tab(k) is False
+    assert axt.tab_has_sub_tab("context") is True
+    assert axt.tab_has_sub_tab("usage") is False
 
 
 def test_usage_down_arrow_keeps_focus_when_no_data(monkeypatch, tmp_path):
@@ -2266,11 +2278,17 @@ def test_extensions_down_arrow_descends_to_sub_tab():
     assert state.focused_layer == "content"
 
 
-def test_context_down_arrow_descends_directly_to_content():
-    """Context has no sub-tab but has a focusable list, so ↓ → content."""
+def test_context_down_arrow_descends_to_sub_tab():
+    """Context now owns a sub-tab bar, so ↓ from the main tab lands on the
+    subTab layer (mirrors Extensions); a second ↓ enters the content."""
     state = axt.TuiState()
     state.tab_idx = _tab_idx("context")
+    # Give the Sources sub-tab focusable rows so the second descent passes the
+    # "no rows → keep focus on subTab" guard.
+    state.context_analysis = _make_empty_context_analysis_with_source()
     scr = _make_stdscr()
+    axt._handle_layer_key(scr, state, curses.KEY_DOWN, "context")
+    assert state.focused_layer == "subTab"
     axt._handle_layer_key(scr, state, curses.KEY_DOWN, "context")
     assert state.focused_layer == "content"
 
@@ -2306,8 +2324,8 @@ def test_content_up_at_top_climbs_out_for_context():
     scr = _make_stdscr()
     consumed = axt._handle_layer_key(scr, state, curses.KEY_UP, "context")
     assert consumed is True
-    # Context has no sub-tab, so we climb all the way back to mainTab.
-    assert state.focused_layer == "mainTab"
+    # Context now owns a sub-tab bar, so ↑-at-top climbs to the subTab layer.
+    assert state.focused_layer == "subTab"
 
 
 def test_content_up_at_top_climbs_to_sub_tab_for_extensions():
@@ -2356,8 +2374,8 @@ def test_esc_in_content_climbs_to_sub_tab_for_extensions():
     assert state.focused_layer == "subTab"
 
 
-def test_esc_in_content_climbs_to_main_tab_for_context():
-    """Tabs without a sub-tab bar (Context) jump straight to the main tab."""
+def test_esc_in_content_climbs_to_sub_tab_for_context():
+    """Context now owns a sub-tab bar, so Esc in the body climbs to subTab."""
     state = axt.TuiState()
     state.tab_idx = _tab_idx("context")
     state.focused_layer = "content"
@@ -2365,7 +2383,7 @@ def test_esc_in_content_climbs_to_main_tab_for_context():
     scr = _make_stdscr()
     consumed = axt._handle_layer_key(scr, state, axt.KEY_ESC, "context")
     assert consumed is True
-    assert state.focused_layer == "mainTab"
+    assert state.focused_layer == "subTab"
 
 
 def test_esc_on_sub_tab_climbs_to_main_tab():
@@ -2382,13 +2400,13 @@ def test_sub_tab_has_focusable_content_reflects_data():
     """Vault uses vault_items; the other Extensions sub-tabs use ext_cache."""
     s = axt.TuiState()
     # Empty by default.
-    assert axt.sub_tab_has_focusable_content(s, "vault") is False
-    assert axt.sub_tab_has_focusable_content(s, "plugins") is False
+    assert axt.sub_tab_has_focusable_content(s, "extensions", "vault") is False
+    assert axt.sub_tab_has_focusable_content(s, "extensions", "plugins") is False
     # Populate and re-check (sentinel values — function only inspects truthiness).
     s.vault_items = ["dummy"]
     s.ext_cache["plugins"] = ["dummy"]
-    assert axt.sub_tab_has_focusable_content(s, "vault") is True
-    assert axt.sub_tab_has_focusable_content(s, "plugins") is True
+    assert axt.sub_tab_has_focusable_content(s, "extensions", "vault") is True
+    assert axt.sub_tab_has_focusable_content(s, "extensions", "plugins") is True
 
 
 def test_sub_tab_down_arrow_keeps_focus_when_empty():
@@ -3391,7 +3409,7 @@ def test_render_tab_bar_unfocused_uses_underline_on_active():
 def test_render_subtab_bar_narrow_truncates():
     """A narrow width must stop drawing sub-tab cells without error."""
     scr = _make_stdscr()
-    axt._render_subtab_bar(scr, 0, 20, active_key="vault", focused=True)
+    axt._render_subtab_bar(scr, 0, 20, axt.EXTENSION_SUB_TABS, active_key="vault", focused=True)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Sub:" in flat
 
@@ -3476,7 +3494,7 @@ def test_render_frame_context_shortcuts(tmp_path, monkeypatch):
     state.tab_idx = _tab_idx("context")
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "P:project pane" in flat
+    assert "[/]:sub" in flat
 
 
 def test_render_frame_usage_shortcuts(tmp_path, monkeypatch):
@@ -4483,16 +4501,27 @@ def test_context_rows_groups_and_sorts():
 # ─── render_context_tab: sources + project pane path ──────────────────────────
 
 
-def test_render_context_tab_with_sources_and_project_pane(tmp_path, monkeypatch):
+def test_render_context_tab_sources_and_project_sub_tabs(tmp_path, monkeypatch):
+    """Each sub-tab renders its own body; the Rate limits strip and cost line
+    persist across both."""
     _setup_isolated_paths(tmp_path, monkeypatch)
     (tmp_path / "CLAUDE.md").write_text("# proj\nhello\n")
     state = axt.TuiState()
     state.context_analysis = _seed_context_analysis_with_sources()
-    state.context_show_project = True
+
+    # Sources sub-tab (default): sources table, no Project files list.
     scr = _make_stdscr(rows=40, cols=140)
     axt.render_context_tab(scr, state, 0, 38, 140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Category" in flat  # sources table header
+    assert "Project files" not in flat
+    assert "cost:" in flat
+
+    # Project sub-tab: Project files list.
+    state.context_sub_tab = "project"
+    scr = _make_stdscr(rows=40, cols=140)
+    axt.render_context_tab(scr, state, 0, 38, 140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Project files" in flat
     assert "cost:" in flat
 
@@ -4501,7 +4530,6 @@ def test_render_context_tab_no_sources_message(tmp_path, monkeypatch):
     _setup_isolated_paths(tmp_path, monkeypatch)
     state = axt.TuiState()
     state.context_analysis = _make_empty_context_analysis()  # no sources
-    state.context_show_project = False
     scr = _make_stdscr(rows=40, cols=140)
     axt.render_context_tab(scr, state, 0, 38, 140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
@@ -4513,7 +4541,7 @@ def test_render_project_files_pane_empty(tmp_path, monkeypatch):
     state = axt.TuiState()
     state.project_items = []  # explicitly empty
     scr = _make_stdscr(rows=20, cols=120)
-    axt._render_project_files_pane(scr, state, 0, 10, 120)
+    axt._render_project_files_table(scr, state, 0, 10, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "No project context files found." in flat
 
@@ -4526,7 +4554,7 @@ def test_render_project_files_pane_with_items(tmp_path, monkeypatch):
                                path="/p/CLAUDE.md", content="x", lines=10)
     ]
     scr = _make_stdscr(rows=20, cols=120)
-    axt._render_project_files_pane(scr, state, 0, 10, 120)
+    axt._render_project_files_table(scr, state, 0, 10, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "CLAUDE.md" in flat
     assert "Project files" in flat
@@ -4745,23 +4773,24 @@ def test_tui_loop_resize_then_quit(monkeypatch, tmp_path):
     assert axt._tui_loop(scr) is None
 
 
-def test_tui_loop_context_pane_toggle_then_quit(monkeypatch, tmp_path):
-    """`P` on the Context tab toggles the project files pane."""
+def test_tui_loop_context_sub_tab_switch_then_quit(monkeypatch, tmp_path):
+    """←/→ on the Context sub-tab bar switches sub-tabs (Sources → Project)."""
     _setup_isolated_paths(tmp_path, monkeypatch)
     monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
     monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    monkeypatch.setattr("axt.tui.tabs.analyze_context",
+                        lambda **kw: _seed_context_analysis_with_sources())
     _quiet_curses(monkeypatch)
     captured = {}
     real_render = axt.tui.loop._render_frame
     def spy_render(stdscr, state):
-        captured["show_project"] = state.context_show_project
+        captured["sub_tab"] = state.context_sub_tab
         return real_render(stdscr, state)
     monkeypatch.setattr("axt.tui.loop._render_frame", spy_render)
-    # Start on Context tab (index 1) via '2', toggle P, then quit.
-    scr = _loop_stdscr([ord("2"), ord("P"), ord("q")])
+    # '2' → Context tab; ↓ → subTab layer; → cycles to Project; 'q' quits.
+    scr = _loop_stdscr([ord("2"), curses.KEY_DOWN, curses.KEY_RIGHT, ord("q")])
     axt._tui_loop(scr)
-    # Default is True; one P press flips it to False.
-    assert captured["show_project"] is False
+    assert captured["sub_tab"] == "project"
 
 
 def test_tui_loop_timeout_tick_redraws(monkeypatch, tmp_path):
@@ -4799,8 +4828,8 @@ def test_tui_loop_content_layer_routes_keys_to_tab_handler(monkeypatch, tmp_path
         captured["selected"] = state.context_selected
         return real_render(stdscr, state)
     monkeypatch.setattr("axt.tui.loop._render_frame", spy_render)
-    # '2' → Context tab; KEY_DOWN → content layer; 'j' → handler; 'q' quits.
-    scr = _loop_stdscr([ord("2"), curses.KEY_DOWN, ord("j"), ord("q")])
+    # '2' → Context tab; ↓ → subTab; ↓ → content layer; 'j' → handler; 'q' quits.
+    scr = _loop_stdscr([ord("2"), curses.KEY_DOWN, curses.KEY_DOWN, ord("j"), ord("q")])
     axt._tui_loop(scr)
     assert captured["layer"] == "content"
 
@@ -5400,15 +5429,15 @@ def test_render_context_sources_empty_category_detail(monkeypatch, tmp_path):
             avg_turns_per_session=1, avg_sessions_per_day=1,
             per_session_cost=0.0, monthly_cost=0.0))
     # Hand-craft a row whose category (`rules`) has NO matching source, so the
-    # per-category filter in _render_context_sources yields nothing.
+    # per-category filter in _context_detail_for yields the empty placeholder
+    # (the shared bottom detail panel now owns this; tables are full-width).
     rows = [axt._ContextCategoryRow(
         category="rules", label="Rules", items=0, tokens=0, pct=0.0)]
-    scr = _make_stdscr(rows=40, cols=140)
     state = axt.TuiState()
     state.context_selected = 0
-    axt._render_context_sources(scr, state, 3, 20, 140, analysis, rows)
-    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "(empty)" in flat
+    title, fields = axt._context_detail_for(state, analysis, rows)
+    assert title == "Rules"
+    assert ("(empty)", "—") in fields
 
 
 def test_render_context_tab_loading_when_analysis_none(tmp_path, monkeypatch):

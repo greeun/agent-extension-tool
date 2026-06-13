@@ -28,6 +28,7 @@ from axt.tui.widgets import *  # noqa: F401,F403
 # in this module's globals.
 from axt.tui.tabs import *  # noqa: F401,F403
 from axt.tui.tabs import (  # noqa: F401 — `_`-prefixed names that wildcard skips
+    _active_sub_tab,
     _at_top_of_content,
     _cycle_sub_tab,
     sub_tab_has_focusable_content,
@@ -111,14 +112,17 @@ Extensions sub-tab actions
                 j/k (or PgUp/PgDn) scroll it, Tab again blurs back to the list.
 
 Context
-  Tab           Switch focus: Context sources ↔ Project files pane
-                (the focused pane's detail panel border turns cyan)
-  j / k         Move selection within the focused pane
+  Rate limits   A persistent strip at the top (shown above both sub-tabs)
+  Sub-tabs      Sources (live context-window breakdown) · Project (per-
+                project context files). ←/→ on the sub-tab bar or [ / ] in
+                the body switch between them
+  [ / ]         Cycle sub-tabs from the body (Sources ↔ Project)
+  j / k         Move selection within the active sub-tab
+  PgUp / PgDn   Scroll the shared bottom detail panel
   Enter         Sources: category source list preview
-                Project files: preview the focused file's content
+                Project: preview the focused file's content
   e             Sources: open first source file in $EDITOR
-                Project files: open the focused file in $EDITOR
-  P             Toggle the per-project files pane on/off (this tab only)
+                Project: open the focused file in $EDITOR
 
 linked vs enabled (activation mechanism)
   skill / command / agent → "linked"   = SYMLINK at .claude/<type>s/<name>
@@ -216,8 +220,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
         parts += ["o:term", "r:refresh", "?:help", "q:quit"]
         shortcuts = "  ".join(parts)
     elif tab_key == "context":
-        focus_hint = "Tab:focus  " if state.context_show_project else ""
-        shortcuts = f"1-3:tab  {focus_hint}j/k:nav  P:project pane  e:edit  Enter:preview  r:refresh  ?:help  q:quit"
+        shortcuts = "1-3:tab  [/]:sub  j/k:nav  PgUp/PgDn:scroll  e:edit  Enter:preview  r:refresh  ?:help  q:quit"
     else:
         shortcuts = "1-3:tab  j/k:nav  r:refresh  ?:help  q:quit"
     render_status_bar(stdscr, h - 1, w, shortcuts, state.status)
@@ -256,14 +259,14 @@ def _handle_main_tab_key(stdscr, state: TuiState, key: int, tab_key: str) -> boo
 
 
 def _handle_sub_tab_key(stdscr, state: TuiState, key: int, tab_key: str) -> bool:
-    """Handle ←/→/↑/↓/Enter/Esc when focus is on the Extensions sub-tab bar."""
-    del tab_key  # subTab layer is Extensions-only by construction
+    """Handle ←/→/↑/↓/Enter/Esc when focus is on a sub-tab bar (Extensions or
+    Context — both drive the same subTab focus layer)."""
     if key == curses.KEY_LEFT:
-        _cycle_sub_tab(state, -1)
+        _cycle_sub_tab(state, tab_key, -1)
         _render_frame(stdscr, state)
         return True
     if key == curses.KEY_RIGHT:
-        _cycle_sub_tab(state, 1)
+        _cycle_sub_tab(state, tab_key, 1)
         _render_frame(stdscr, state)
         return True
     if key in (curses.KEY_UP, KEY_ESC):
@@ -275,7 +278,7 @@ def _handle_sub_tab_key(stdscr, state: TuiState, key: int, tab_key: str) -> bool
         # active sub-tab is empty (e.g. "No plugins found."), keep focus on
         # the sub-tab bar so the user doesn't lose their cursor to an
         # invisible content layer.
-        if sub_tab_has_focusable_content(state, state.ext_sub_tab):
+        if sub_tab_has_focusable_content(state, tab_key, _active_sub_tab(state, tab_key)):
             state.focused_layer = "content"
             _render_frame(stdscr, state)
         return True
@@ -426,14 +429,6 @@ def _tui_loop(stdscr, theme: str = "dark") -> None:
             if key == KEY_ESC and state.focused_layer == "mainTab":
                 return
             if key == curses.KEY_RESIZE:
-                _render_frame(stdscr, state)
-                continue
-            if key == ord("P") and tab_key == "context":
-                state.context_show_project = not state.context_show_project
-                set_status(state,
-                    "Project files pane: on" if state.context_show_project
-                    else "Project files pane: off",
-                )
                 _render_frame(stdscr, state)
                 continue
             # Number-key jump: 1..len(MAIN_TABS). Keeps the binding in sync

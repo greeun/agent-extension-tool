@@ -112,10 +112,8 @@ TUI 대시보드 실행.
 3. **Usage** (Use) — 3
 
 ### 2.2 글로벌 필터 (헤더 칩)
-- **Scope**: `Project` / `All` — 키 `P`
-  - `Project` 일 때 Context 탭에 프로젝트 파일 패널이 함께 표시됨.
-
 (v0.2.x의 Platform 필터는 v1.0.0에서 Claude 전용이 되면서 제거됨.)
+(구버전의 Scope=`Project`/`All` 토글(`P` 키)은 Context 탭이 `Sources`/`Project` 서브탭으로 재구성되며 제거됨 — 2.7 참고.)
 
 ### 2.3 Focus Layer (3단계)
 `mainTab` ↔ `subTab` ↔ `content`. 메인탭은 `← →` 또는 숫자 1~3, 포커스 이동은 `↑ ↓ Return`.
@@ -159,10 +157,12 @@ U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 �
 - **Market**: `S` sync (대문자 — `s`는 정렬로 이동), `r` remove, `a` add (2-step name→source)
 - **모든 서브탭 (Vault / Skills / Commands / Agents / MCP / Hooks / Plugins / Market)**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
 
-### 2.7 Context 탭 모드
-컨텍스트 윈도우 분석 (`categories → sources → preview`) + 5h/7d 쿼터 바 + cost impact 라인.
-키: `j/k`, `Enter` (카테고리 소스 모달), `e` (첫 소스를 에디터로), `r` (새로고침).
-**Scope=Project** 일 때 하단에 "Project files" 패널이 함께 표시됨 (CLAUDE.md / settings.json / memory 등 cwd 기준 컨텍스트 파일 목록).
+### 2.7 Context 탭 (2개 서브탭)
+상단에 **Rate limits** 스트립(5h/7d 쿼터 바)이 두 서브탭 공통으로 고정 표시되고, 하단에 cost impact 라인이 항상 표시됨. 그 사이 본문이 서브탭으로 전환됨 (Extensions 탭과 동일한 subTab focus layer 사용).
+- **Sources** (기본) — 컨텍스트 윈도우 분석 (`categories → sources`). 전체폭 테이블 + 하단 공유 detail 패널.
+- **Project** — cwd 기준 프로젝트 컨텍스트 파일 목록 (CLAUDE.md / settings.json / memory 등). 전체폭 테이블 + 하단 공유 detail 패널.
+
+키: `← →`(서브탭 바에서) 또는 `[ / ]`(본문에서) 서브탭 전환, `j/k` 선택, `PgUp/PgDn` 하단 detail 스크롤, `Enter` (Sources: 카테고리 소스 모달 / Project: 파일 내용 미리보기), `e` (Sources: 첫 소스를 에디터로 / Project: 파일을 에디터로), `r` 새로고침.
 
 ### 2.8 Usage 탭
 Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarChart + Active Block + Insights(large-context %, parallel %, top model) + plan rate-limit(5h/7d) 라인. 키: `r` 새로고침. (v0.2.x의 platform/cursor 서브탭은 제거. 별도였던 Dashboard 탭은 이 탭의 상단(Plan/Budget 블록)으로 흡수됨.)

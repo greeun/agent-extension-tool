@@ -121,12 +121,14 @@ class TuiState:
     # Context tab.
     context_analysis: Optional[Any] = None
     context_selected: int = 0
-    # Toggle the bottom "Project files" pane on the Context tab (P key, tab-local).
-    context_show_project: bool = True
-    # Which Context-tab pane owns the keyboard: "sources" (the context-window
-    # breakdown) or "project" (the Project files list). Tab cycles between them
-    # when the project pane is visible; j/k/Enter/e route to the focused pane.
-    context_pane: str = "sources"
+    # Active Context sub-tab: "sources" (live context-window breakdown) or
+    # "project" (per-project context files). Rate limits render above both
+    # sub-tabs as a persistent strip. ←/→ at the subTab focus layer or [/] in
+    # the body cycle between them — mirrors the Extensions sub-tab model.
+    context_sub_tab: str = "sources"
+    # Scroll offset for the shared bottom detail panel (mirrors the active
+    # sub-tab's selected row). PgUp/PgDn scroll it; reset on selection move.
+    context_detail_scroll: int = 0
 
     # Project tab.
     project_items: Optional[list] = None
@@ -1432,50 +1434,32 @@ def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
     return rows_used
 
 
-def _render_context_sources(stdscr, state: TuiState, y0: int, h: int, w: int,
-                            analysis: ContextAnalysis, rows: list,
-                            focused: bool = True) -> None:
-    """Render the context-sources table + detail panel within (y0, h).
+def _render_context_sources_table(stdscr, state: TuiState, y0: int, h: int, w: int,
+                                   rows: list, focused: bool = True) -> None:
+    """Render the context-sources breakdown as a full-width table.
 
-    ``focused`` highlights the detail-panel border (cyan vs dim) so the user
-    can see which Context-tab pane currently owns the keyboard.
+    Detail for the selected row lives in the shared bottom panel (see
+    ``_context_detail_for``), not a per-section side panel — the table claims
+    the whole width. ``focused`` controls the selected-row highlight.
     """
-    # Layout: table on left (~55%), detail on right.
-    table_w = int(w * 0.55)
-    detail_x = table_w
-    detail_w = w - table_w
-
+    if h <= 0:
+        return
     state.context_selected = max(0, min(state.context_selected, len(rows) - 1))
-
     columns = [
-        TableColumn("label", "Category", max(15, table_w - 35)),
+        TableColumn("label", "Category", max(15, w - 35)),
         TableColumn("items", "#", 4),
         TableColumn("tokens", "Tokens", 10),
         TableColumn("pct", "%", 8),
     ]
-    table_rows = []
-    for r in rows:
-        table_rows.append({
-            "label": r.label,
-            "items": str(r.items),
-            "tokens": format_tokens(r.tokens),
-            "pct": f"{r.pct:.1f}%",
-        })
-
-    render_table(stdscr, y0, 0, h, table_w, columns, table_rows,
-                 selected=state.context_selected, show_header=True)
-
-    current = rows[state.context_selected]
-    detail_fields: list[tuple[str, str]] = []
-    sources_in_cat = [s for s in analysis.sources if s.category == current.category]
-    sources_in_cat.sort(key=lambda s: s.estimated_tokens, reverse=True)
-    for s in sources_in_cat[:20]:
-        hint = f" ({s.hint})" if s.hint else ""
-        detail_fields.append((s.name, f"{format_tokens(s.estimated_tokens)} tok{hint}"))
-    if not detail_fields:
-        detail_fields = [("(empty)", "—")]
-    render_detail_panel(stdscr, y0, detail_x, h, detail_w,
-                        title=current.label, fields=detail_fields, focused=focused)
+    table_rows = [{
+        "label": r.label,
+        "items": str(r.items),
+        "tokens": format_tokens(r.tokens),
+        "pct": f"{r.pct:.1f}%",
+    } for r in rows]
+    render_table(stdscr, y0, 0, h, w, columns, table_rows,
+                 selected=(state.context_selected if focused else -1),
+                 show_header=True)
 
 
 def _project_item_detail_fields(item) -> list[tuple[str, str]]:
@@ -1489,13 +1473,10 @@ def _project_item_detail_fields(item) -> list[tuple[str, str]]:
     ]
 
 
-def _render_project_files_pane(stdscr, state: TuiState, y0: int, h: int, w: int,
-                               focused: bool = False) -> None:
+def _render_project_files_table(stdscr, state: TuiState, y0: int, h: int, w: int,
+                                focused: bool = False) -> None:
     """Render the per-project context file list (CLAUDE.md, settings, memory…)
-    as a table + detail panel, mirroring the Context sources pane above it.
-
-    ``focused`` highlights the detail-panel border so the active pane is clear.
-    """
+    as a full-width table. Detail goes to the shared bottom panel."""
     _ensure_project_loaded(state)
     items = state.project_items or []
     render_section_header(stdscr, y0, w,
@@ -1504,30 +1485,65 @@ def _render_project_files_pane(stdscr, state: TuiState, y0: int, h: int, w: int,
     if not items:
         safe_addnstr(stdscr, body_y, 2, "No project context files found.", w - 4, CP_DIM())
         return
-
     state.project_selected = max(0, min(state.project_selected, len(items) - 1))
-
-    # Layout: table on left (~55%), detail on right — same split as the
-    # Context sources pane so the two stacked panes read consistently.
-    table_w = int(w * 0.55)
-    detail_x = table_w
-    detail_w = w - table_w
-
     columns = [
-        TableColumn("name", "Name", max(20, table_w - 18)),
+        TableColumn("name", "Name", max(20, w - 24)),
         TableColumn("source", "Source", 8),
         TableColumn("lines", "Lines", 6),
     ]
     rows_data = [{"name": i.name, "source": i.source, "lines": str(i.lines)}
                  for i in items]
-    render_table(stdscr, body_y, 0, body_h, table_w, columns, rows_data,
-                 selected=state.project_selected, show_header=True)
+    render_table(stdscr, body_y, 0, body_h, w, columns, rows_data,
+                 selected=(state.project_selected if focused else -1),
+                 show_header=True)
 
-    current = items[state.project_selected]
-    render_detail_panel(stdscr, body_y, detail_x, body_h, detail_w,
-                        title=current.name,
-                        fields=_project_item_detail_fields(current),
-                        scroll=state.project_scroll, focused=focused)
+
+def _context_detail_for(state: TuiState, analysis: ContextAnalysis,
+                        rows: list) -> tuple[str, list[tuple[str, str]]]:
+    """(title, fields) for the shared bottom detail panel — reflects the active
+    Context sub-tab's selected row (Sources category or Project file)."""
+    if state.context_sub_tab == "project":
+        items = state.project_items or []
+        if items and 0 <= state.project_selected < len(items):
+            cur = items[state.project_selected]
+            return cur.name, _project_item_detail_fields(cur)
+        return "Project files", [("(empty)", "—")]
+    if rows and 0 <= state.context_selected < len(rows):
+        current = rows[state.context_selected]
+        fields: list[tuple[str, str]] = []
+        srcs = [s for s in analysis.sources if s.category == current.category]
+        srcs.sort(key=lambda s: s.estimated_tokens, reverse=True)
+        for s in srcs[:20]:
+            hint = f" ({s.hint})" if s.hint else ""
+            fields.append((s.name, f"{format_tokens(s.estimated_tokens)} tok{hint}"))
+        return current.label, (fields or [("(empty)", "—")])
+    return "Context sources", [("(empty)", "—")]
+
+
+def _render_context_page(stdscr, state: TuiState, y0: int, h: int, w: int,
+                         analysis: ContextAnalysis, rows: list) -> None:
+    """Render the active Context sub-tab's body: a full-width table on top and
+    the shared bottom detail panel mirroring the selected row."""
+    if h <= 0:
+        return
+    # Shared detail panel claims the bottom ~35% (Extensions-style), never
+    # starving the table below a couple of rows.
+    detail_h = max(7, min(14, int(h * 0.35)))
+    detail_h = max(0, min(detail_h, h - 2))
+    table_h = max(1, h - detail_h)
+
+    if state.context_sub_tab == "project":
+        _render_project_files_table(stdscr, state, y0, table_h, w, focused=True)
+    elif rows:
+        _render_context_sources_table(stdscr, state, y0, table_h, w, rows, focused=True)
+    else:
+        safe_addnstr(stdscr, y0 + 1, 2, "No context sources detected.", w - 4, CP_DIM())
+
+    if detail_h >= 3:
+        title, fields = _context_detail_for(state, analysis, rows)
+        state.context_detail_scroll = render_detail_panel(
+            stdscr, y0 + table_h, 0, detail_h, w, title, fields,
+            scroll=state.context_detail_scroll, focused=True)
 
 
 def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
@@ -1542,42 +1558,24 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
         f" Context — {format_tokens(analysis.total_tokens)} / {format_tokens(analysis.context_window_size)} "
         f"({analysis.used_percent:.1f}%)  model={analysis.model}")
 
-    # ── Section 1: rate-limit quota bars (5h / 7d) under a section-header band
-    # (▌ marker + trailing rule) so the three stacked panes (rate limits /
-    # context sources / project files) read as distinct sections instead of one
-    # undivided block of bright CP_TITLE text rows.
+    # ── Rate limits: a persistent top strip shown above both sub-tabs (5h / 7d
+    # quota bars under a section-header band).
     render_section_header(stdscr, body_y, w, "Rate limits")
     rl_rows = _render_rate_limit_bars(stdscr, body_y + 1, w)
 
-    # ── Section 2: live context-window token breakdown, under its own band. A
-    # blank spacer row separates it from the rate bars above.
-    sources_hdr_y = body_y + 1 + rl_rows + 1
-    render_section_header(stdscr, sources_hdr_y, w,
-        f"Context sources — {format_tokens(analysis.total_tokens)} tok in live window")
-    y_body = sources_hdr_y + 1
+    # ── Sub-tab bar (Sources / Project), mirroring the Extensions tab. A blank
+    # spacer row separates it from the rate bars above; a dim rule sits below.
+    bar_y = body_y + 1 + rl_rows + 1
+    _render_subtab_bar(stdscr, bar_y, w, CONTEXT_SUB_TABS, state.context_sub_tab,
+                       focused=(state.focused_layer == "subTab"))
+    safe_addnstr(stdscr, bar_y + 1, 0, "─" * (w - 1), w - 1, CP_DIM())
 
-    # Reserve 2 rows at the bottom: cost line + spacing.
-    body_h = max(1, h - (y_body - y0) - 2)
-
-    # The bottom "Project files" pane is toggled by P (tab-local). When off,
-    # context sources fill the whole body and always own the keyboard.
-    show_project = state.context_show_project
-    if not show_project:
-        state.context_pane = "sources"
-    project_h = max(6, body_h // 3) if show_project else 0
-    sources_h = max(1, body_h - project_h)
-    project_focused = show_project and state.context_pane == "project"
-
+    # ── Active sub-tab body between the bar and the bottom cost line.
+    content_y = bar_y + 2
+    content_bottom = y0 + h - 2  # cost line sits at h-2
     rows = _context_rows(analysis)
-    if rows:
-        _render_context_sources(stdscr, state, y_body, sources_h, w, analysis, rows,
-                                focused=not project_focused)
-    else:
-        safe_addnstr(stdscr, y_body + 1, 2, "No context sources detected.", w - 4, CP_DIM())
-
-    if show_project:
-        _render_project_files_pane(stdscr, state, y_body + sources_h, project_h, w,
-                                   focused=project_focused)
+    _render_context_page(stdscr, state, content_y, max(1, content_bottom - content_y),
+                         w, analysis, rows)
 
     # Cost impact line at the bottom.
     ci = analysis.cost_impact
@@ -1589,25 +1587,41 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
 
 
 def handle_context_input(state: TuiState, key: int) -> Optional[str]:
-    # Tab cycles keyboard focus between the two stacked panes — but only when
-    # the Project files pane is actually visible (P toggles it).
-    if key == KEY_TAB:
-        if not state.context_show_project:
-            return None
-        state.context_pane = "project" if state.context_pane == "sources" else "sources"
-        return f"Focus: {'Project files' if state.context_pane == 'project' else 'Context sources'}"
+    # [ ] cycle Context sub-tabs in the body (mirrors Extensions). Canonical
+    # ←/→ navigation lives at the subTab focus layer (see loop.py); this gives
+    # a keyboard shortcut without climbing out of the content layer.
+    if key == ord("["):
+        _cycle_sub_tab(state, "context", -1)
+        state.context_detail_scroll = 0
+        return f"Sub-tab: {state.context_sub_tab}"
+    if key == ord("]"):
+        _cycle_sub_tab(state, "context", 1)
+        state.context_detail_scroll = 0
+        return f"Sub-tab: {state.context_sub_tab}"
 
-    # When the Project files pane owns focus, route navigation/actions there
-    # (reuses the project handler: j/k select, Enter previews, e edits, r reloads).
-    if state.context_show_project and state.context_pane == "project":
+    # PgUp/PgDn scroll the shared bottom detail panel (both sub-tabs).
+    if key == curses.KEY_NPAGE:
+        state.context_detail_scroll += 10
+        return None
+    if key == curses.KEY_PPAGE:
+        state.context_detail_scroll = max(0, state.context_detail_scroll - 10)
+        return None
+
+    # Project sub-tab: route navigation/actions to the project handler
+    # (j/k select, Enter previews, e edits, r reloads).
+    if state.context_sub_tab == "project":
+        if key in (ord("j"), curses.KEY_DOWN, ord("k"), curses.KEY_UP):
+            state.context_detail_scroll = 0
         return handle_project_input(state, key)
 
     rows = _context_rows(state.context_analysis) if state.context_analysis else []
     n = len(rows)
     if key in (ord("j"), curses.KEY_DOWN):
         state.context_selected = min(n - 1, state.context_selected + 1) if n else 0
+        state.context_detail_scroll = 0
     elif key in (ord("k"), curses.KEY_UP):
         state.context_selected = max(0, state.context_selected - 1)
+        state.context_detail_scroll = 0
     elif key == ord("r"):
         state.context_analysis = None
         return "Refreshed"
@@ -1738,9 +1752,37 @@ EXTENSION_SUB_TABS: tuple[tuple[str, str], ...] = (
     ("market", "Market"),
 )
 
+# Context sub-tabs (Rate limits renders above both as a persistent strip).
+CONTEXT_SUB_TABS: tuple[tuple[str, str], ...] = (
+    ("sources", "Sources"),
+    ("project", "Project"),
+)
 
-def _render_subtab_bar(stdscr, y: int, w: int, active_key: str, *, focused: bool = False) -> None:
-    """Render the Extensions sub-tab bar with a clear focus indicator.
+# Registry: which main tabs own a sub-tab bar, plus the TuiState attribute
+# that holds the active sub-tab key. Generalizes the (formerly Extensions-only)
+# subTab focus layer so Context can reuse the exact same bar + navigation.
+SUB_TABS_BY_TAB: dict[str, tuple[tuple[str, str], ...]] = {
+    "extensions": EXTENSION_SUB_TABS,
+    "context": CONTEXT_SUB_TABS,
+}
+_SUB_TAB_ATTR: dict[str, str] = {
+    "extensions": "ext_sub_tab",
+    "context": "context_sub_tab",
+}
+
+
+def _active_sub_tab(state: TuiState, tab_key: str) -> str:
+    """Active sub-tab key for the given main tab (empty if it has none)."""
+    attr = _SUB_TAB_ATTR.get(tab_key)
+    return getattr(state, attr) if attr else ""
+
+
+def _render_subtab_bar(stdscr, y: int, w: int, sub_tabs: tuple[tuple[str, str], ...],
+                       active_key: str, *, focused: bool = False) -> None:
+    """Render a sub-tab bar with a clear focus indicator.
+
+    Shared by Extensions and Context — ``sub_tabs`` is the (key, label) tuple
+    for the owning main tab.
 
     Layered focus (matches `render_tab_bar` so focus is unambiguous when
     switching between main-tab and sub-tab layers):
@@ -1757,7 +1799,7 @@ def _render_subtab_bar(stdscr, y: int, w: int, active_key: str, *, focused: bool
     cur = cell_width(marker) + 5  # "Sub: " is 5 cells
     inactive_attr = _safe_pair(8, curses.A_BOLD) if focused else CP_DIM()
     active_attr = CP_ACTIVE_CHIP() if focused else _safe_pair(8, curses.A_BOLD | curses.A_UNDERLINE)
-    for i, (key, label) in enumerate(EXTENSION_SUB_TABS):
+    for i, (key, label) in enumerate(sub_tabs):
         if key == active_key:
             cell = f"[ {label} ]"
             attr = active_attr
@@ -2101,7 +2143,7 @@ def _render_list_with_detail(stdscr, state, y0, h, w, key, columns, rows, items,
 def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     """Extensions parent tab with sub-tab navigation."""
     _render_subtab_bar(
-        stdscr, y0, w, state.ext_sub_tab,
+        stdscr, y0, w, EXTENSION_SUB_TABS, state.ext_sub_tab,
         focused=(state.focused_layer == "subTab"),
     )
     safe_addnstr(stdscr, y0 + 1, 0, "─" * (w - 1), w - 1, CP_DIM())
@@ -2259,16 +2301,21 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _market_detail_fields)
 
 
-def _cycle_sub_tab(state: TuiState, direction: int) -> None:
-    """Cycle Extensions sub-tabs. Other main tabs have no sub-tabs."""
-    i = next((idx for idx, (k, _) in enumerate(EXTENSION_SUB_TABS) if k == state.ext_sub_tab), 0)
-    state.ext_sub_tab = EXTENSION_SUB_TABS[(i + direction) % len(EXTENSION_SUB_TABS)][0]
+def _cycle_sub_tab(state: TuiState, tab_key: str, direction: int) -> None:
+    """Cycle the given main tab's sub-tabs. No-op for tabs without a bar."""
+    sub_tabs = SUB_TABS_BY_TAB.get(tab_key)
+    attr = _SUB_TAB_ATTR.get(tab_key)
+    if not sub_tabs or not attr:
+        return
+    cur = getattr(state, attr)
+    i = next((idx for idx, (k, _) in enumerate(sub_tabs) if k == cur), 0)
+    setattr(state, attr, sub_tabs[(i + direction) % len(sub_tabs)][0])
 
 
 def tab_has_sub_tab(tab_key: str) -> bool:
-    """True if the tab owns a sub-tab bar (Extensions is the only one today).
+    """True if the tab owns a sub-tab bar (Extensions, Context).
     Drives whether ↓ from mainTab should land on the subTab layer."""
-    return tab_key == "extensions"
+    return tab_key in SUB_TABS_BY_TAB
 
 
 def tab_has_focusable_content(state: TuiState, tab_key: str) -> bool:
@@ -2291,14 +2338,21 @@ def tab_has_focusable_content(state: TuiState, tab_key: str) -> bool:
     return False
 
 
-def sub_tab_has_focusable_content(state: TuiState, sub_key: str) -> bool:
-    """True if the active Extensions sub-tab body has selectable rows.
+def sub_tab_has_focusable_content(state: TuiState, tab_key: str, sub_key: str) -> bool:
+    """True if the active sub-tab body has selectable rows.
 
     Mirrors tab_has_focusable_content for the second focus layer: when the
     sub-tab body is empty (e.g. "No plugins found." or zero vault items),
     descending from subTab into `content` would silently swallow focus, so
     the loop keeps focus on subTab instead.
     """
+    if tab_key == "context":
+        if sub_key == "project":
+            _ensure_project_loaded(state)
+            return bool(state.project_items)
+        # "sources": focusable when the analysis yielded any category rows.
+        return bool(_context_rows(state.context_analysis)) if state.context_analysis else False
+    # Extensions.
     if sub_key == "vault":
         return len(state.vault_items) > 0
     return bool(state.ext_cache.get(sub_key))
@@ -2312,7 +2366,7 @@ def _at_top_of_content(state: TuiState, tab_key: str) -> bool:
             return state.vault_selected == 0
         return state.ext_selected.get(state.ext_sub_tab, 0) == 0
     if tab_key == "context":
-        if state.context_show_project and state.context_pane == "project":
+        if state.context_sub_tab == "project":
             return state.project_selected == 0
         return state.context_selected == 0
     if tab_key == "usage":
@@ -2339,11 +2393,11 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
 
     if key == ord("["):
         _blur_ext_detail(state)
-        _cycle_sub_tab(state, -1)
+        _cycle_sub_tab(state, "extensions", -1)
         return f"Sub-tab: {state.ext_sub_tab}"
     if key == ord("]"):
         _blur_ext_detail(state)
-        _cycle_sub_tab(state, 1)
+        _cycle_sub_tab(state, "extensions", 1)
         return f"Sub-tab: {state.ext_sub_tab}"
     if key == ord("r"):
         # Refresh the active sub-tab's cache.
