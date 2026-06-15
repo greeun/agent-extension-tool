@@ -425,8 +425,15 @@ def test_compute_blocks_active_block_has_burn_rate():
     """An entry inside the current 5-hour window yields an active block with a
     positive burn rate (lines 2810-2811)."""
     from datetime import datetime, timedelta, timezone
-    ten_min_ago = datetime.now(timezone.utc) - timedelta(minutes=10)
-    iso = ten_min_ago.isoformat().replace("+00:00", "Z")
+    # Anchor the entry inside the CURRENT 5h UTC block (blocks align to
+    # 00/05/10/15/20:00 UTC). `now - 10min` is flaky for 10 minutes after each
+    # boundary, when that timestamp falls into the *previous*, now-inactive
+    # window.
+    now = datetime.now(timezone.utc)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    block_idx = int((now - midnight).total_seconds() // (5 * 3600))
+    window_start = midnight + timedelta(hours=5 * block_idx)
+    iso = (window_start + timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
     e = _entry("s", iso, input=600)
     blocks = axt.compute_blocks([e], "UTC")
     assert len(blocks) == 1
