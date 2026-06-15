@@ -459,3 +459,93 @@ def test_load_config_ignores_non_dict_plans_section(tmp_path: Path):
     config = axt.load_config(p)
     assert config.exchange_rate == 1300
     assert config.plans["claude"].plan == "max-5x"  # default preserved
+
+
+# ─── plan auto-detection ──────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "tier,expected",
+    [
+        ("default_claude_max_20x", ("max-20x", 200.0)),
+        ("default_claude_max_5x", ("max-5x", 100.0)),
+        ("default_claude_pro", ("pro", 20.0)),
+        ("MAX_20X", ("max-20x", 200.0)),
+        ("something_team_seat", ("team", 30.0)),
+        ("free_tier", ("free", 0.0)),
+        ("garbage", None),
+        ("", None),
+        (None, None),
+        (42, None),
+    ],
+)
+def test_parse_rate_limit_tier(tier, expected):
+    assert axt.parse_rate_limit_tier(tier) == expected
+
+
+def _write_claude_json(tmp_path: Path, oauth) -> Path:
+    p = tmp_path / ".claude.json"
+    payload = {} if oauth is None else {"oauthAccount": oauth}
+    p.write_text(json.dumps(payload))
+    return p
+
+
+def test_detect_claude_plan_prefers_user_tier(tmp_path: Path):
+    p = _write_claude_json(tmp_path, {
+        "userRateLimitTier": "default_claude_max_5x",
+        "organizationRateLimitTier": "default_claude_max_20x",
+    })
+    assert axt.detect_claude_plan(p) == ("max-5x", 100.0)
+
+
+def test_detect_claude_plan_falls_back_to_org_tier(tmp_path: Path):
+    p = _write_claude_json(tmp_path, {
+        "userRateLimitTier": None,
+        "organizationRateLimitTier": "default_claude_max_20x",
+    })
+    assert axt.detect_claude_plan(p) == ("max-20x", 200.0)
+
+
+def test_detect_claude_plan_missing_oauth_returns_none(tmp_path: Path):
+    assert axt.detect_claude_plan(_write_claude_json(tmp_path, None)) is None
+
+
+def test_detect_claude_plan_missing_file_returns_none(tmp_path: Path):
+    assert axt.detect_claude_plan(tmp_path / "nope.json") is None
+
+
+def test_load_save_roundtrips_auto_detect_plan(tmp_path: Path):
+    p = tmp_path / "config.json"
+    assert axt.load_config(p).auto_detect_plan is True  # default on
+    axt.save_config(p, axt.AxtConfig(auto_detect_plan=False))
+    assert axt.load_config(p).auto_detect_plan is False
+
+
+def test_resolve_claude_plan_overlays_detected(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.detect_claude_plan", lambda: ("max-20x", 200.0))
+    cfg = axt.AxtConfig(
+        auto_detect_plan=True,
+        plans={"claude": axt.PlanConfig(plan="max-5x", monthly_cost=100, billing_cycle_start=7)},
+    )
+    resolved = axt.resolve_claude_plan(cfg)
+    assert resolved.plan == "max-20x"
+    assert resolved.monthly_cost == 200.0
+    assert resolved.billing_cycle_start == 7  # user's billing cycle preserved
+
+
+def test_resolve_claude_plan_respects_manual_pin(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("axt.detect_claude_plan", lambda: ("max-20x", 200.0))
+    cfg = axt.AxtConfig(
+        auto_detect_plan=False,
+        plans={"claude": axt.PlanConfig(plan="max-5x", monthly_cost=100)},
+    )
+    assert axt.resolve_claude_plan(cfg).plan == "max-5x"  # detection ignored
+
+
+def test_resolve_claude_plan_falls_back_when_detection_fails(monkeypatch):
+    monkeypatch.setattr("axt.detect_claude_plan", lambda: None)
+    cfg = axt.AxtConfig(
+        auto_detect_plan=True,
+        plans={"claude": axt.PlanConfig(plan="max-5x", monthly_cost=100)},
+    )
+    assert axt.resolve_claude_plan(cfg).plan == "max-5x"

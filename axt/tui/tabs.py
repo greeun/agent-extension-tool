@@ -1163,8 +1163,13 @@ def _usage_summary_lines(
     lines: list[tuple[int, str, int, int]] = []
 
     total_cost = sum(_entry_cost(e) for e in entries)
-    plan = config.plans.get("claude")
-    plan_label = f"{plan.plan} (${plan.monthly_cost}/mo)" if plan else "—"
+    plan = resolve_claude_plan(config)
+    auto = config.auto_detect_plan and detect_claude_plan() is not None
+    plan_label = (
+        f"{plan.plan} (${plan.monthly_cost}/mo{' · auto' if auto else ''})"
+        if plan
+        else "—"
+    )
     lines.append((2, fit_cells(f"Plan: {plan_label}", w - 4), w - 4, CP_TITLE()))
 
     if config.monthly_budget > 0:

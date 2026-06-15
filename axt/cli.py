@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -354,10 +355,11 @@ def cli_plan_overview(args) -> int:
         claude_projects_dir=PATHS.projects,
         since=month_start,
     )
-    plan_cfg = config.plans.get("claude")
+    plan_cfg = resolve_claude_plan(config)
     if not plan_cfg:
         print("No plan configured for Claude.")
         return 0
+    detected = config.auto_detect_plan and detect_claude_plan() is not None
     cost = 0.0
     for e in entries:
         cost += calculate_cost(
@@ -371,7 +373,8 @@ def cli_plan_overview(args) -> int:
         )
     elapsed, total_days = get_days_in_billing_period(plan_cfg.billing_cycle_start, now.replace(tzinfo=timezone.utc))
     usage = compute_plan_usage(plan_cfg, cost, elapsed, total_days)
-    label = f"Claude ({plan_cfg.plan} — ${plan_cfg.monthly_cost}/mo)"
+    suffix = " · auto-detected" if detected else ""
+    label = f"Claude ({plan_cfg.plan} — ${plan_cfg.monthly_cost}/mo{suffix})"
     print(_bold(label))
     print(f"  사용량:    {format_cost(cost, config.exchange_rate)}  ({elapsed}일 경과)")
     print(f"  일평균:    ${usage.daily_avg_cost:.2f}")
@@ -389,31 +392,32 @@ def cli_plan_overview(args) -> int:
 
 def cli_plan_set(args) -> int:
     config = load_config(AXT_CONFIG_PATH)
+
+    # `axt plan set auto` re-enables auto-detection from ~/.claude.json.
+    if args.plan_name.lower() == "auto":
+        save_config(AXT_CONFIG_PATH, replace(config, auto_detect_plan=True))
+        found = detect_claude_plan()
+        if found:
+            print(_green(f'✓ Auto-detect enabled — Claude plan is "{found[0]}" (${found[1]}/mo).'))
+        else:
+            print(_green("✓ Auto-detect enabled (no plan detected in ~/.claude.json yet)."))
+        return 0
+
     plans = dict(config.plans)
     existing = plans.get("claude")
-    if existing:
-        plans["claude"] = PlanConfig(
-            plan=args.plan_name,
-            monthly_cost=existing.monthly_cost,
-            billing_cycle_start=existing.billing_cycle_start,
-            daily_request_limit=existing.daily_request_limit,
-        )
-    else:
-        plans["claude"] = PlanConfig(plan=args.plan_name, monthly_cost=0, billing_cycle_start=1)
-    save_config(
-        AXT_CONFIG_PATH,
-        AxtConfig(
-            currency=config.currency,
-            exchange_rate=config.exchange_rate,
-            monthly_budget=config.monthly_budget,
-            timezone=config.timezone,
-            locale=config.locale,
-            start_of_week=config.start_of_week,
-            budget_warning_threshold=config.budget_warning_threshold,
-            plans=plans,
-        ),
+    # Use the standard tier price for a recognized plan; else keep the prior
+    # cost (or 0 for a brand-new entry).
+    parsed = parse_rate_limit_tier(args.plan_name)
+    cost = parsed[1] if parsed else (existing.monthly_cost if existing else 0.0)
+    plans["claude"] = PlanConfig(
+        plan=args.plan_name,
+        monthly_cost=cost,
+        billing_cycle_start=existing.billing_cycle_start if existing else 1,
+        daily_request_limit=existing.daily_request_limit if existing else None,
     )
-    print(_green(f'✓ Claude plan set to "{args.plan_name}".'))
+    # Manual set pins the plan: turn off auto-detect so it is not overridden.
+    save_config(AXT_CONFIG_PATH, replace(config, plans=plans, auto_detect_plan=False))
+    print(_green(f'✓ Claude plan set to "{args.plan_name}" (auto-detect off — use `axt plan set auto` to re-enable).'))
     return 0
 
 

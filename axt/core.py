@@ -3460,6 +3460,63 @@ def get_days_in_billing_period(billing_start: int, now: Optional[datetime] = Non
 # ─── User config ─────────────────────────────────────────────────────────────
 
 
+# Standard monthly USD price per Claude subscription tier. Used both as the
+# fallback cost when none is saved and as the value auto-detection writes when
+# it resolves a plan from `~/.claude.json`.
+_CLAUDE_TIER_COSTS: dict[str, float] = {
+    "free": 0.0,
+    "pro": 20.0,
+    "max-5x": 100.0,
+    "max-20x": 200.0,
+    "team": 30.0,
+    "enterprise": 0.0,
+}
+
+
+def parse_rate_limit_tier(tier: Any) -> Optional[tuple[str, float]]:
+    """Normalize a Claude ``*RateLimitTier`` string into (plan_label, monthly_cost).
+
+    Examples::
+
+        "default_claude_max_20x" → ("max-20x", 200.0)
+        "default_claude_max_5x"  → ("max-5x", 100.0)
+        "default_claude_pro"     → ("pro", 20.0)
+
+    Returns ``None`` when the tier is empty or unrecognized.
+    """
+    if not isinstance(tier, str) or not tier:
+        return None
+    t = tier.lower()
+    m = re.search(r"max[_-](\d+)x", t)
+    if m:
+        label = f"max-{m.group(1)}x"
+        return label, _CLAUDE_TIER_COSTS.get(label, 0.0)
+    for key in ("pro", "team", "enterprise", "free"):
+        if key in t:
+            return key, _CLAUDE_TIER_COSTS.get(key, 0.0)
+    return None
+
+
+def detect_claude_plan(
+    claude_json_path: os.PathLike[str] | str | None = None,
+) -> Optional[tuple[str, float]]:
+    """Auto-detect the Claude subscription plan from ``~/.claude.json``.
+
+    Reads ``oauthAccount``, preferring ``userRateLimitTier`` (per-seat override)
+    over ``organizationRateLimitTier``. Returns (plan_label, monthly_cost), or
+    ``None`` when the file/field is missing or the tier is unrecognized.
+    """
+    path = claude_json_path if claude_json_path is not None else CLAUDE_CONFIG_FILE
+    data = read_json(path, fallback={})
+    if not isinstance(data, dict):
+        return None
+    acct = data.get("oauthAccount")
+    if not isinstance(acct, dict):
+        return None
+    tier = acct.get("userRateLimitTier") or acct.get("organizationRateLimitTier")
+    return parse_rate_limit_tier(tier)
+
+
 @dataclass(frozen=True)
 class AxtConfig:
     currency: tuple[str, ...] = ("usd", "krw")
@@ -3470,6 +3527,7 @@ class AxtConfig:
     start_of_week: str = "monday"  # "monday" | "sunday"
     budget_warning_threshold: float = 0.8
     theme: str = "auto"  # "auto" | "dark" | "light" — TUI color theme
+    auto_detect_plan: bool = True  # overlay plan from ~/.claude.json when set
     plans: dict[str, PlanConfig] = field(default_factory=lambda: {
         "claude": PlanConfig(plan="max-5x", monthly_cost=100, billing_cycle_start=1),
     })
@@ -3518,6 +3576,7 @@ def load_config(config_path: os.PathLike[str] | str) -> AxtConfig:
         start_of_week=str(saved.get("startOfWeek", default.start_of_week)),
         budget_warning_threshold=float(saved.get("budgetWarningThreshold", default.budget_warning_threshold)),
         theme=str(saved.get("theme", default.theme)),
+        auto_detect_plan=bool(saved.get("autoDetectPlan", default.auto_detect_plan)),
         plans=plans,
     )
 
@@ -3532,9 +3591,37 @@ def save_config(config_path: os.PathLike[str] | str, config: AxtConfig) -> None:
         "startOfWeek": config.start_of_week,
         "budgetWarningThreshold": config.budget_warning_threshold,
         "theme": config.theme,
+        "autoDetectPlan": config.auto_detect_plan,
         "plans": {k: _plan_to_json(v) for k, v in config.plans.items()},
     }
     write_json_atomic(config_path, payload)
+
+
+def resolve_claude_plan(
+    config: AxtConfig, *, detect: bool = True
+) -> Optional[PlanConfig]:
+    """Return the effective Claude ``PlanConfig`` for display.
+
+    When ``config.auto_detect_plan`` is set, overlays the plan label and
+    monthly cost detected from ``~/.claude.json`` onto the saved config —
+    preserving the user's billing cycle and daily request limit. Falls back to
+    the saved plan when auto-detect is off or detection is unavailable.
+    """
+    saved = config.plans.get("claude")
+    if not (detect and config.auto_detect_plan):
+        return saved
+    found = detect_claude_plan()
+    if found is None:
+        return saved
+    label, cost = found
+    if saved is None:
+        return PlanConfig(plan=label, monthly_cost=cost)
+    return PlanConfig(
+        plan=label,
+        monthly_cost=cost,
+        billing_cycle_start=saved.billing_cycle_start,
+        daily_request_limit=saved.daily_request_limit,
+    )
 
 
 # ─── TUI theme resolution ──────────────────────────────────────────────────────

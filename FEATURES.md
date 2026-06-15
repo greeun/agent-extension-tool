@@ -49,8 +49,8 @@ TUI 대시보드 실행.
 ### 1.5 `axt plan` (2)
 | 서브명령 | 인자 | 설명 |
 |---|---|---|
-| `overview` (기본) | — | Claude 플랜·예측 요약 |
-| `set <plan_name>` | 플랜명 | Claude 플랜 변경 |
+| `overview` (기본) | — | Claude 플랜·예측 요약 (기본은 `~/.claude.json` 기반 자동 감지) |
+| `set <plan_name>` | 플랜명 | Claude 플랜 수동 고정 (자동 감지 끔). `set auto` 로 자동 감지 재활성화 |
 
 ### 1.6 `axt plugin` (6)
 | 서브명령 | 인자 | 설명 |
