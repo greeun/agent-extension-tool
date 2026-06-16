@@ -525,7 +525,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # The split uses the body rect (table_y_top / table_h_full) returned by
     # render_title_bar above — no per-renderer reserved-row arithmetic, so the
     # region always fills down to the last body row.
-    detail_h = max(8, min(16, int(h * 0.35)))
+    detail_h = max(12, min(24, int(h * 0.45)))
     # Never let the panel eat the entire list; reserve at least 3 list rows.
     detail_h = min(detail_h, max(1, table_h_full - 3))
     table_w = w
