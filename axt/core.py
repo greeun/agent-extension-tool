@@ -164,19 +164,34 @@ def read_json(path: os.PathLike[str] | str, *, fallback: Any = _MISSING) -> Any:
         return json.load(f)
 
 
-def write_json_atomic(path: os.PathLike[str] | str, data: Any) -> None:
-    """Atomically write `data` as pretty-printed JSON to `path`.
+def write_json_atomic(
+    path: os.PathLike[str] | str,
+    data: Any,
+    *,
+    compact: bool = False,
+    backup: bool = True,
+) -> None:
+    """Atomically write `data` as JSON to `path`.
 
     Steps:
       1. mkdir -p parent
-      2. cp existing file to `path.bak` (best-effort)
+      2. cp existing file to `path.bak` (best-effort; skipped if `backup=False`)
       3. write to `<dir>/.tmp-<uuid>.json`
       4. os.replace tmp → path (atomic on POSIX and Windows)
+
+    `compact=True` writes minified JSON (no indent, tight separators) — used
+    for machine-only files like the usage cache where human readability is
+    irrelevant and the ~24% whitespace overhead is pure waste.
+
+    `backup=False` skips the pre-write copy to `path.bak`. The os.replace in
+    step 4 already guarantees readers never see a partial write, so the backup
+    only guards against bad *content*; for a regenerable cache that's pointless
+    and just doubles the bytes written on every refresh.
     """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
-    if p.exists():
+    if backup and p.exists():
         try:
             backup = p.with_suffix(p.suffix + ".bak")
             backup.write_bytes(p.read_bytes())
@@ -187,9 +202,12 @@ def write_json_atomic(path: os.PathLike[str] | str, data: Any) -> None:
 
     tmp_name = f".tmp-{uuid.uuid4().hex}.json"
     tmp_path = p.parent / tmp_name
+    dump_kwargs: dict[str, Any] = (
+        {"separators": (",", ":")} if compact else {"indent": 2}
+    )
     try:
         with tmp_path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, ensure_ascii=False, **dump_kwargs)
             f.write("\n")
         os.replace(tmp_path, p)
     finally:
@@ -2736,7 +2754,7 @@ def load_cached_usage(platform: str) -> dict[str, Any]:
 
 def save_cached_usage(platform: str, cache: dict[str, Any]) -> None:
     cache["lastUpdated"] = _iso_now()
-    write_json_atomic(_cache_path(platform), cache)
+    write_json_atomic(_cache_path(platform), cache, compact=True, backup=False)
 
 
 def is_cache_valid(cache: dict[str, Any], max_age_ms: int = 5 * 60 * 1000) -> bool:
@@ -2750,30 +2768,94 @@ def is_cache_valid(cache: dict[str, Any], max_age_ms: int = 5 * 60 * 1000) -> bo
     return age < max_age_ms
 
 
-def _claude_entry_to_dict(e: ClaudeUsageEntry) -> dict[str, Any]:
-    return {
-        "model": e.model,
-        "inputTokens": e.input_tokens,
-        "outputTokens": e.output_tokens,
-        "cacheCreationTokens": e.cache_creation_tokens,
-        "cacheReadTokens": e.cache_read_tokens,
-        "sessionId": e.session_id,
-        "projectPath": e.project_path,
-        "timestamp": e.timestamp,
-    }
+# Compact cache schema (version 2). The verbose v1 layout repeated 8 string
+# keys + the 36-char sessionId + the projectPath on *every* one of ~180k
+# entries, then pretty-printed it — ~70MB on a heavy user. v2 strips that:
+#
+#   - projectPath is the file's parent dir name → derived from the key, not stored.
+#   - model strings and sessionIds are interned into top-level `models` /
+#     `sessions` tables (append-only, so indices stay stable across the
+#     incremental per-file refresh that keeps unchanged files' rows verbatim).
+#   - each entry is a positional row
+#     [modelIdx, sessionIdx, in, out, cacheCreate, cacheRead, ts].
+#   - written minified (see save_cached_usage).
+#
+# Net effect on the same data: ~70MB → ~10MB, with zero loss of queryable
+# history (every session, however old, is still retained).
+
+CLAUDE_CACHE_VERSION = 2
 
 
-def _claude_entry_from_dict(d: dict[str, Any]) -> ClaudeUsageEntry:
-    return ClaudeUsageEntry(
-        model=str(d.get("model") or "unknown"),
-        input_tokens=int(d.get("inputTokens") or 0),
-        output_tokens=int(d.get("outputTokens") or 0),
-        cache_creation_tokens=int(d.get("cacheCreationTokens") or 0),
-        cache_read_tokens=int(d.get("cacheReadTokens") or 0),
-        session_id=str(d.get("sessionId") or ""),
-        project_path=str(d.get("projectPath") or ""),
-        timestamp=str(d.get("timestamp") or ""),
-    )
+def _intern(value: str, table: list[str], index: dict[str, int]) -> int:
+    i = index.get(value)
+    if i is None:
+        i = len(table)
+        table.append(value)
+        index[value] = i
+    return i
+
+
+def _lookup(idx: Any, table: list[str], default: str = "") -> str:
+    if isinstance(idx, int) and 0 <= idx < len(table):
+        return table[idx]
+    return default
+
+
+def _encode_claude_file(
+    entries: list[ClaudeUsageEntry],
+    mtime: float,
+    models: list[str],
+    model_index: dict[str, int],
+    sessions: list[str],
+    session_index: dict[str, int],
+) -> dict[str, Any]:
+    """Encode one session file's entries into the compact v2 file object.
+
+    projectPath is the file's parent dir name, recovered on decode — never
+    stored. model/sessionId go through the shared intern tables.
+    """
+    rows = [
+        [
+            _intern(e.model, models, model_index),
+            _intern(e.session_id, sessions, session_index),
+            e.input_tokens,
+            e.output_tokens,
+            e.cache_creation_tokens,
+            e.cache_read_tokens,
+            e.timestamp,
+        ]
+        for e in entries
+    ]
+    return {"m": mtime, "e": rows}
+
+
+def _decode_claude_file(
+    abs_path: str,
+    fdict: dict[str, Any],
+    models: list[str],
+    sessions: list[str],
+) -> list[ClaudeUsageEntry]:
+    """Inverse of `_encode_claude_file`. projectPath is recovered from the key."""
+    project_path = Path(abs_path).parent.name
+    out: list[ClaudeUsageEntry] = []
+    for row in fdict.get("e") or []:
+        try:
+            mi, si, in_tok, out_tok, cc, cr, ts = row
+        except (ValueError, TypeError):
+            continue
+        out.append(
+            ClaudeUsageEntry(
+                model=_lookup(mi, models, "unknown"),
+                input_tokens=int(in_tok or 0),
+                output_tokens=int(out_tok or 0),
+                cache_creation_tokens=int(cc or 0),
+                cache_read_tokens=int(cr or 0),
+                session_id=_lookup(si, sessions, ""),
+                project_path=project_path,
+                timestamp=str(ts or ""),
+            )
+        )
+    return out
 
 
 def load_all_claude_usage(
@@ -2786,29 +2868,42 @@ def load_all_claude_usage(
 ) -> list[ClaudeUsageEntry]:
     """Cached per-file Claude loader.
 
-    Cache shape (matches TS):
-      { version: 1, lastUpdated, projectsDir, files: { <abs>: { mtime, entries } } }
+    Cache shape (v2, compact):
+      { version: 2, lastUpdated, projectsDir,
+        models: [<model>, ...], sessions: [<sessionId>, ...],
+        files: { <abs>: { m: <mtime>, e: [[modelIdx, sessionIdx, in, out,
+                          cacheCreate, cacheRead, ts], ...] } } }
+    A cache written by an older version (or for a different projectsDir) is
+    discarded and rebuilt; no migration of stale rows is attempted.
     """
     projects_dir = str(projects_dir)
     since_ms = _ts_ms(since) if since else None
     until_ms = _ts_ms(until) if until else None
 
     cache = load_cached_usage("claude")
+    stale = (
+        cache.get("version") != CLAUDE_CACHE_VERSION
+        or cache.get("projectsDir") != projects_dir
+    )
+    if stale:
+        cache = {
+            "version": CLAUDE_CACHE_VERSION,
+            "lastUpdated": "",
+            "projectsDir": projects_dir,
+            "models": [],
+            "sessions": [],
+            "files": {},
+        }
 
-    if (
-        not force_refresh
-        and is_cache_valid(cache)
-        and cache.get("projectsDir") == projects_dir
-    ):
+    models: list[str] = cache.setdefault("models", [])
+    sessions: list[str] = cache.setdefault("sessions", [])
+    file_cache: dict[str, dict[str, Any]] = cache.setdefault("files", {})
+
+    if not stale and not force_refresh and is_cache_valid(cache):
         all_cached: list[ClaudeUsageEntry] = []
-        for entry in (cache.get("files") or {}).values():
-            for e in entry.get("entries") or []:
-                all_cached.append(_claude_entry_from_dict(e))
+        for abs_path, fdict in file_cache.items():
+            all_cached.extend(_decode_claude_file(abs_path, fdict, models, sessions))
         return _claude_filter(all_cached, since_ms, until_ms, project)
-
-    if cache.get("projectsDir") != projects_dir:
-        cache = {"version": 1, "lastUpdated": "", "projectsDir": projects_dir, "files": {}}
-    cache["projectsDir"] = projects_dir
 
     pd = Path(projects_dir)
     if not pd.exists() or not pd.is_dir():
@@ -2820,7 +2915,8 @@ def load_all_claude_usage(
         return []
 
     changed = False
-    file_cache: dict[str, dict[str, Any]] = cache.setdefault("files", {})
+    model_index: dict[str, int] = {m: i for i, m in enumerate(models)}
+    session_index: dict[str, int] = {s: i for i, s in enumerate(sessions)}
 
     for file_path in files:
         proj_name = Path(file_path).parent.name
@@ -2828,22 +2924,20 @@ def load_all_claude_usage(
             continue
         mtime = _file_mtime_ms(file_path)
         cached_file = file_cache.get(file_path)
-        if cached_file and float(cached_file.get("mtime", 0)) >= mtime:
+        if cached_file and float(cached_file.get("m", 0)) >= mtime:
             continue
         entries = parse_claude_jsonl(file_path)
-        file_cache[file_path] = {
-            "mtime": mtime,
-            "entries": [_claude_entry_to_dict(e) for e in entries],
-        }
+        file_cache[file_path] = _encode_claude_file(
+            entries, mtime, models, model_index, sessions, session_index
+        )
         changed = True
 
     if changed:
         save_cached_usage("claude", cache)
 
     all_entries: list[ClaudeUsageEntry] = []
-    for entry in file_cache.values():
-        for e in entry.get("entries") or []:
-            all_entries.append(_claude_entry_from_dict(e))
+    for abs_path, fdict in file_cache.items():
+        all_entries.extend(_decode_claude_file(abs_path, fdict, models, sessions))
     return _claude_filter(all_entries, since_ms, until_ms, project)
 
 
