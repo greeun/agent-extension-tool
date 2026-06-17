@@ -265,6 +265,7 @@ Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarCh
 - `UnifiedUsageEntry`: platform("claude"), model, timestamp, sessionId, projectPath, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, reasoningTokens, toolTokens
 - `RateLimitInfo`: platform, usedPercent, windowMinutes, resetsAt
 - 캐싱: 파일 mtime 기반, `~/.config/axt/cache/claude-usage.json`, 기본 5분 TTL
+- 캐시 스키마 v2 (compact): model/sessionId는 top-level `models`/`sessions` intern 테이블, 각 엔트리는 위치 배열 `[modelIdx, sessionIdx, in, out, cacheCreate, cacheRead, ts]`, projectPath는 파일 키에서 파생(미저장), minified·`.bak` 없음. v1 캐시는 폐기 후 재빌드
 
 ---
 
