@@ -43,21 +43,28 @@ __version__ = "1.5.0"
 # every CP_* helper resolves a pair by NUMBER, swapping the palette re-themes
 # the entire UI without touching call sites.
 #
-# DARK = the original "looks good on black" scheme (yellow headers, solid cyan
-# chips); backgrounds are -1 so it inherits the terminal's own background.
-# LIGHT = a FIXED white background — every pair's bg is COLOR_WHITE and stdscr
-# is filled via bkgd() — so the theme looks identical regardless of the
-# terminal's background. Emphasis is monochrome (reverse / underline), and cyan
-# (which washes out on white) is swapped for blue.
+# Both themes fix a background on EVERY pair (terminal-independent) so a theme
+# renders identically across Terminal.app / WezTerm / cmux / iTerm2 / ghostty
+# regardless of that terminal's own background. The earlier design left dark on
+# -1 (inherit the terminal bg), which made the dark theme's saturated accents
+# (yellow especially) unreadable when the terminal itself was light.
+#
+# DARK  = the "looks good on black" scheme (yellow headers, solid cyan chips) on
+#         a FIXED black background; stdscr is filled black via bkgd().
+# LIGHT = monochrome emphasis (reverse / underline) on a FIXED white background;
+#         stdscr is filled white via bkgd(), and cyan (washes out on white) is
+#         swapped for blue.
+# Pair 7 doubles as the bkgd fill pair in BOTH themes (white-on-black /
+# black-on-white), so untouched cells and attr-less text inherit the theme bg.
 _DARK_PALETTE = (
     (1, curses.COLOR_BLACK, curses.COLOR_CYAN),        # active / selection chip
-    (2, curses.COLOR_YELLOW, -1),                      # header / accent
-    (3, curses.COLOR_GREEN, -1),                       # success / active
-    (4, curses.COLOR_BLUE, -1),                        # info
-    (5, curses.COLOR_RED, -1),                         # danger / error
-    (6, curses.COLOR_MAGENTA, -1),                     # mark
-    (7, -1, -1),                                       # dim (default fg + A_DIM)
-    (8, curses.COLOR_CYAN, -1),                        # secondary
+    (2, curses.COLOR_YELLOW, curses.COLOR_BLACK),      # header / accent
+    (3, curses.COLOR_GREEN, curses.COLOR_BLACK),       # success / active
+    (4, curses.COLOR_BLUE, curses.COLOR_BLACK),        # info
+    (5, curses.COLOR_RED, curses.COLOR_BLACK),         # danger / error
+    (6, curses.COLOR_MAGENTA, curses.COLOR_BLACK),     # mark
+    (7, curses.COLOR_WHITE, curses.COLOR_BLACK),       # dim (white fg + A_DIM); also the bkgd fill pair
+    (8, curses.COLOR_CYAN, curses.COLOR_BLACK),        # secondary
 )
 _LIGHT_PALETTE = (
     (1, curses.COLOR_BLACK, curses.COLOR_WHITE),       # active/selection → reverse = white-on-black chip
@@ -70,10 +77,11 @@ _LIGHT_PALETTE = (
     (8, curses.COLOR_BLUE, curses.COLOR_WHITE),        # secondary (cyan washes out on white)
 )
 
-# pair 7 is black-on-white in the light palette; it doubles as the full-screen
-# background fill (via bkgd) so untouched cells and attr-less text stay on white
-# under the light theme.
-_LIGHT_BG_PAIR = 7
+# Pair 7 doubles as the full-screen background fill (via bkgd) in BOTH themes —
+# black-on-white under light, white-on-black under dark — so untouched cells and
+# attr-less text inherit the theme's fixed background regardless of the
+# terminal's own background.
+_BG_PAIR = 7
 
 # Active theme, set by tui_init_colors(). Drives CP_ACTIVE_CHIP()'s reverse
 # branch so the curses helpers stay argument-free at their many call sites.
@@ -110,15 +118,13 @@ def tui_init_colors(theme: str = "dark", stdscr=None) -> None:
             curses.init_pair(n, fg, bg)
         except (curses.error, ValueError):
             pass
-    # Fix the screen background to match the theme. Light = solid white (via the
-    # black-on-white fill pair) so untouched cells and attr-less text stay on
-    # white even on a dark terminal; dark = reset to the terminal default.
+    # Fix the screen background to match the theme via the shared fill pair (7):
+    # light = solid white, dark = solid black. Both override the terminal's own
+    # background so untouched cells and attr-less text stay on the theme bg and
+    # the theme looks identical across terminals.
     if stdscr is not None:
         try:
-            if _ACTIVE_THEME == "light":
-                stdscr.bkgd(" ", curses.color_pair(_LIGHT_BG_PAIR))
-            else:
-                stdscr.bkgd(" ", 0)
+            stdscr.bkgd(" ", curses.color_pair(_BG_PAIR))
         except (curses.error, ValueError):
             pass
 
@@ -472,18 +478,26 @@ def render_detail_panel(
     scroll: int = 0,
     focused: bool = False,
 ) -> int:
-    """Right-side detail panel. Boxed via simple `│` borders, scrollable.
+    """Right-side detail panel. Boxed via plain ASCII `+ - |` borders, scrollable.
 
     Returns the scroll offset actually used after clamping to the content
     height — callers that track scroll in state should write this back so a
     held scroll key can't run past the last line into blank space."""
     if h <= 0 or w <= 0:
         return 0
-    border_attr = CP_CYAN() if focused else CP_DIM()
+    # Unfocused border uses the default fg *without* A_DIM. A_DIM (SGR 2 / faint)
+    # is unreliable across terminals — some (e.g. plain TERM=xterm consoles)
+    # render it near-invisible — so the structural box outline must not depend
+    # on it. Focus is still signalled by cyan vs. the default fg.
+    border_attr = CP_CYAN() if focused else _safe_pair(7)
+    # Borders use plain ASCII (+, -, |) instead of Unicode box-drawing
+    # (┌ ─ │ …). Box-drawing glyphs render inconsistently across terminals /
+    # fonts (some consoles show them faint or blank), so a universal ASCII frame
+    # guarantees the panel outline is visible everywhere.
     # Top border.
-    safe_addnstr(stdscr, y, x, "┌" + "─" * (w - 2) + "┐", w, border_attr)
+    safe_addnstr(stdscr, y, x, "+" + "-" * (w - 2) + "+", w, border_attr)
     if h >= 2:
-        safe_addnstr(stdscr, y + h - 1, x, "└" + "─" * (w - 2) + "┘", w, border_attr)
+        safe_addnstr(stdscr, y + h - 1, x, "+" + "-" * (w - 2) + "+", w, border_attr)
     # Side borders + content.
     inner_w = w - 4  # 2 for borders + 2 padding
     if inner_w <= 0:
@@ -512,8 +526,8 @@ def render_detail_panel(
     scroll = max(0, min(scroll, max_scroll))
     visible_lines = lines[scroll:scroll + content_h]
     for row_i in range(content_h):
-        safe_addnstr(stdscr, y + 1 + row_i, x, "│", 1, border_attr)
-        safe_addnstr(stdscr, y + 1 + row_i, x + w - 1, "│", 1, border_attr)
+        safe_addnstr(stdscr, y + 1 + row_i, x, "|", 1, border_attr)
+        safe_addnstr(stdscr, y + 1 + row_i, x + w - 1, "|", 1, border_attr)
         if row_i < len(visible_lines):
             text, attr = visible_lines[row_i]
             safe_addnstr(stdscr, y + 1 + row_i, x + 2, text, inner_w, attr)

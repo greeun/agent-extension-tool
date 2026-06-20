@@ -342,20 +342,25 @@ def test_render_table_with_checked_set_uses_checkboxes():
 
 def _detail_panel_top_left(calls):
     """Return (y, x) of the first addnstr call that draws the detail panel's
-    top border ('┌...┐'). Returns None if no such row was drawn."""
+    top border ('+...+'). Returns None if no such row was drawn. The panel uses
+    a plain ASCII frame ('+ - |'), so top and bottom borders share the '+...+'
+    shape — the FIRST match is the top."""
     for args in calls:
         # addnstr signature: (y, x, text, max_w[, attr])
-        if len(args) >= 3 and isinstance(args[2], str) and args[2].startswith("┌"):
+        if len(args) >= 3 and isinstance(args[2], str) and args[2].startswith("+"):
             return args[0], args[1]
     return None
 
 
 def _detail_panel_bottom_y(calls):
-    """Return the y of the detail panel's bottom border ('└...┘'), or None."""
+    """Return the y of the detail panel's bottom border ('+...+'), or None.
+    Top and bottom borders share the ASCII '+...+' shape, so the LAST match is
+    the bottom (side borders are '|', never '+')."""
+    bottom = None
     for args in calls:
-        if len(args) >= 3 and isinstance(args[2], str) and args[2].startswith("└"):
-            return args[0]
-    return None
+        if len(args) >= 3 and isinstance(args[2], str) and args[2].startswith("+"):
+            bottom = args[0]
+    return bottom
 
 
 def _seed_vault_for_render(s):
@@ -539,9 +544,11 @@ def test_render_table_empty_rows():
 def test_render_detail_panel_draws_borders():
     scr = _make_stdscr()
     axt.render_detail_panel(scr, 0, 0, 10, 30, "title", [("Name", "alpha")])
-    texts = [c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str)]
-    assert any(t.startswith("┌") for t in texts)
-    assert any(t.startswith("└") for t in texts)
+    # ASCII frame: top and bottom borders are both "+---...---+".
+    border_ys = [c[0] for c in scr.calls
+                 if len(c) >= 3 and isinstance(c[2], str) and c[2].startswith("+")]
+    assert 0 in border_ys          # top border at y=0
+    assert 9 in border_ys          # bottom border at y=h-1
 
 
 def test_render_detail_panel_includes_title_and_fields():
@@ -1400,18 +1407,21 @@ def test_save_and_load_scan_cache(tmp_path, monkeypatch):
         ]),
     }
     axt._save_scan_cache(index, "full")
-    loaded, mode = axt._load_scan_cache()
+    loaded, mode, scanned_at = axt._load_scan_cache()
     assert mode == "full"
     assert "skill:alpha" in loaded
     assert len(loaded["skill:alpha"].projects) == 2
     assert loaded["skill:alpha"].projects[0].name == "p1"
+    # The stamp round-trips so the title bar can show cache age.
+    assert scanned_at is not None and scanned_at.endswith("Z")
 
 
 def test_load_scan_cache_missing_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setattr("axt.AXT_CONFIG_DIR", tmp_path / "config")
-    loaded, mode = axt._load_scan_cache()
+    loaded, mode, scanned_at = axt._load_scan_cache()
     assert loaded == {}
     assert mode == "default"
+    assert scanned_at is None
 
 
 def test_vault_first_render_restores_scan_cache(tmp_path, monkeypatch):
@@ -1437,6 +1447,118 @@ def test_vault_first_render_restores_scan_cache(tmp_path, monkeypatch):
     # The status shouldn't say "(empty)" if cache was loaded — but with no
     # actual vault items, this is best-effort. The key assertion is that
     # the state mode was updated.
+
+
+def test_kick_vault_scan_populates_index_in_background(tmp_path, monkeypatch):
+    """`_kick_vault_scan` fills `vault_usage_index` + `vault_scanned_at` from a
+    daemon thread, persists the cache, and clears the loading flag."""
+    monkeypatch.setattr("axt.AXT_CONFIG_DIR", tmp_path / "config")
+    projects = tmp_path / "projects"
+    home = tmp_path / "home" / "me"
+    proj = home / "p1"
+    proj.mkdir(parents=True)
+    # Encoded project dir Claude would create for /<tmp>/home/me/p1.
+    encoded = str(proj).replace("/", "-")
+    (projects / encoded).mkdir(parents=True)
+    axt.write_profile(proj, axt.AxtProfile(skills=("alpha",)))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(projects=projects, vault=tmp_path / "vault"))
+
+    state = axt.TuiState()
+    axt._kick_vault_scan(state)
+    assert state.vault_scan_loading is True
+    state.vault_scan_thread.join(timeout=5)
+
+    assert state.vault_scan_loading is False
+    assert "skill:alpha" in state.vault_usage_index
+    assert state.vault_scanned_at is not None
+    # Result persisted so the next launch paints it instantly.
+    loaded, _, _ = axt._load_scan_cache()
+    assert "skill:alpha" in loaded
+
+
+def test_kick_vault_scan_idempotent_while_loading(monkeypatch):
+    """A second kick while one is in flight is a no-op (no double thread)."""
+    state = axt.TuiState()
+    state.vault_scan_loading = True
+    spawned = []
+    monkeypatch.setattr("axt.tui.tabs.threading.Thread",
+                        lambda *a, **k: spawned.append(1))
+    axt._kick_vault_scan(state)
+    assert spawned == []
+
+
+def test_prime_vault_scan_restores_cache_then_kicks(tmp_path, monkeypatch):
+    """`_prime_vault_scan` loads the cached index for an instant paint and
+    fires the background refresh."""
+    monkeypatch.setattr("axt.AXT_CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(projects=tmp_path / "projects", vault=tmp_path / "vault"))
+    axt._save_scan_cache({
+        "skill:alpha": axt.ExtensionUsage(type="skill", name="alpha", projects=[
+            axt.ProjectRef(path="/p", name="p")]),
+    }, "full")
+    kicked = []
+    monkeypatch.setattr("axt.tui.tabs._kick_vault_scan", lambda s: kicked.append(s))
+    state = axt.TuiState()
+    axt._prime_vault_scan(state)
+    assert "skill:alpha" in state.vault_usage_index
+    assert state.vault_scan_mode == "full"
+    assert state.vault_scanned_at is not None
+    assert kicked == [state]
+
+
+def test_fmt_scan_age_buckets():
+    """`_fmt_scan_age` renders just-now / minute / hour / day buckets and
+    tolerates missing or malformed input."""
+    from datetime import datetime, timezone, timedelta
+
+    def stamp(**kw):
+        when = datetime.now(timezone.utc) - timedelta(**kw)
+        return when.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+
+    assert axt._fmt_scan_age(None) == ""
+    assert axt._fmt_scan_age("garbage") == ""
+    assert axt._fmt_scan_age(stamp(seconds=5)) == "just now"
+    assert axt._fmt_scan_age(stamp(minutes=3)) == "3m ago"
+    assert axt._fmt_scan_age(stamp(hours=2)) == "2h ago"
+    assert axt._fmt_scan_age(stamp(days=4)) == "4d ago"
+
+
+def test_vault_title_shows_scanning_then_age(tmp_path, monkeypatch):
+    """While a scan is in flight the title reads 'scanning…'; once done it
+    shows the relative age."""
+    from datetime import datetime, timezone, timedelta
+    vault = tmp_path / "vault"
+    (vault / "skills" / "alpha").mkdir(parents=True)
+    (vault / "skills" / "alpha" / "SKILL.md").write_text("---\ndescription: a\n---")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=vault, installed_plugins=tmp_path / "ip.json", claude_dir=tmp_path / "claude"))
+    monkeypatch.chdir(tmp_path)
+
+    def render_title(state):
+        scr = _make_stdscr(rows=20, cols=160)
+        axt.render_vault_tab(scr, state, 0, 18, 160)
+        return "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+
+    state = axt.TuiState()
+    state.vault_usage_index = {"skill:alpha": axt.ExtensionUsage(
+        type="skill", name="alpha", projects=[axt.ProjectRef(path="/p", name="p")])}
+    state.vault_scan_loading = True
+    assert "scanning…" in render_title(state)
+
+    state.vault_scan_loading = False
+    state.vault_scanned_at = (
+        datetime.now(timezone.utc) - timedelta(minutes=2)
+    ).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+    assert "2m ago" in render_title(state)
+
+
+def test_has_background_work_includes_vault_scan():
+    """The poll loop must stay awake while a vault scan runs so the result
+    paints without a keypress."""
+    state = axt.TuiState()
+    assert axt.tui.loop._has_background_work(state) is False
+    state.vault_scan_loading = True
+    assert axt.tui.loop._has_background_work(state) is True
 
 
 # ─── Sub-tab navigation: visual focus + Shift+Tab / Tab ──────────────────────
@@ -2962,31 +3084,36 @@ def test_tui_init_colors_initializes_eight_pairs(monkeypatch):
     assert seen == [1, 2, 3, 4, 5, 6, 7, 8]
 
 
-def test_dim_pair_uses_terminal_default_foreground(monkeypatch):
-    """The 'dim' pair (7) must use the terminal's default foreground (-1), not a
-    hardcoded COLOR_WHITE — otherwise white-on-white renders it invisible on
-    light terminal backgrounds. With default fg + A_DIM it adapts to any
-    background (dark-gray on white, light-gray on black)."""
-    monkeypatch.setattr("curses.use_default_colors", lambda: None)
-    pairs = {}
-    monkeypatch.setattr("curses.init_pair", lambda n, fg, bg: pairs.__setitem__(n, (fg, bg)))
-    axt.tui_init_colors()
-    assert pairs[7] == (-1, -1)
-    # COLOR_WHITE must not appear as a foreground anywhere — it is the one value
-    # that collapses to invisible on a white background.
-    assert curses.COLOR_WHITE not in {fg for fg, _bg in pairs.values()}
-
-
-def test_dark_palette_keeps_original_hues(monkeypatch):
-    """The DARK theme restores the original "looks good on black" scheme:
-    solid cyan chip, yellow header, cyan secondary."""
+def test_dim_pair_pins_a_fixed_background_per_theme(monkeypatch):
+    """The 'dim' pair (7) doubles as the screen bkgd fill, so it must pin a
+    FIXED background per theme rather than inherit the terminal's (-1): dark =
+    white-on-black, light = black-on-white. Pinning the bg is what keeps the
+    theme readable regardless of the terminal's own background (a saturated
+    dark-theme accent on an inherited light bg was the original bug)."""
     monkeypatch.setattr("curses.use_default_colors", lambda: None)
     pairs = {}
     monkeypatch.setattr("curses.init_pair", lambda n, fg, bg: pairs.__setitem__(n, (fg, bg)))
     axt.tui_init_colors("dark")
-    assert pairs[1] == (curses.COLOR_BLACK, curses.COLOR_CYAN)  # solid cyan chip
-    assert pairs[2] == (curses.COLOR_YELLOW, -1)                # yellow header
-    assert pairs[8] == (curses.COLOR_CYAN, -1)                  # cyan secondary
+    assert pairs[7] == (curses.COLOR_WHITE, curses.COLOR_BLACK)
+    axt.tui_init_colors("light")
+    assert pairs[7] == (curses.COLOR_BLACK, curses.COLOR_WHITE)
+    axt.tui_init_colors("dark")  # restore global so other tests see dark
+
+
+def test_dark_palette_keeps_original_hues(monkeypatch):
+    """The DARK theme restores the original "looks good on black" scheme:
+    solid cyan chip, yellow header, cyan secondary — now on a FIXED black
+    background on every pair (terminal-independent), not the inherited -1."""
+    monkeypatch.setattr("curses.use_default_colors", lambda: None)
+    pairs = {}
+    monkeypatch.setattr("curses.init_pair", lambda n, fg, bg: pairs.__setitem__(n, (fg, bg)))
+    axt.tui_init_colors("dark")
+    assert pairs[1] == (curses.COLOR_BLACK, curses.COLOR_CYAN)         # solid cyan chip
+    assert pairs[2] == (curses.COLOR_YELLOW, curses.COLOR_BLACK)       # yellow header
+    assert pairs[8] == (curses.COLOR_CYAN, curses.COLOR_BLACK)         # cyan secondary
+    # Every pair but the cyan selection chip (1) pins a black background so the
+    # dark theme renders identically on a light terminal.
+    assert all(bg == curses.COLOR_BLACK for n, (fg, bg) in pairs.items() if n != 1)
     assert axt.current_theme() == "dark"
 
 
@@ -3010,9 +3137,10 @@ def test_light_palette_drops_fluorescent_hues(monkeypatch):
     axt.tui_init_colors("dark")  # restore global so other tests see dark
 
 
-def test_light_theme_fills_white_background(monkeypatch):
-    """Light fills stdscr with a white background (terminal-independent); dark
-    resets the fill to the terminal default."""
+def test_both_themes_fill_a_fixed_background(monkeypatch):
+    """Both themes fill stdscr with a FIXED background via the shared fill pair
+    (7) — light = white, dark = black — so neither inherits the terminal's own
+    background and a theme looks identical across terminals."""
     monkeypatch.setattr("curses.use_default_colors", lambda: None)
     monkeypatch.setattr("curses.init_pair", lambda *a: None)
     monkeypatch.setattr("curses.color_pair", lambda n: 0x100 << n)
@@ -3024,9 +3152,9 @@ def test_light_theme_fills_white_background(monkeypatch):
 
     scr = _Scr()
     axt.tui_init_colors("light", scr)
-    assert bkgds[-1] == (" ", 0x100 << 7)   # black-on-white fill (pair 7)
+    assert bkgds[-1] == (" ", 0x100 << 7)   # fill pair 7 (black-on-white → white screen)
     axt.tui_init_colors("dark", scr)
-    assert bkgds[-1] == (" ", 0)            # reset to terminal default
+    assert bkgds[-1] == (" ", 0x100 << 7)   # fill pair 7 (white-on-black → black screen)
     axt.tui_init_colors("dark")  # restore global
 
 
@@ -3147,12 +3275,14 @@ def test_render_detail_panel_no_title_skips_title_row():
 
 
 def test_render_detail_panel_single_row_height_skips_bottom_border():
-    """h=1 → only top border drawn (the `if h >= 2` guard skips the bottom)."""
+    """h=1 → only the top border drawn (the `if h >= 2` guard skips the bottom).
+    Top and bottom share the ASCII '+...+' shape, so 'no bottom' means exactly
+    one '+...+' row was drawn (at y=0)."""
     scr = _make_stdscr()
     axt.render_detail_panel(scr, 0, 0, 1, 30, "T", [])
-    texts = [c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str)]
-    assert any(t.startswith("┌") for t in texts)
-    assert not any(t.startswith("└") for t in texts)
+    border_ys = [c[0] for c in scr.calls
+                 if len(c) >= 3 and isinstance(c[2], str) and c[2].startswith("+")]
+    assert border_ys == [0]        # only the top border, no bottom
 
 
 # ─── render_table edge branches ──────────────────────────────────────────────
@@ -4713,6 +4843,9 @@ def _quiet_curses(monkeypatch):
     monkeypatch.setattr("curses.curs_set", lambda *a: None)
     monkeypatch.setattr("curses.set_escdelay", lambda *a: None, raising=False)
     monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda *a, **k: None)
+    # _tui_loop primes a background project-usage scan on launch; stub it so
+    # loop tests never spawn a real daemon thread / clobber the on-disk cache.
+    monkeypatch.setattr("axt.tui.loop._prime_vault_scan", lambda *a, **k: None)
 
 
 def test_tui_loop_t_persists_theme_toggle(monkeypatch, tmp_path):
@@ -5116,16 +5249,17 @@ def test_load_scan_cache_non_dict_payload(monkeypatch, tmp_path):
     """_load_scan_cache returns the default tuple when the cache file is not a
     dict (line 253)."""
     monkeypatch.setattr("axt.tui.tabs.read_json", lambda *a, **kw: ["not", "a", "dict"])
-    index, mode = axt._load_scan_cache()
+    index, mode, scanned_at = axt._load_scan_cache()
     assert index == {}
     assert mode == "default"
+    assert scanned_at is None
 
 
 def test_load_scan_cache_non_dict_entries(monkeypatch):
     """When `entries` is not a dict, _load_scan_cache returns default (line 256)."""
     monkeypatch.setattr("axt.tui.tabs.read_json",
                         lambda *a, **kw: {"mode": "full", "entries": ["bad"]})
-    index, mode = axt._load_scan_cache()
+    index, mode, _ = axt._load_scan_cache()
     assert index == {}
     assert mode == "default"
 
@@ -5137,7 +5271,7 @@ def test_load_scan_cache_skips_non_dict_entry_value(monkeypatch):
         "entries": {"skill:bad": "not-a-dict",
                     "skill:good": {"type": "skill", "name": "good", "projects": []}},
     })
-    index, mode = axt._load_scan_cache()
+    index, mode, _ = axt._load_scan_cache()
     assert "skill:bad" not in index
     assert "skill:good" in index
     assert mode == "full"

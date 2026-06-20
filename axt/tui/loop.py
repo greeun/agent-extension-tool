@@ -31,6 +31,7 @@ from axt.tui.tabs import (  # noqa: F401 — `_`-prefixed names that wildcard sk
     _active_sub_tab,
     _at_top_of_content,
     _cycle_sub_tab,
+    _prime_vault_scan,
     sub_tab_has_focusable_content,
     subtab_sort_label,
     tab_has_focusable_content,
@@ -78,7 +79,8 @@ Vault
   F             Cycle filter (all/skill/command/agent/plugin)
   s             Cycle sort (Name→Type→Proj→Glob→Used→Added→Updated); active column header marked ▲/▼
   i             Import a global-only item into the vault (selected row)
-  f             Scan ALL projects to populate `Used` (cached to disk)
+  f             Re-scan ALL projects to refresh `Used` (auto-runs on launch in
+                the background; cached to disk; title shows scan age / scanning…)
   M             Toggle scan mode (default ↔ full) and re-scan
   m             Migrate ~/.claude/skills,commands,agents → vault
   S             Sync .claude/<sub>/ symlinks with .axt-profile.json
@@ -134,7 +136,7 @@ Vault column meanings
           glob*    Item only exists in ~/.claude/{type}s/ (use `i` to import)
   Proj    ● / ○    linked/enabled in this project (* = pending toggle)
   Glob    ● / ○    linked/enabled globally
-  Used    N proj   Count from last scan (`f` populates this column)
+  Used    N proj   Project count; auto-scanned on launch, `f` to refresh
 
 Globals
   ?             Show this help
@@ -330,10 +332,13 @@ def _has_background_work(state: TuiState) -> bool:
 
     Cases:
       - Usage tab's background loader is in flight.
+      - The cross-project vault scan is in flight.
       - A status message is shown and waiting to auto-clear so the
         bottom-bar shortcut hints can come back.
     """
     if state.usage_loading:
+        return True
+    if state.vault_scan_loading:
         return True
     if state.status and state.status_set_at is not None:
         return True
@@ -367,6 +372,10 @@ def _tui_loop(stdscr, theme: str = "dark") -> None:
 
     state = TuiState()
     state.stdscr_callbacks = {"stdscr": stdscr}
+    # Show the last cross-project scan instantly, then refresh it in the
+    # background so the Vault `Used` column is current on launch — no manual
+    # `f` needed. The poll loop redraws when the worker finishes.
+    _prime_vault_scan(state)
     _render_frame(stdscr, state)
 
     while True:

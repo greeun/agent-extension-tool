@@ -88,6 +88,13 @@ class TuiState:
     vault_usage_index: dict[str, Any] = field(default_factory=dict)  # type:name → ExtensionUsage
     vault_detail_focused: bool = False  # Enter → focus detail panel, Esc → blur back
     vault_detail_scroll: int = 0
+    # Background cross-project scan (mirrors the Usage tab's async loader).
+    # At launch the cached index paints instantly, then a daemon thread
+    # re-walks ~/.claude/projects/* so the `Used` column reflects current
+    # reality with no manual `f`. The main loop polls while loading is True.
+    vault_scan_loading: bool = False
+    vault_scan_thread: Optional[Any] = None  # threading.Thread, kept generic
+    vault_scanned_at: Optional[str] = None   # ISO8601 of the last completed scan
 
     # Extensions sub-tab state.
     ext_sub_tab: str = "vault"                     # one of EXTENSION_SUB_TABS keys
@@ -216,13 +223,13 @@ _SCAN_CACHE_NAME = "vault-scan-index.json"
 #   (see ``TuiState.vault_scan_mode``).
 #
 # Invalidation:
-#   - Cache is best-effort. There is NO automatic TTL — the file is read on
-#     vault-tab entry and trusted as-is.
-#   - The user explicitly refreshes by pressing `f` in the Vault tab, which
-#     also toggles the scan mode (default <-> full) before re-scanning.
-#   - Staleness is not surfaced as a relative timestamp; the title bar only
-#     shows the current scan mode and the populated-row count
-#     (e.g. ``scan=default(12/40)``).
+#   - Cache is best-effort and has NO TTL. It is read on vault-tab entry (and
+#     at launch via ``_prime_vault_scan``) for an instant paint, then a
+#     background scan refreshes it — so the cache is self-healing each session.
+#   - The user can force a refresh by pressing `f` in the Vault tab (current
+#     mode) or `M` (toggle mode, then re-scan).
+#   - Staleness IS surfaced: the title bar appends the relative scan age
+#     (``scan=default(12/40, 2m ago)``) or ``scanning…`` while a scan runs.
 #
 # Concurrency:
 #   - Writes go through ``write_json_atomic`` (tempfile + os.replace), so
@@ -271,14 +278,19 @@ def _save_scan_cache(index: dict[str, ExtensionUsage], mode: str) -> None:
 # Reads the most recent scan result. Never used as a substitute for live data —
 # only populates the "Used" column.
 # See "Vault scan cache policy" above.
-def _load_scan_cache() -> tuple[dict[str, ExtensionUsage], str]:
-    """Return (index, mode). Empty index + 'default' mode when no cache yet."""
+def _load_scan_cache() -> tuple[dict[str, ExtensionUsage], str, Optional[str]]:
+    """Return (index, mode, scanned_at).
+
+    Empty index + 'default' mode + None timestamp when no cache exists yet.
+    `scanned_at` is the ISO8601 stamp of the last scan, used to surface the
+    cache age in the title bar.
+    """
     data = read_json(_scan_cache_path(), fallback={})
     if not isinstance(data, dict):
-        return {}, "default"
+        return {}, "default", None
     entries = data.get("entries", {})
     if not isinstance(entries, dict):
-        return {}, "default"
+        return {}, "default", None
     index: dict[str, ExtensionUsage] = {}
     for key, value in entries.items():
         if not isinstance(value, dict):
@@ -294,7 +306,10 @@ def _load_scan_cache() -> tuple[dict[str, ExtensionUsage], str]:
             name=str(value.get("name", "")),
             projects=projects,
         )
-    return index, str(data.get("mode", "default"))
+    scanned_at = data.get("scannedAt")
+    return index, str(data.get("mode", "default")), (
+        str(scanned_at) if scanned_at else None
+    )
 
 
 def _vault_scan(state: TuiState) -> None:
@@ -305,7 +320,71 @@ def _vault_scan(state: TuiState) -> None:
     state.vault_usage_index = scan_project_usage(
         PATHS.projects, PATHS.vault, mode=state.vault_scan_mode,
     )
+    state.vault_scanned_at = _iso_now()
     _save_scan_cache(state.vault_usage_index, state.vault_scan_mode)
+
+
+def _kick_vault_scan(state: TuiState) -> None:
+    """Background cross-project scan (mirrors ``_kick_usage_reload``).
+
+    Idempotent: a no-op while a scan is already in flight. The previously
+    loaded (cached) index stays visible until the daemon worker rebinds
+    ``vault_usage_index`` with fresh data and re-persists it. The main loop
+    polls while ``vault_scan_loading`` is True so the result paints without
+    user input.
+    """
+    if state.vault_scan_loading:
+        return
+    state.vault_scan_loading = True
+    mode = state.vault_scan_mode  # captured: the worker scans in this mode
+
+    def _worker() -> None:
+        try:
+            index = scan_project_usage(PATHS.projects, PATHS.vault, mode=mode)
+            state.vault_usage_index = index
+            state.vault_scanned_at = _iso_now()
+            _save_scan_cache(index, mode)
+        finally:
+            state.vault_scan_loading = False
+
+    t = threading.Thread(target=_worker, name="axt-vault-scan", daemon=True)
+    state.vault_scan_thread = t
+    t.start()
+
+
+def _prime_vault_scan(state: TuiState) -> None:
+    """Restore the cached scan for an instant `Used` paint, then kick a
+    background refresh. Called once at TUI launch so the user sees current
+    project usage without pressing `f`."""
+    if not state.vault_usage_index:
+        cached_index, cached_mode, cached_at = _load_scan_cache()
+        if cached_index:
+            state.vault_usage_index = cached_index
+            state.vault_scan_mode = cached_mode
+            state.vault_scanned_at = cached_at
+    _kick_vault_scan(state)
+
+
+def _fmt_scan_age(iso: Optional[str]) -> str:
+    """Relative age of the last scan: 'just now' / 'Nm ago' / 'Nh ago' / 'Nd ago'.
+    Returns '' when the timestamp is missing or unparseable."""
+    if not iso:
+        return ""
+    try:
+        when = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return ""
+    secs = (datetime.now(timezone.utc) - when).total_seconds()
+    if secs < 60:
+        return "just now"
+    mins = int(secs // 60)
+    if mins < 60:
+        return f"{mins}m ago"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
 
 
 def _usage_index_drop(index: dict[str, Any], type_: str, name: str, project_path: str) -> None:
@@ -477,17 +556,28 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         # Try to restore the previous scan from disk so the "Used in" column
         # is populated immediately on restart (no manual `f` needed).
         if not state.vault_usage_index:
-            cached_index, cached_mode = _load_scan_cache()
+            cached_index, cached_mode, cached_at = _load_scan_cache()
             if cached_index:
                 state.vault_usage_index = cached_index
                 state.vault_scan_mode = cached_mode
+                state.vault_scanned_at = cached_at
         state.refresh_token = 1
 
     # Title row with all the live mode bits.
     pending = len(state.vault_pending_project) + len(state.vault_pending_global)
+    # Freshness tag: "scanning…" while a background scan is in flight, else the
+    # relative age of the last completed scan. Lets the user judge staleness at
+    # a glance and decide whether to press `f`.
+    if state.vault_scan_loading:
+        freshness = ", scanning…"
+    else:
+        age = _fmt_scan_age(state.vault_scanned_at)
+        freshness = f", {age}" if age else ""
     scan_label = (
-        f"scan={state.vault_scan_mode}({format_scan_summary(state.vault_usage_index, style='title')})"
-        if state.vault_usage_index else f"scan={state.vault_scan_mode}(empty)"
+        f"scan={state.vault_scan_mode}"
+        f"({format_scan_summary(state.vault_usage_index, style='title')}{freshness})"
+        if state.vault_usage_index
+        else f"scan={state.vault_scan_mode}(empty{freshness})"
     )
     title_parts = [
         f" Vault  ({len(state.vault_items)} items)",
