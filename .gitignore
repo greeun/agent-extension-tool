@@ -28,3 +28,7 @@ wp-blog-post/
 wp-blog-post-ccx-backup/
 linkedin-post/
 docs/superpowers/
+
+# superpowers (auto-installed; do not track)
+.superpowers/
+docs/superpowers/
