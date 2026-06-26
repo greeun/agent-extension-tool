@@ -62,7 +62,7 @@ axt/                    → Package
 pyproject.toml          → Package metadata; entry = axt:main
 README.md               → User-facing install/usage doc
 DESIGN.md               → Rationale for the cst-style rewrite + Phase-C package split
-FEATURES.md             → Feature inventory (40 subcommands, 3 main TUI tabs + Scope filter)
+FEATURES.md             → Feature inventory (40 subcommands, 3 main TUI tabs: Extensions/Context/Usage)
 SKILL.md                → Claude Skill manifest exposing axt to Claude Code
 tests/                  → pytest suite, one test_*.py per domain (paths, json_io,
                           settings, vault, marketplace, plugin, skill, mcp,
@@ -96,7 +96,7 @@ legacy-ts/              → Frozen TypeScript+Ink implementation (v0.1.x, no new
 | `axt usage` | Claude usage summary (today/week/month/blocks/session) |
 | `axt plan` | Claude plan overview / set |
 | `axt project` | Project context init/add/remove/sync/status |
-| `axt context` | Context source analysis (analyze / list) |
+| `axt context` | Context source analysis (flags: --detail / --json / --category / --model) |
 | `axt vault` | Vault list / migrate / add / install / link-global / unlink-global |
 
 Full subcommand inventory: see `FEATURES.md`.

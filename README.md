@@ -2,6 +2,8 @@
 
 A unified CLI & TUI dashboard for managing extensions, plugins, skills, MCP servers, hooks, commands, and agents — and for tracking usage costs — for **Claude Code**.
 
+> 🌐 한국어: [README.ko.md](./README.ko.md)
+
 > **v1.0.0: Claude-only.** The earlier multi-platform line (Codex / Gemini CLI / Cursor) is retained as v0.2.x; v1 drops that surface to focus on Claude depth. See [MIGRATION.md](./MIGRATION.md) (English) or [MIGRATION.ko.md](./MIGRATION.ko.md) (Korean) for upgrade notes.
 
 Python + curses package, pure stdlib runtime. The older TypeScript+Ink line (v0.1.x) is preserved frozen under [`legacy-ts/`](./legacy-ts/).
@@ -25,23 +27,32 @@ Pure standard library at runtime — no external Python dependencies. Windows us
 
 ## Install
 
-Requires Python 3.9+ and Git.
+Pure stdlib at runtime — no dependencies to resolve. Just need Python 3.9+.
 
-### macOS / Linux
+### Quick install (easiest — one line, no clone)
+
+`axt` installs straight from git. [pipx](https://pipx.pypa.io) is recommended (isolated venv + `axt` on your PATH):
+
+```bash
+pipx install "git+https://github.com/greeun/agent-extension-tool.git"
+axt --version          # axt 1.5.0
+```
+
+> **No pipx?** `python3 -m pip install --user pipx && python3 -m pipx ensurepath`, reopen the shell, then run the command above.
+> **Prefer plain pip?** `pip install --user "git+https://github.com/greeun/agent-extension-tool.git"` works the same (just doesn't isolate the venv).
+
+Update later with `pipx upgrade axt`; remove with `pipx uninstall axt`.
+
+### From source (for development)
+
+Clone and install editable so code edits take effect immediately. `[dev]` adds pytest (only needed to run the test suite):
 
 ```bash
 git clone https://github.com/greeun/agent-extension-tool.git
 cd agent-extension-tool
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .[dev]
-axt --version          # axt 1.0.0
-```
-
-For global use without manual `source`:
-
-```bash
-# Recommended: pipx isolates the venv and registers ~/.local/bin/axt
-pipx install -e ~/<...>/agent-extension-tool
+axt --version          # axt 1.5.0
 ```
 
 ### Windows
@@ -70,6 +81,7 @@ Claude Code now picks up `axt` automatically when you mention plugin, skill, MCP
 ```bash
 # Launch the interactive TUI
 axt
+axt --theme light                  # force a theme for this run (auto / dark / light)
 
 # Inspection (read-only — safe to run anytime)
 axt plugin list
@@ -79,7 +91,7 @@ axt hook list
 axt market list
 axt usage today
 axt vault list
-axt context analyze
+axt context
 
 # Mutation (touches ~/.claude/ — confirm before running)
 axt market add github:user/repo

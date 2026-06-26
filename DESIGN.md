@@ -194,7 +194,7 @@ Python: 3.9+
 
 1. WezTerm + cmux에서 vault 목록 j/k 이동 시 selected 행의 ▸/번호가 항상 표시된다
 2. axt의 모든 Claude 관련 CLI 명령이 안정적으로 동작
-3. 모든 4개 메인 탭이 cst 수준의 응답성으로 동작
+3. 모든 3개 메인 탭(Extensions / Context / Usage)이 cst 수준의 응답성으로 동작
 4. pytest 단위 테스트 통과율 ≥ 95%
 
 ## 위험 및 완화

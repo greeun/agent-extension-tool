@@ -6,7 +6,7 @@
 
 집계 결과:
 - **CLI 명령**: 11개 그룹 × 총 40개 서브명령 (`tui` 포함)
-- **TUI 탭**: 4개 메인 + Extensions 8개 서브탭 + Scope 글로벌 필터
+- **TUI 탭**: 3개 메인(Extensions / Context / Usage) + Extensions 8개 서브탭 + Context 2개 서브탭
 - **Usage 플랫폼**: Claude 단일 → `UnifiedUsageEntry` 어댑터 → 모델별 pricing
 
 ---
@@ -100,7 +100,9 @@ TUI 대시보드 실행.
 | `unlink-global <type> <name>` | 타입 + 이름 | symlink 제거 |
 
 ### 1.11 글로벌 옵션
-- `--help, -h` / `--version, -V` / `--json` (지원 명령에 한해)
+- `--help, -h` / `--version, -V`
+- `--theme {auto,dark,light}` — 이번 실행의 TUI 색 테마 (top-level 플래그; 미지정 시 저장된 config / auto-detect). 인자 없이 `axt --theme light` 만 줘도 TUI가 그 테마로 실행됨
+- `--json` (지원 명령에 한해)
 
 ---
 
@@ -119,26 +121,27 @@ TUI 대시보드 실행.
 `mainTab` ↔ `subTab` ↔ `content`. 메인탭은 `← →` 또는 숫자 1~3, 포커스 이동은 `↑ ↓ Return`.
 포커스 가능한 본문이 없는 탭(Usage)은 mainTab에서 `↓`를 받아도 포커스가 그대로 mainTab에 머무름 — capability 기반 분기.
 
-### 2.4 Extensions 탭 (8개 서브탭)
-- **Vault** (기본) — `# Name Type Vault Added Updated Project Global Used in`
-- **Plugins** — `Plugin Version Status Scope Marketplace Updated`
+### 2.4 Extensions 탭 (8개 서브탭, `EXTENSION_SUB_TABS` 순서)
+- **Vault** (기본) — `# Name Type Vault Proj Glob Used Added Updated`
 - **Skills** — `Skill Source Type Proj Path`
 - **Commands** — `Command Source Proj Description`
 - **Agents** — `Agent Source Proj Description`
-- **MCP** — MCP 서버 / command / args / env
+- **MCP** — MCP 서버 / Scope / Transport / command / args / env
 - **Hooks** — `Event Type Source Match Detail`
+- **Plugins** — `Plugin Version Status(G/P) Marketplace`
 - **Market** — `Marketplace Version Updated Source`
 
 ### 2.5 키바인딩 (Vault 전체)
 ```
 j/k ↓/↑     이동             g           global 토글
-PgUp/PgDn   페이지           Tab         필터(all/skill/command/agent/plugin)
-Space       project 토글     s           정렬 순환(컬럼순→added→updated), 활성 컬럼 헤더 ▲/▼
+PgUp/PgDn   페이지           F           필터(all/skill/command/agent/plugin)
+Space       project 토글     s           정렬 순환(Name→Type→Proj→Glob→Used→Added→Updated), 활성 컬럼 헤더 ▲/▼
 Enter       적용 또는 detail i           import to vault (global-only)
 Esc         폐기/뒤로        f           프로젝트 재스캔(실행 시 백그라운드 자동, Used 갱신)
 /           검색             M           scan mode toggle (default/full) + 재스캔
-o           터미널 열기       m           migrate (글로벌→vault)
-S           sync project     U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 모달)
+Tab         리스트↔detail포커스 m         migrate (글로벌→vault)
+o           터미널 열기       S           sync project
+U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 모달)
 ```
 
 ### 2.6 키바인딩 (서브탭별 고유)
@@ -153,8 +156,9 @@ S           sync project     U           모든 프로젝트에서 unlink (스�
 - **Skills**: `u` unlink, `l` link (path 입력)
 - **MCP**: `e` enable, `d` disable (현재 프로젝트 `disabledMcpServers`)
 - **Hooks**: `e` enable, `d` disable (설정 파일 내 `hooks`↔`disabledHooks` 이동, plugin 훅 제외), `p` preview (dry-run)
-- **Plugins**: `/` 필터, `i` install wizard, detail mode action list
-- **Market**: `S` sync (대문자 — `s`는 정렬로 이동), `r` remove, `a` add (2-step name→source)
+- **Plugins**: `e`/`d` enable/disable (global), `E`/`D` enable/disable (project), `x` uninstall (확인 모달). Status 컬럼 G/P = ● enabled / ○ disabled / · unset
+- **Commands** / **Agents**: `e` 소스 파일을 `$EDITOR`로 열기
+- **Market**: `S` sync (대문자 — `s`는 정렬로 이동), `x` remove (확인), `a` add (2-step source+name 입력)
 - **모든 서브탭 (Vault / Skills / Commands / Agents / MCP / Hooks / Plugins / Market)**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
 
 ### 2.7 Context 탭 (2개 서브탭)
@@ -179,8 +183,9 @@ Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarCh
 - **FilterChips**: `Scope: [...]` 헤더 라인 좌측, 디폴트 외 값은 BOLD
 
 ### 2.11 글로벌 키
-- `q` / `Esc`: 종료 (특정 탭의 subview 중에는 차단)
+- `q` / `Q` / `Esc`: 종료 (Esc는 main-tab 레이어에서만 종료; 그 외엔 한 레이어 위로)
 - `?`: HelpPopup 토글
+- `t`: light ↔ dark 테마 토글 (즉시 재팔레트 + config 저장)
 - `r`: refresh
 - `1-3`: 메인탭 점프
 - `← →`: 메인탭 순회
@@ -288,7 +293,7 @@ Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarCh
 ### 4.3 모델별 가격 (per 1M tokens, USD) — `pricing.json`
 | Model | Input | Output | Cache Write | Cache Read | Context Window |
 |---|---|---|---|---|---|
-| claude-opus-4-7 / 4-6 | 15.00 | 75.00 | 18.75 | 1.50 | 1,000,000 |
+| claude-opus-4-8 / 4-7 / 4-6 | 15.00 | 75.00 | 18.75 | 1.50 | 1,000,000 |
 | claude-sonnet-4-6 | 3.00 | 15.00 | 3.75 | 0.30 | 1,000,000 |
 | claude-haiku-4-5 | 0.80 | 4.00 | 1.00 | 0.08 | 200,000 |
 

@@ -5,7 +5,7 @@ description: Use `axt` (Agent eXtension Tool) — a Python+curses CLI/TUI — to
 
 # axt — Agent eXtension Tool
 
-`axt` is a Python + curses CLI + TUI package (v1.0.0, Claude-only) that gives a unified view of:
+`axt` is a Python + curses CLI + TUI package (Claude-only, pure stdlib runtime) that gives a unified view of:
 
 - **Plugins** installed via Claude marketplaces (`~/.claude/plugins/`)
 - **Skills** (`~/.claude/skills/`, `~/.agents/`, `<project>/.agents/`, plugin-bundled)
@@ -32,20 +32,22 @@ Use `axt` when the user asks any of:
 ```bash
 axt                           # launch TUI (default)
 axt tui
+axt --theme {auto,dark,light} # TUI color theme for this run (top-level flag)
 
 axt market   {list, add <source>, sync [name], remove <name>}
-axt plugin   {list, enable <id>, disable <id>, info <id>, remove <id>, search <q>}
-axt skill    {list, link <path>, unlink <name>}
+axt plugin   {list, enable <id> [--scope global|project], disable <id> [--scope ...], info <id>, remove <id>, search <q>}
+axt skill    {list, link <path> [-n <name>], unlink <name>}    # link/unlink hidden on Windows
 axt mcp      {list, info <name>, enable <name>, disable <name>}
 axt hook     {list, enable <index>, disable <index>}
-axt usage    [today | week | month | blocks | session <id>]
+axt usage    [today | week | month | blocks [--active] | session <id>]
              [--since YYYY-MM-DD] [--until YYYY-MM-DD]
              [--model <id>] [--project <name>] [--breakdown]
              [--json | --csv | --export <path>]
-axt plan     [overview | set <plan-name>]
+axt plan     [overview | set <plan-name|auto>]
 axt project  {init, add <type> <name>..., remove <type> <name>, sync, status}
-axt context  {analyze, list} [--detail] [--json] [--category <name>] [--model <id>]
-axt vault    {list, migrate, add <type> <name>, install, link-global, unlink-global}
+axt context  [--detail] [--json] [--category <name>] [--model <id>]
+axt vault    {list, migrate, add <path> [-t <type>], install <market> <name> [-t <type>],
+              link-global <type> <name>, unlink-global <type> <name>}
 ```
 
 Marketplace source formats: `github:user/repo`, `git:<url>`, `dir:/path`.
@@ -73,14 +75,21 @@ Full inventory: see `FEATURES.md` in this repo.
 
 ## Architecture pointer
 
-Single file `axt.py` (~7,400 lines) organized into 15 numbered sections (Constants → JSON I/O → Settings → domain → Vault → Usage parsers → Pricing → Context analysis → Project usage index → CLI → TUI helpers/widgets/tabs/main loop → Entry point). See `DESIGN.md` for the cst-style single-file rationale.
+Python package `axt/` (Phase C split the original single-file `axt.py` into per-section modules; `# ── Section N:` headers survive as in-module anchors):
+
+- `core.py` — Sections 1-9, domain layer (paths, JSON I/O, settings, plugin / skill / MCP / hook / command / agent, vault, marketplace, usage parsers, pricing, context, project usage)
+- `cli.py` — Section 10 + 15, argparse subcommands + `main` entry
+- `pricing.json` — per-million-token model pricing (package data; edit to add a model, no code change)
+- `tui/widgets.py` (11-12), `tui/tabs.py` (13), `tui/loop.py` (14) — curses helpers, tab renderers/handlers, main loop
+
+`axt/__init__.py` mirrors each submodule's globals onto the `axt` namespace, so `axt.X` resolves regardless of which module owns `X`. See `DESIGN.md` for the cst-style rewrite + Phase-C package-split rationale.
 
 Pure stdlib runtime — no external Python deps. Windows users additionally need `windows-curses`.
 
 ## How to verify availability
 
 ```bash
-axt --version    # expect: axt 1.0.0 or later
+axt --version    # expect: axt 1.5.0 or later
 ```
 
 If missing, install per `README.md` (clone + `pip install -e .[dev]`).
