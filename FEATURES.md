@@ -135,10 +135,10 @@ j/k ↓/↑     이동             g           global 토글
 PgUp/PgDn   페이지           Tab         필터(all/skill/command/agent/plugin)
 Space       project 토글     s           정렬 순환(컬럼순→added→updated), 활성 컬럼 헤더 ▲/▼
 Enter       적용 또는 detail i           import to vault (global-only)
-Esc         폐기/뒤로        f           scan mode toggle (default/full)
-/           검색             m           migrate (글로벌→vault)
-o           터미널 열기       S           sync project
-U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 모달)
+Esc         폐기/뒤로        f           프로젝트 재스캔(실행 시 백그라운드 자동, Used 갱신)
+/           검색             M           scan mode toggle (default/full) + 재스캔
+o           터미널 열기       m           migrate (글로벌→vault)
+S           sync project     U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 모달)
 ```
 
 ### 2.6 키바인딩 (서브탭별 고유)
