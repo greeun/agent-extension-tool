@@ -699,3 +699,91 @@ def test_read_version_without_frontmatter_returns_empty(tmp_path: Path):
     f = tmp_path / "x.md"
     f.write_text("no frontmatter at all\n")
     assert axt._read_version(f) == ""
+
+
+# ─── shared scan primitives (P1 refactor) ────────────────────────────────────
+
+
+def test_linkable_types_pairs():
+    assert axt.LINKABLE_TYPES == (
+        ("skills", "skill"),
+        ("commands", "command"),
+        ("agents", "agent"),
+    )
+
+
+def test_iter_item_entries_missing_dir(tmp_path: Path):
+    assert axt._iter_item_entries(tmp_path / "nope") == []
+
+
+def test_iter_item_entries_sorted_skips_dotfiles(tmp_path: Path):
+    d = tmp_path / "d"
+    d.mkdir()
+    (d / "b.md").write_text("x")
+    (d / "a.md").write_text("x")
+    (d / ".hidden.md").write_text("x")
+    assert [p.name for p in axt._iter_item_entries(d)] == ["a.md", "b.md"]
+
+
+def test_entry_is_item_skill_requires_dir(tmp_path: Path):
+    d = tmp_path / "myskill"
+    d.mkdir()
+    f = tmp_path / "x.md"
+    f.write_text("x")
+    assert axt._entry_is_item(d, "skill") is True
+    assert axt._entry_is_item(f, "skill") is False
+
+
+def test_entry_is_item_command_requires_md_file(tmp_path: Path):
+    md = tmp_path / "c.md"
+    md.write_text("x")
+    txt = tmp_path / "c.txt"
+    txt.write_text("x")
+    d = tmp_path / "d"
+    d.mkdir()
+    assert axt._entry_is_item(md, "command") is True
+    assert axt._entry_is_item(txt, "command") is False
+    assert axt._entry_is_item(d, "command") is False
+
+
+def test_make_vault_item_applies_flags(tmp_path: Path):
+    f = tmp_path / "c.md"
+    f.write_text("x")
+    item = axt._make_vault_item(f, "command", in_vault=True, is_linked=True)
+    assert (item.name, item.type, item.path) == ("c.md", "command", str(f))
+    assert item.in_vault is True
+    assert item.is_linked is True
+    assert item.is_global_linked is False   # default preserved
+
+
+def test_move_path_file_rename(tmp_path: Path):
+    src = tmp_path / "a.md"
+    src.write_text("data")
+    dest = tmp_path / "b.md"
+    axt._move_path(src, dest, is_dir=False)
+    assert not src.exists()
+    assert dest.read_text() == "data"
+
+
+def test_move_path_dir_rename(tmp_path: Path):
+    src = tmp_path / "sd"
+    src.mkdir()
+    (src / "f.txt").write_text("x")
+    dest = tmp_path / "dd"
+    axt._move_path(src, dest, is_dir=True)
+    assert not src.exists()
+    assert (dest / "f.txt").read_text() == "x"
+
+
+def test_move_path_fallback_when_rename_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    src = tmp_path / "a.md"
+    src.write_text("data")
+    dest = tmp_path / "b.md"
+
+    def boom(*a, **k):
+        raise OSError("cross-device link not permitted")
+
+    monkeypatch.setattr("axt.core.os.rename", boom)
+    axt._move_path(src, dest, is_dir=False)   # falls back to copy2 + unlink
+    assert not src.exists()
+    assert dest.read_text() == "data"

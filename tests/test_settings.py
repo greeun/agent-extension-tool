@@ -160,3 +160,45 @@ def test_settings_write_creates_bak(seeded_settings: Path):
     assert backup.exists()
     # Backup has the *previous* content.
     assert json.loads(backup.read_text())["enabledPlugins"]["alpha"] is True
+
+
+# ── flag-bucket helpers (_read_settings_flag_map / _set_settings_flag) ────────
+
+
+def test_read_settings_flag_map_missing_key(tmp_settings: Path):
+    assert axt._read_settings_flag_map(tmp_settings, "enabledPlugins") == {}
+
+
+def test_read_settings_flag_map_coerces_bool(seeded_settings: Path):
+    assert axt._read_settings_flag_map(seeded_settings, "enabledPlugins") == {
+        "alpha": True,
+        "beta": False,
+    }
+
+
+def test_read_settings_flag_map_non_dict_bucket(tmp_path: Path):
+    p = tmp_path / "s.json"
+    p.write_text('{"enabledPlugins": ["alpha"]}')
+    assert axt._read_settings_flag_map(p, "enabledPlugins") == {}
+
+
+def test_set_settings_flag_add_then_remove(tmp_settings: Path):
+    axt._set_settings_flag(tmp_settings, "favoritePlugins", "x", True)
+    assert axt._read_settings_flag_map(tmp_settings, "favoritePlugins") == {"x": True}
+    axt._set_settings_flag(tmp_settings, "favoritePlugins", "x", False)
+    assert axt._read_settings_flag_map(tmp_settings, "favoritePlugins") == {}
+
+
+def test_set_settings_flag_preserves_siblings(seeded_settings: Path):
+    axt._set_settings_flag(seeded_settings, "favoritePlugins", "gamma", True)
+    data = json.loads(seeded_settings.read_text())
+    assert data["favoritePlugins"]["gamma"] is True
+    assert data["favoritePlugins"]["alpha"] is True   # sibling key untouched
+    assert data["otherKey"] == "preserved"
+
+
+def test_set_settings_flag_overwrites_non_dict_bucket(tmp_path: Path):
+    p = tmp_path / "s.json"
+    p.write_text('{"favoritePlugins": "garbage"}')
+    axt._set_settings_flag(p, "favoritePlugins", "x", True)
+    assert json.loads(p.read_text())["favoritePlugins"] == {"x": True}

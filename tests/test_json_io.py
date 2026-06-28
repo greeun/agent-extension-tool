@@ -90,3 +90,26 @@ def test_read_json_after_write_roundtrip(tmp_path: Path):
     data = {"list": [1, 2, 3], "nested": {"k": "v"}, "unicode": "한글"}
     axt.write_json_atomic(target, data)
     assert axt.read_json(target) == data
+
+
+# ─── read_json_dict (object-or-empty guard) ──────────────────────────────────
+
+
+def test_read_json_dict_missing_returns_empty(tmp_path: Path):
+    assert axt.read_json_dict(tmp_path / "nope.json") == {}
+
+
+def test_read_json_dict_non_object_returns_empty(tmp_path: Path):
+    p = tmp_path / "v.json"
+    p.write_text("[1, 2, 3]")
+    assert axt.read_json_dict(p) == {}
+    p.write_text('"a string"')
+    assert axt.read_json_dict(p) == {}
+    p.write_text("42")
+    assert axt.read_json_dict(p) == {}
+
+
+def test_read_json_dict_object_passthrough(tmp_path: Path):
+    p = tmp_path / "obj.json"
+    p.write_text('{"a": 1, "b": {"c": 2}}')
+    assert axt.read_json_dict(p) == {"a": 1, "b": {"c": 2}}

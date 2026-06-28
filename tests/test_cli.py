@@ -1156,3 +1156,41 @@ def test_hook_disable_refuses_plugin_hook(tmp_path: Path, monkeypatch):
     code, out, _ = _run(["hook", "disable", "0"])
     assert code == 1
     assert "read-only" in out
+
+
+# ─── usage / list output helpers (C1 / C2 refactor) ──────────────────────────
+
+
+def _ce(model: str, inp: int, out: int):
+    return axt.ClaudeUsageEntry(
+        model=model, input_tokens=inp, output_tokens=out,
+        cache_creation_tokens=0, cache_read_tokens=0,
+        session_id="s", project_path="/p", timestamp="2026-06-01T00:00:00Z",
+    )
+
+
+def test_entries_cost_empty_is_zero():
+    assert axt._entries_cost([]) == 0
+
+
+def test_entries_cost_is_additive():
+    # Independent of the pricing table values: cost(a+b) == cost(a)+cost(b).
+    entries = [_ce("claude-opus-4-8", 1000, 500), _ce("claude-sonnet-4-6", 2000, 0)]
+    assert axt._entries_cost(entries) == sum(axt._entries_cost([e]) for e in entries)
+
+
+def test_print_count_footer(capsys):
+    axt._print_count_footer(3, "hook")
+    assert capsys.readouterr().out == "\n 3 hook(s)\n"
+
+
+def test_print_count_footer_with_suffix(capsys):
+    axt._print_count_footer(2, "extension", suffix=" in vault")
+    assert capsys.readouterr().out == "\n 2 extension(s) in vault\n"
+
+
+def test_print_list_header(capsys):
+    axt._print_list_header("Name  Type", 10)
+    out = capsys.readouterr().out
+    assert "Name  Type" in out
+    assert "─" * 10 in out

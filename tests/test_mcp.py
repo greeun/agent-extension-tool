@@ -393,3 +393,67 @@ def test_set_mcp_enable_builtin_reflected_in_collect(tmp_path: Path):
         if s.name == "computer-use"
     )
     assert cu.disabled is False
+
+
+# ─── project-entry / membership helpers (P7 refactor) ────────────────────────
+
+
+def test_project_entry_read_missing_returns_empty():
+    assert axt._project_entry({}, "/p") == {}
+    assert axt._project_entry({"projects": {}}, "/p") == {}
+    assert axt._project_entry({"projects": {"/q": {"a": 1}}}, "/p") == {}
+
+
+def test_project_entry_read_existing():
+    cfg = {"projects": {"/p": {"a": 1}}}
+    assert axt._project_entry(cfg, "/p") == {"a": 1}
+
+
+def test_project_entry_read_does_not_mutate():
+    cfg = {}
+    axt._project_entry(cfg, "/p")          # create defaults to False
+    assert cfg == {}
+
+
+def test_project_entry_create_inserts_and_returns_live_ref():
+    cfg = {}
+    entry = axt._project_entry(cfg, "/p", create=True)
+    entry["x"] = 1
+    assert cfg == {"projects": {"/p": {"x": 1}}}
+
+
+def test_project_entry_create_preserves_existing():
+    cfg = {"projects": {"/p": {"a": 1}}}
+    entry = axt._project_entry(cfg, "/p", create=True)
+    assert entry is cfg["projects"]["/p"]
+    assert entry == {"a": 1}
+
+
+def test_toggle_membership_add():
+    entry: dict = {}
+    axt._toggle_membership(entry, "disabledMcpServers", "srv", True)
+    assert entry == {"disabledMcpServers": ["srv"]}
+
+
+def test_toggle_membership_add_is_idempotent():
+    entry = {"disabledMcpServers": ["srv"]}
+    axt._toggle_membership(entry, "disabledMcpServers", "srv", True)
+    assert entry == {"disabledMcpServers": ["srv"]}
+
+
+def test_toggle_membership_remove_prunes_empty_key():
+    entry = {"disabledMcpServers": ["srv"]}
+    axt._toggle_membership(entry, "disabledMcpServers", "srv", False)
+    assert "disabledMcpServers" not in entry
+
+
+def test_toggle_membership_remove_keeps_others():
+    entry = {"disabledMcpServers": ["a", "b"]}
+    axt._toggle_membership(entry, "disabledMcpServers", "a", False)
+    assert entry == {"disabledMcpServers": ["b"]}
+
+
+def test_toggle_membership_non_list_current_resets():
+    entry = {"disabledMcpServers": "garbage"}
+    axt._toggle_membership(entry, "disabledMcpServers", "srv", True)
+    assert entry == {"disabledMcpServers": ["srv"]}
