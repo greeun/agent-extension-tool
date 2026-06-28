@@ -236,20 +236,48 @@ def write_json_atomic(
 #   }
 
 
+def read_json_dict(path: os.PathLike[str] | str) -> dict[str, Any]:
+    """Read a JSON-object file, returning {} when missing or not a JSON object.
+
+    Defensive: a non-object JSON value here is corruption. Treat as empty
+    rather than crash; callers will overwrite on next write.
+    """
+    data = read_json(path, fallback={})
+    return data if isinstance(data, dict) else {}
+
+
 def _read_settings(settings_path: os.PathLike[str] | str) -> dict[str, Any]:
     """Read a settings.json file, returning {} when missing or malformed-empty."""
-    data = read_json(settings_path, fallback={})
-    if not isinstance(data, dict):
-        # Defensive: a non-object JSON value here is corruption. Treat as
-        # empty rather than crash; callers will overwrite on next write.
+    return read_json_dict(settings_path)
+
+
+def _read_settings_flag_map(
+    settings_path: os.PathLike[str] | str, key: str
+) -> dict[str, bool]:
+    """Read a `{ id: bool }` bucket from settings, coercing values to bool."""
+    bucket = _read_settings(settings_path).get(key)
+    if not isinstance(bucket, dict):
         return {}
-    return data
+    return {k: bool(v) for k, v in bucket.items()}
+
+
+def _set_settings_flag(
+    settings_path: os.PathLike[str] | str, key: str, item_id: str, present: bool
+) -> None:
+    """Set (present=True) or remove (present=False) `item_id` in a flag bucket."""
+    settings = _read_settings(settings_path)
+    bucket = settings.get(key)
+    if not isinstance(bucket, dict):
+        bucket = settings[key] = {}
+    if present:
+        bucket[item_id] = True
+    else:
+        bucket.pop(item_id, None)
+    write_json_atomic(settings_path, settings)
 
 
 def read_enabled_plugins(settings_path: os.PathLike[str] | str) -> dict[str, bool]:
-    settings = _read_settings(settings_path)
-    enabled = settings.get("enabledPlugins") or {}
-    return {k: bool(v) for k, v in enabled.items()}
+    return _read_settings_flag_map(settings_path, "enabledPlugins")
 
 
 def set_plugin_enabled(
@@ -274,9 +302,7 @@ def remove_plugin_from_settings(
 
 
 def read_favorite_plugins(settings_path: os.PathLike[str] | str) -> dict[str, bool]:
-    settings = _read_settings(settings_path)
-    favorites = settings.get("favoritePlugins") or {}
-    return {k: bool(v) for k, v in favorites.items()}
+    return _read_settings_flag_map(settings_path, "favoritePlugins")
 
 
 def set_plugin_favorite(
@@ -284,19 +310,11 @@ def set_plugin_favorite(
     plugin_id: str,
     favorite: bool,
 ) -> None:
-    settings = _read_settings(settings_path)
-    favorites = settings.setdefault("favoritePlugins", {})
-    if favorite:
-        favorites[plugin_id] = True
-    else:
-        favorites.pop(plugin_id, None)
-    write_json_atomic(settings_path, settings)
+    _set_settings_flag(settings_path, "favoritePlugins", plugin_id, favorite)
 
 
 def read_marked_for_update(settings_path: os.PathLike[str] | str) -> dict[str, bool]:
-    settings = _read_settings(settings_path)
-    marked = settings.get("markedForUpdate") or {}
-    return {k: bool(v) for k, v in marked.items()}
+    return _read_settings_flag_map(settings_path, "markedForUpdate")
 
 
 def set_marked_for_update(
@@ -304,13 +322,7 @@ def set_marked_for_update(
     plugin_id: str,
     marked: bool,
 ) -> None:
-    settings = _read_settings(settings_path)
-    bucket = settings.setdefault("markedForUpdate", {})
-    if marked:
-        bucket[plugin_id] = True
-    else:
-        bucket.pop(plugin_id, None)
-    write_json_atomic(settings_path, settings)
+    _set_settings_flag(settings_path, "markedForUpdate", plugin_id, marked)
 
 
 def read_extra_marketplaces(
@@ -820,11 +832,7 @@ def list_all_skills(*, project_dir: Optional[os.PathLike[str] | str] = None) -> 
     # `.agents` next to the project, defaulting to cwd when project_dir missing.
     out += _scan_skills_dir(Path(project_dir or os.getcwd()) / ".agents", "project")
 
-    plugins = list_installed_plugins(PATHS.installed_plugins)
-    enabled = read_enabled_plugins(PATHS.settings)
-    for p in plugins:
-        if not enabled.get(p.id):
-            continue
+    for p in _active_plugins():
         out += _scan_skills_dir(Path(p.install_path) / "skills", "plugin", p.name)
     return out
 
@@ -949,11 +957,7 @@ def list_commands(*, project_dir: Optional[os.PathLike[str] | str] = None) -> li
     out += _scan_md_dir(PATHS.claude_dir / "commands", "user", factory=_make_command)
     if project_dir:
         out += _scan_md_dir(Path(project_dir) / ".claude" / "commands", "project", factory=_make_command)
-    plugins = list_installed_plugins(PATHS.installed_plugins)
-    enabled = read_enabled_plugins(PATHS.settings)
-    for p in plugins:
-        if not enabled.get(p.id):
-            continue
+    for p in _active_plugins():
         out += _scan_md_dir(Path(p.install_path) / "commands", "plugin", p.name, factory=_make_command)
     return out
 
@@ -983,11 +987,7 @@ def list_all_agents(*, project_dir: Optional[os.PathLike[str] | str] = None) -> 
     if project_dir:
         out += _scan_md_dir(Path(project_dir) / ".claude" / "agents", "project", factory=_make_agent)
     out += _scan_md_dir(Path(project_dir or os.getcwd()) / ".agents", "project", factory=_make_agent)
-    plugins = list_installed_plugins(PATHS.installed_plugins)
-    enabled = read_enabled_plugins(PATHS.settings)
-    for p in plugins:
-        if not enabled.get(p.id):
-            continue
+    for p in _active_plugins():
         out += _scan_md_dir(Path(p.install_path) / "agents", "plugin", p.name, factory=_make_agent)
     return out
 
@@ -2253,8 +2253,7 @@ def _iso_now() -> str:
 
 
 def _read_known(km_path: os.PathLike[str] | str) -> dict[str, Any]:
-    data = read_json(km_path, fallback={})
-    return data if isinstance(data, dict) else {}
+    return read_json_dict(km_path)
 
 
 def list_marketplaces(km_path: os.PathLike[str] | str) -> list[MarketplaceInfo]:
