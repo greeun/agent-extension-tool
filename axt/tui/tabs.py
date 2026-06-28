@@ -192,6 +192,13 @@ def _invalidate_context(state: TuiState) -> None:
     state.context_analysis = None
 
 
+def _refresh_ext(state: TuiState, sub: str) -> None:
+    """Drop the cached listing for `sub` and mark context analysis stale — the
+    standard pair after any extension mutation in the Extensions tab."""
+    state.ext_cache.pop(sub, None)
+    _invalidate_context(state)
+
+
 def _vault_load(state: TuiState) -> None:
     """Refresh vault items from disk into state. Cheap — just reads metadata."""
     plugins = list_installed_plugins(PATHS.installed_plugins)
@@ -2636,6 +2643,15 @@ def _open_terminal_for_dir(state: TuiState, directory: Optional[str]) -> Optiona
     return info if ok else f"Terminal open failed: {info}"
 
 
+# Plugins sub-tab enable/disable: key → (enable?, settings scope).
+_PLUGIN_TOGGLES = {
+    ord("e"): (True, "global"),
+    ord("d"): (False, "global"),
+    ord("E"): (True, "project"),
+    ord("D"): (False, "project"),
+}
+
+
 def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
     """Sub-tab-specific actions (l/u/a/s/r/p/e/x/o). Returns status message."""
     # Note: stdscr-bound actions (confirm_modal, text_input_modal,
@@ -2658,38 +2674,15 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
         plugin = _selected_item(state, "plugins")
         if plugin is None:
             return None
-        if key == ord("e"):
+        if key in _PLUGIN_TOGGLES:
+            want_enabled, scope = _PLUGIN_TOGGLES[key]
+            path = PATHS.settings if scope == "global" else project_settings_path()
             try:
-                set_plugin_enabled(PATHS.settings, plugin.id, True)
-                state.ext_cache.pop("plugins", None)
-                _invalidate_context(state)
-                return f"Enabled {plugin.id} (global)"
+                set_plugin_enabled(path, plugin.id, want_enabled)
             except OSError as exc:
-                return f"Enable failed: {exc}"
-        if key == ord("d"):
-            try:
-                set_plugin_enabled(PATHS.settings, plugin.id, False)
-                state.ext_cache.pop("plugins", None)
-                _invalidate_context(state)
-                return f"Disabled {plugin.id} (global)"
-            except OSError as exc:
-                return f"Disable failed: {exc}"
-        if key == ord("E"):
-            try:
-                set_plugin_enabled(project_settings_path(), plugin.id, True)
-                state.ext_cache.pop("plugins", None)
-                _invalidate_context(state)
-                return f"Enabled {plugin.id} (project)"
-            except OSError as exc:
-                return f"Enable failed: {exc}"
-        if key == ord("D"):
-            try:
-                set_plugin_enabled(project_settings_path(), plugin.id, False)
-                state.ext_cache.pop("plugins", None)
-                _invalidate_context(state)
-                return f"Disabled {plugin.id} (project)"
-            except OSError as exc:
-                return f"Disable failed: {exc}"
+                return f"{'Enable' if want_enabled else 'Disable'} failed: {exc}"
+            _refresh_ext(state, "plugins")
+            return f"{'Enabled' if want_enabled else 'Disabled'} {plugin.id} ({scope})"
         if key == ord("x") and stdscr:
             if confirm_modal(stdscr, f"Uninstall plugin {plugin.id}?\nThis removes {plugin.install_path}."):
                 import shutil
@@ -2697,8 +2690,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                     shutil.rmtree(plugin.install_path, ignore_errors=True)
                     remove_installed_plugin(PATHS.installed_plugins, plugin.id)
                     remove_plugin_from_settings(PATHS.settings, plugin.id)
-                    state.ext_cache.pop("plugins", None)
-                    _invalidate_context(state)
+                    _refresh_ext(state, "plugins")
                     return f"Uninstalled {plugin.id}"
                 except OSError as exc:
                     return f"Uninstall failed: {exc}"
@@ -2717,8 +2709,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                 set_mcp_disabled(server.name, disabled=want_disabled)
             except OSError as exc:
                 return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
-            state.ext_cache.pop("mcp", None)
-            _invalidate_context(state)
+            _refresh_ext(state, "mcp")
             return f"{'Disabled' if want_disabled else 'Enabled'} MCP {server.name} (project)"
 
     # ── Skills: l=link new path, u=unlink selected (confirmed) ─────────────
@@ -2734,8 +2725,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                 return None
             try:
                 link_skill(PATHS.skills, target.strip())
-                state.ext_cache.pop("skills", None)
-                _invalidate_context(state)
+                _refresh_ext(state, "skills")
                 return f"Linked {target}"
             except (OSError, ValueError) as exc:
                 return f"Link failed: {exc}"
@@ -2748,8 +2738,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
             if confirm_modal(stdscr, f"Unlink skill {skill.name}?", title="Confirm unlink"):
                 try:
                     unlink_skill(PATHS.skills, skill.name)
-                    state.ext_cache.pop("skills", None)
-                    _invalidate_context(state)
+                    _refresh_ext(state, "skills")
                     return f"Unlinked {skill.name}"
                 except (OSError, ValueError) as exc:
                     return f"Unlink failed: {exc}"
@@ -2825,8 +2814,7 @@ def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
                 return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
             if not moved:
                 return "Hook not found in its settings file"
-            state.ext_cache.pop("hooks", None)
-            _invalidate_context(state)
+            _refresh_ext(state, "hooks")
             return f"{'Disabled' if want_disabled else 'Enabled'} hook {hook.event} ({hook.source})"
         if key == ord("p") and stdscr:
             try:
