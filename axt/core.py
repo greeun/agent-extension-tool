@@ -615,6 +615,42 @@ def _enabled_mcp_names(project_entry: dict[str, Any]) -> set[str]:
     return {str(x) for x in raw} if isinstance(raw, list) else set()
 
 
+def _project_entry(
+    config: dict[str, Any], proj: str, *, create: bool = False
+) -> dict[str, Any]:
+    """Navigate `config["projects"][proj]`. Returns {} when missing (read), or a
+    freshly inserted dict when `create=True`."""
+    projects = config.get("projects")
+    if not isinstance(projects, dict):
+        if not create:
+            return {}
+        projects = config["projects"] = {}
+    entry = projects.get(proj)
+    if not isinstance(entry, dict):
+        if not create:
+            return {}
+        entry = projects[proj] = {}
+    return entry
+
+
+def _toggle_membership(
+    entry: dict[str, Any], key: str, name: str, present: bool
+) -> None:
+    """Add (present=True) or remove (present=False) `name` in the list at
+    `entry[key]`, pruning the key once the list is empty."""
+    current = entry.get(key)
+    names = [str(x) for x in current] if isinstance(current, list) else []
+    if present:
+        if name not in names:
+            names.append(name)
+    else:
+        names = [n for n in names if n != name]
+    if names:
+        entry[key] = names
+    else:
+        entry.pop(key, None)
+
+
 def collect_mcp_servers(
     installed_plugins: list[dict[str, str]] | list[PluginInfo],
     *,
@@ -642,16 +678,8 @@ def collect_mcp_servers(
 
     servers: list[McpServerInfo] = list(list_mcp_servers(installed_plugins))
 
-    config = read_json(cfg_path, fallback={})
-    if not isinstance(config, dict):
-        config = {}
-
-    project_entry: dict[str, Any] = {}
-    projects = config.get("projects")
-    if isinstance(projects, dict):
-        entry = projects.get(str(proj))
-        if isinstance(entry, dict):
-            project_entry = entry
+    config = read_json_dict(cfg_path)
+    project_entry = _project_entry(config, str(proj))
     disabled = _disabled_mcp_names(project_entry)
     enabled = _enabled_mcp_names(project_entry)
 
@@ -722,17 +750,8 @@ def set_mcp_disabled(
     cfg_path = Path(claude_config_path) if claude_config_path is not None else PATHS.claude_config
     proj = str(Path(project_dir) if project_dir is not None else Path.cwd())
 
-    config = read_json(cfg_path, fallback={})
-    if not isinstance(config, dict):
-        config = {}
-    projects = config.get("projects")
-    if not isinstance(projects, dict):
-        projects = {}
-        config["projects"] = projects
-    entry = projects.get(proj)
-    if not isinstance(entry, dict):
-        entry = {}
-        projects[proj] = entry
+    config = read_json_dict(cfg_path)
+    entry = _project_entry(config, proj, create=True)
 
     # Built-in servers are opt-in: presence in `enabledMcpServers` == enabled, so
     # the name is added when enabling and removed when disabling (inverted list).
@@ -741,18 +760,7 @@ def set_mcp_disabled(
     else:
         key, present = "disabledMcpServers", disabled
 
-    current = entry.get(key)
-    names = [str(x) for x in current] if isinstance(current, list) else []
-    if present:
-        if name not in names:
-            names.append(name)
-    else:
-        names = [n for n in names if n != name]
-
-    if names:
-        entry[key] = names
-    else:
-        entry.pop(key, None)
+    _toggle_membership(entry, key, name, present)
     write_json_atomic(cfg_path, config)
 
 
@@ -1958,6 +1966,21 @@ def _list_project_non_vault_items(
     )
 
 
+def _move_path(src: Path, dest: Path, *, is_dir: bool) -> None:
+    """Move `src`→`dest` via os.rename, falling back to copy+remove when rename
+    fails (e.g. across devices)."""
+    try:
+        os.rename(src, dest)
+    except OSError:
+        import shutil
+        if is_dir:
+            shutil.copytree(src, dest)
+            shutil.rmtree(src)
+        else:
+            shutil.copy2(src, dest)
+            src.unlink()
+
+
 def import_to_vault(
     global_dir: os.PathLike[str] | str,
     vault_dir: os.PathLike[str] | str,
@@ -1985,17 +2008,7 @@ def import_to_vault(
         os.symlink(resolved, dest_path)
         return
 
-    # Atomic-ish move; fall back to copy + remove (e.g. cross-device).
-    try:
-        os.rename(src_path, dest_path)
-    except OSError:
-        import shutil
-        if item.type == "skill":
-            shutil.copytree(src_path, dest_path)
-            shutil.rmtree(src_path)
-        else:
-            shutil.copy2(src_path, dest_path)
-            src_path.unlink()
+    _move_path(src_path, dest_path, is_dir=(item.type == "skill"))
     # Leave a symlink behind so Claude Code keeps finding it.
     os.symlink(dest_path, src_path)
 
@@ -2010,7 +2023,7 @@ def migrate_to_vault(
     errors: list[str] = []
     gd = Path(global_dir)
     vd = Path(vault_dir)
-    for sub in ("skills", "commands", "agents"):
+    for sub, _item_type in LINKABLE_TYPES:
         (vd / sub).mkdir(parents=True, exist_ok=True)
 
     for sub, item_type in LINKABLE_TYPES:
@@ -2024,22 +2037,10 @@ def migrate_to_vault(
                 continue
             try:
                 if entry.is_symlink():
-                    resolved = entry.resolve()
-                    os.symlink(resolved, dest)
-                    moved.append(f"{item_type}:{entry.name}")
+                    os.symlink(entry.resolve(), dest)
                 else:
-                    try:
-                        os.rename(entry, dest)
-                        moved.append(f"{item_type}:{entry.name}")
-                    except OSError:
-                        import shutil
-                        if is_dir:
-                            shutil.copytree(entry, dest)
-                            shutil.rmtree(entry)
-                        else:
-                            shutil.copy2(entry, dest)
-                            entry.unlink()
-                        moved.append(f"{item_type}:{entry.name}")
+                    _move_path(entry, dest, is_dir=is_dir)
+                moved.append(f"{item_type}:{entry.name}")
             except OSError as e:
                 errors.append(f"{item_type}:{entry.name}: {e}")
 
