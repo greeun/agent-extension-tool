@@ -2230,6 +2230,18 @@ def _blur_ext_detail(state: TuiState) -> None:
     state.ext_detail_scroll = 0
 
 
+# Sub-tab → detail-panel field builder. `plugins` is special-cased in
+# render_extensions_tab because its builder needs the enabled-state closures.
+_SUBTAB_DETAIL_FIELD_FNS = {
+    "mcp": _mcp_detail_fields,
+    "hooks": _hook_detail_fields,
+    "agents": _agent_detail_fields,
+    "skills": _skill_detail_fields,
+    "commands": _command_detail_fields,
+    "market": _market_detail_fields,
+}
+
+
 def _render_list_with_detail(stdscr, state, y0, h, w, key, columns, rows, items, field_fn):
     """Selectable list with a read-only detail panel pinned to the bottom.
 
@@ -2405,22 +2417,10 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     cols = _mark_sorted_column(state, sub, cols)
 
     if sub == "plugins":
-        _render_list_with_detail(
-            stdscr, state, sub_y, sub_h, w, sub, cols, rows, data,
-            lambda p: _plugin_detail_fields(p, enabled_g, enabled_p),
-        )
-    elif sub == "mcp":
-        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _mcp_detail_fields)
-    elif sub == "hooks":
-        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _hook_detail_fields)
-    elif sub == "agents":
-        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _agent_detail_fields)
-    elif sub == "skills":
-        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _skill_detail_fields)
-    elif sub == "commands":
-        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _command_detail_fields)
-    elif sub == "market":
-        _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, _market_detail_fields)
+        field_fn = lambda p: _plugin_detail_fields(p, enabled_g, enabled_p)  # noqa: E731
+    else:
+        field_fn = _SUBTAB_DETAIL_FIELD_FNS[sub]
+    _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, field_fn)
 
 
 def _cycle_sub_tab(state: TuiState, tab_key: str, direction: int) -> None:
