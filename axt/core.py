@@ -1240,6 +1240,63 @@ def _hook_dict_matches(hook_dict: dict[str, Any], ident: dict[str, Any]) -> bool
     return True
 
 
+def _remove_hook_from_map(
+    src_map: dict[str, Any], hook: HookInfo, ident: dict[str, Any]
+) -> Optional[dict[str, Any]]:
+    """Pop the inner hook matching `ident` from `src_map[event]`, pruning the
+    enclosing rule (and the event) once empty. Returns the removed hook dict, or
+    None when nothing matched."""
+    rules = src_map.get(hook.event)
+    if not isinstance(rules, list):
+        return None
+    moved: Optional[dict[str, Any]] = None
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        if (rule.get("matcher") or "*") != hook.matcher:
+            continue
+        hooks_list = rule.get("hooks")
+        if not isinstance(hooks_list, list):
+            continue
+        for i, hook_dict in enumerate(hooks_list):
+            if isinstance(hook_dict, dict) and _hook_dict_matches(hook_dict, ident):
+                moved = hooks_list.pop(i)
+                break
+        if moved is not None:
+            if not hooks_list:
+                rules.remove(rule)
+            break
+    if moved is None:
+        return None
+    if not rules:
+        src_map.pop(hook.event, None)
+    return moved
+
+
+def _insert_hook_into_map(
+    dst_map: dict[str, Any], hook: HookInfo, moved: dict[str, Any]
+) -> None:
+    """Append `moved` to `dst_map[event]`, merging into a same-matcher rule when
+    one exists so duplicate matcher blocks don't accumulate."""
+    dst_rules = dst_map.get(hook.event)
+    if not isinstance(dst_rules, list):
+        dst_rules = []
+        dst_map[hook.event] = dst_rules
+    target_rule = None
+    for rule in dst_rules:
+        if (
+            isinstance(rule, dict)
+            and (rule.get("matcher") or "*") == hook.matcher
+            and isinstance(rule.get("hooks"), list)
+        ):
+            target_rule = rule
+            break
+    if target_rule is None:
+        target_rule = {"matcher": hook.matcher, "hooks": []}
+        dst_rules.append(target_rule)
+    target_rule["hooks"].append(moved)
+
+
 def set_hook_disabled(
     settings_path: os.PathLike[str] | str,
     hook: HookInfo,
@@ -1271,60 +1328,18 @@ def set_hook_disabled(
     src_map = settings.get(src_key)
     if not isinstance(src_map, dict):
         return False
-    rules = src_map.get(hook.event)
-    if not isinstance(rules, list):
-        return False
 
-    ident = _hook_identity(hook)
-    moved: Optional[dict[str, Any]] = None
-    for rule in rules:
-        if not isinstance(rule, dict):
-            continue
-        if (rule.get("matcher") or "*") != hook.matcher:
-            continue
-        hooks_list = rule.get("hooks")
-        if not isinstance(hooks_list, list):
-            continue
-        for i, hook_dict in enumerate(hooks_list):
-            if isinstance(hook_dict, dict) and _hook_dict_matches(hook_dict, ident):
-                moved = hooks_list.pop(i)
-                break
-        if moved is not None:
-            if not hooks_list:
-                rules.remove(rule)
-            break
+    moved = _remove_hook_from_map(src_map, hook, _hook_identity(hook))
     if moved is None:
         return False
-
-    # Prune the now-empty source containers.
-    if not rules:
-        src_map.pop(hook.event, None)
-    if not src_map:
+    if not src_map:  # prune the now-empty source container
         settings.pop(src_key, None)
 
-    # Insert into the destination, merging into a same-matcher rule when one
-    # already exists so we don't grow duplicate matcher blocks.
     dst_map = settings.get(dst_key)
     if not isinstance(dst_map, dict):
         dst_map = {}
         settings[dst_key] = dst_map
-    dst_rules = dst_map.get(hook.event)
-    if not isinstance(dst_rules, list):
-        dst_rules = []
-        dst_map[hook.event] = dst_rules
-    target_rule = None
-    for rule in dst_rules:
-        if (
-            isinstance(rule, dict)
-            and (rule.get("matcher") or "*") == hook.matcher
-            and isinstance(rule.get("hooks"), list)
-        ):
-            target_rule = rule
-            break
-    if target_rule is None:
-        target_rule = {"matcher": hook.matcher, "hooks": []}
-        dst_rules.append(target_rule)
-    target_rule["hooks"].append(moved)
+    _insert_hook_into_map(dst_map, hook, moved)
 
     write_json_atomic(settings_path, settings)
     return True
@@ -3872,6 +3887,31 @@ def _scope_of_source(source: str) -> str:
     return "project" if source in ("project", "project-file", "local") else "global"
 
 
+def _collect_listed(
+    sources: list[ContextSource],
+    list_fn: Callable[[], Sequence[Any]],
+    category: str,
+    *,
+    text_fn: Callable[[Any], str],
+    path_fn: Callable[[Any], str],
+    actionable: bool,
+    scope_fn: Optional[Callable[[Any], str]] = None,
+) -> None:
+    """Append one ContextSource per item from `list_fn()` (OSError → skip).
+
+    Collapses the structurally identical "list items → one `- name: desc` line
+    each" blocks (mcp-tools / commands / agents) in collect_context_sources."""
+    try:
+        for x in list_fn():
+            sources.append(_make_src(
+                x.name, category, path_fn(x), text_fn(x),
+                actionable=actionable,
+                scope=scope_fn(x) if scope_fn else "global",
+            ))
+    except OSError:
+        pass
+
+
 def get_claude_version() -> str:
     try:
         proc = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=3)
@@ -4035,13 +4075,14 @@ def collect_context_sources(
         pass
 
     # 6. mcp-tools
-    try:
-        plugins = list_installed_plugins(installed_plugins_path)
-        for server in list_mcp_servers(plugins):
-            text = f"- {server.name} ({server.plugin_id})"
-            sources.append(_make_src(server.name, "mcp-tools", "", text, actionable=False))
-    except OSError:
-        pass
+    _collect_listed(
+        sources,
+        lambda: list_mcp_servers(list_installed_plugins(installed_plugins_path)),
+        "mcp-tools",
+        text_fn=lambda s: f"- {s.name} ({s.plugin_id})",
+        path_fn=lambda s: "",
+        actionable=False,
+    )
 
     # 7. plugins
     try:
@@ -4072,22 +4113,26 @@ def collect_context_sources(
         pass
 
     # 9. commands
-    try:
-        for cmd in list_commands(project_dir=proj):
-            text = f"- {cmd.name}: {cmd.description}"
-            sources.append(_make_src(cmd.name, "commands", cmd.source_path, text, actionable=True,
-                                     scope=_scope_of_source(cmd.source)))
-    except OSError:
-        pass
+    _collect_listed(
+        sources,
+        lambda: list_commands(project_dir=proj),
+        "commands",
+        text_fn=lambda c: f"- {c.name}: {c.description}",
+        path_fn=lambda c: c.source_path,
+        actionable=True,
+        scope_fn=lambda c: _scope_of_source(c.source),
+    )
 
     # 10. agents
-    try:
-        for agent in list_all_agents(project_dir=proj):
-            text = f"- {agent.name}: {agent.description}"
-            sources.append(_make_src(agent.name, "agents", agent.source_path, text, actionable=True,
-                                     scope=_scope_of_source(agent.source)))
-    except OSError:
-        pass
+    _collect_listed(
+        sources,
+        lambda: list_all_agents(project_dir=proj),
+        "agents",
+        text_fn=lambda a: f"- {a.name}: {a.description}",
+        path_fn=lambda a: a.source_path,
+        actionable=True,
+        scope_fn=lambda a: _scope_of_source(a.source),
+    )
 
     # 11. git-status (fixed 150 tokens)
     git = get_git_status(proj)
