@@ -739,6 +739,45 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     )
 
 
+def _handle_vault_detail_keys(state: TuiState, key: int) -> Optional[str]:
+    """Detail-panel focus mode: j/k (±1) and PgDn/PgUp (±10) scroll; Esc blurs."""
+    if key == KEY_ESC:
+        state.vault_detail_focused = False
+        state.vault_detail_scroll = 0
+        return None
+    if key in (ord("j"), curses.KEY_DOWN):
+        state.vault_detail_scroll += 1
+    elif key in (ord("k"), curses.KEY_UP):
+        state.vault_detail_scroll = max(0, state.vault_detail_scroll - 1)
+    elif key == curses.KEY_NPAGE:
+        state.vault_detail_scroll += 10
+    elif key == curses.KEY_PPAGE:
+        state.vault_detail_scroll = max(0, state.vault_detail_scroll - 10)
+    return None
+
+
+def _handle_vault_search_keys(state: TuiState, key: int) -> Optional[str]:
+    """Search-input mode: Esc clears, Enter applies, Bksp deletes, ASCII appends."""
+    if key == KEY_ESC:
+        state.vault_searching = False
+        state.vault_search = ""
+        state.vault_selected = 0
+        return "Search cleared"
+    if is_enter(key):
+        state.vault_searching = False
+        state.vault_selected = 0
+        return f"Searching {state.vault_search!r}" if state.vault_search else None
+    if key in (curses.KEY_BACKSPACE, KEY_BACKSPACE, 8):
+        state.vault_search = state.vault_search[:-1]
+        state.vault_selected = 0
+        return None
+    if 32 <= key < 127:  # printable ASCII
+        state.vault_search += chr(key)
+        state.vault_selected = 0
+        return None
+    return None
+
+
 def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
     """Vault tab key handler. Returns a status message or None."""
     # ── Tab: list ↔ detail focus toggle. Skipped during `/`-search input so
@@ -757,40 +796,11 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
 
     # ── Detail-panel focus mode: j/k scroll the panel; Esc blurs back to list.
     if state.vault_detail_focused:
-        if key == KEY_ESC:
-            state.vault_detail_focused = False
-            state.vault_detail_scroll = 0
-            return None
-        if key in (ord("j"), curses.KEY_DOWN):
-            state.vault_detail_scroll += 1
-        elif key in (ord("k"), curses.KEY_UP):
-            state.vault_detail_scroll = max(0, state.vault_detail_scroll - 1)
-        elif key == curses.KEY_NPAGE:
-            state.vault_detail_scroll += 10
-        elif key == curses.KEY_PPAGE:
-            state.vault_detail_scroll = max(0, state.vault_detail_scroll - 10)
-        return None
+        return _handle_vault_detail_keys(state, key)
 
     # ── Search-input mode: capture characters, respond only to Enter/Esc/Bksp.
     if state.vault_searching:
-        if key in (KEY_ESC, ):
-            state.vault_searching = False
-            state.vault_search = ""
-            state.vault_selected = 0
-            return "Search cleared"
-        if is_enter(key):
-            state.vault_searching = False
-            state.vault_selected = 0
-            return f"Searching {state.vault_search!r}" if state.vault_search else None
-        if key in (curses.KEY_BACKSPACE, KEY_BACKSPACE, 8):
-            state.vault_search = state.vault_search[:-1]
-            state.vault_selected = 0
-            return None
-        if 32 <= key < 127:  # printable ASCII
-            state.vault_search += chr(key)
-            state.vault_selected = 0
-            return None
-        return None
+        return _handle_vault_search_keys(state, key)
 
     filtered = _vault_filtered(state)
     n = len(filtered)
