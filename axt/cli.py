@@ -150,13 +150,25 @@ def cli_context(args) -> int:
 
 # market
 
+def _print_list_header(header: str, width: int) -> None:
+    """Bold column header followed by a horizontal rule — the opening of every
+    `axt … list` table."""
+    print(_bold(header))
+    print("─" * width)
+
+
+def _print_count_footer(n: int, noun: str, suffix: str = "") -> None:
+    """Blank line then a `<n> <noun>(s)<suffix>` count — the closing of every
+    `axt … list` table."""
+    print(f"\n {n} {noun}(s){suffix}")
+
+
 def cli_market_list(args) -> int:
     items = list_marketplaces(PATHS.known_marketplaces)
     if not items:
         print("No marketplaces registered.")
         return 0
-    print(_bold(f"{'Name'.ljust(28)} {'Current'.ljust(10)} {'Latest'.ljust(10)} {'Source'.ljust(28)} Updated"))
-    print("─" * 90)
+    _print_list_header(f"{'Name'.ljust(28)} {'Current'.ljust(10)} {'Latest'.ljust(10)} {'Source'.ljust(28)} Updated", 90)
     pooled = pooled_map(items, lambda m: get_marketplace_version(PATHS.known_marketplaces, m.name))
     versions = pooled.results
     for m in items:
@@ -177,7 +189,7 @@ def cli_market_list(args) -> int:
         print(_red(f"\n {len(pooled.errors)} error(s):"))
         for err in pooled.errors:
             print(_red(f"  ✗ {err.item.name}: {err.error}"))
-    print(f"\n {len(items)} marketplace(s)")
+    _print_count_footer(len(items), "marketplace")
     return 0
 
 
@@ -240,12 +252,11 @@ def cli_mcp_list(args) -> int:
     if not servers:
         print("No MCP servers found.")
         return 0
-    print(_bold(f" {'Server'.ljust(24)} {'Scope'.ljust(13)} {'Transport'.ljust(10)} Detail"))
-    print("─" * 78)
+    _print_list_header(f" {'Server'.ljust(24)} {'Scope'.ljust(13)} {'Transport'.ljust(10)} Detail", 78)
     for s in servers:
         flag = _red(" [disabled]") if s.disabled else ""
         print(f" {s.name.ljust(24)} {s.scope.ljust(13)} {s.transport.ljust(10)} {_mcp_detail(s)}{flag}")
-    print(f"\n {len(servers)} MCP server(s)")
+    _print_count_footer(len(servers), "MCP server")
     return 0
 
 
@@ -299,12 +310,11 @@ def cli_hook_list(args) -> int:
     if not hooks:
         print("No hooks found.")
         return 0
-    print(_bold(f" {'#'.ljust(3)} {'Event'.ljust(20)} {'Matcher'.ljust(12)} {'Type'.ljust(9)} {'Source'.ljust(8)} Detail"))
-    print("─" * 78)
+    _print_list_header(f" {'#'.ljust(3)} {'Event'.ljust(20)} {'Matcher'.ljust(12)} {'Type'.ljust(9)} {'Source'.ljust(8)} Detail", 78)
     for i, h in enumerate(hooks):
         flag = _red(" [off]") if h.disabled else ""
         print(f" {str(i).ljust(3)} {h.event.ljust(20)} {(h.matcher or '*').ljust(12)} {h.type.ljust(9)} {h.source.ljust(8)} {get_hook_detail(h)[:40]}{flag}")
-    print(f"\n {len(hooks)} hook(s)")
+    _print_count_footer(len(hooks), "hook")
     print(_dim(" Toggle by index from this list: axt hook disable <#> / axt hook enable <#>"))
     return 0
 
@@ -430,8 +440,7 @@ def cli_plugin_list(args) -> int:
     if not plugins:
         print("No plugins installed.")
         return 0
-    print(_bold(f" {'Plugin'.ljust(30)} {'Version'.ljust(10)} {'G/P'.ljust(7)} Marketplace"))
-    print("─" * 75)
+    _print_list_header(f" {'Plugin'.ljust(30)} {'Version'.ljust(10)} {'G/P'.ljust(7)} Marketplace", 75)
     active = 0
     for p in plugins:
         gv = enabled_g.get(p.id)
@@ -586,13 +595,12 @@ def cli_skill_list(args) -> int:
     if not skills:
         print("No standalone skills found.")
         return 0
-    print(_bold(f" {'Name'.ljust(30)} {'Type'.ljust(10)} Path"))
-    print("─" * 70)
+    _print_list_header(f" {'Name'.ljust(30)} {'Type'.ljust(10)} Path", 70)
     for s in skills:
         type_str = _cyan("symlink") if s.is_symlink else _dim("dir")
         path_str = f"→ {s.target}" if s.is_symlink else s.path
         print(f" {s.name.ljust(30)} {type_str.ljust(19)} {path_str}")
-    print(f"\n {len(skills)} skill(s)")
+    _print_count_footer(len(skills), "skill")
     return 0
 
 
@@ -804,11 +812,10 @@ def cli_vault_list(args) -> int:
     if not items:
         print("Vault is empty. Run `axt vault migrate` to move global extensions to vault.")
         return 0
-    print(_bold(f"{'Name'.ljust(30)} {'Type'.ljust(10)}"))
-    print("─" * 42)
+    _print_list_header(f"{'Name'.ljust(30)} {'Type'.ljust(10)}", 42)
     for item in items:
         print(f"{item.name.ljust(30)} {_cyan(item.type.ljust(10))}")
-    print(f"\n {len(items)} extension(s) in vault")
+    _print_count_footer(len(items), "extension", suffix=" in vault")
     return 0
 
 
