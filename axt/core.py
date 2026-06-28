@@ -1676,52 +1676,62 @@ def _type_to_dir(item_type: str) -> str:
     return _TYPE_TO_DIR[item_type]
 
 
-def _scan_vault_dir(vault_dir: Path, sub: str, item_type: str) -> list[VaultItem]:
-    d = vault_dir / sub
-    if not d.exists() or not d.is_dir():
+# Canonical (subdir, item_type) pairs for the linkable extension kinds. Derived
+# from _TYPE_TO_DIR so the ordering and membership stay in one place; iterate
+# this instead of hand-writing the 3-tuple (which previously drifted between
+# (sub, type) and (type, sub) orderings across the file).
+LINKABLE_TYPES: tuple[tuple[str, str], ...] = tuple(
+    (sub, item_type) for item_type, sub in _TYPE_TO_DIR.items()
+)
+
+
+def _iter_item_entries(dir_path: Path) -> list[Path]:
+    """Sorted, dotfile-free entries of `dir_path`, or [] if missing/unreadable."""
+    if not dir_path.exists() or not dir_path.is_dir():
         return []
-    out: list[VaultItem] = []
     try:
-        entries = sorted(d.iterdir(), key=lambda p: p.name)
+        entries = sorted(dir_path.iterdir(), key=lambda p: p.name)
     except OSError:
         return []
-    for entry in entries:
-        if entry.name.startswith("."):
+    return [e for e in entries if not e.name.startswith(".")]
+
+
+def _entry_is_item(entry: Path, item_type: str) -> bool:
+    """Whether `entry` is a valid item of `item_type` (skill=dir, else .md file)."""
+    if item_type == "skill":
+        return entry.is_dir()
+    return entry.is_file() and entry.suffix == ".md"
+
+
+def _make_vault_item(entry: Path, item_type: str, **flags: Any) -> VaultItem:
+    """Build a VaultItem from a filesystem entry; `flags` override state fields."""
+    created, updated = _stat_times(entry)
+    return VaultItem(
+        name=entry.name,
+        type=item_type,
+        path=str(entry),
+        description=_read_description_for_item(entry, item_type),
+        created_at=created,
+        updated_at=updated,
+        version=_read_version_for_item(entry, item_type),
+        **flags,
+    )
+
+
+def _scan_vault_dir(vault_dir: Path, sub: str, item_type: str) -> list[VaultItem]:
+    out: list[VaultItem] = []
+    for entry in _iter_item_entries(vault_dir / sub):
+        if not _entry_is_item(entry, item_type):
             continue
-        try:
-            s = entry.stat()
-        except OSError:
-            continue
-        is_dir = entry.is_dir()
-        is_file = entry.is_file()
-        if item_type == "skill":
-            if not is_dir:
-                continue
-        else:
-            if not (is_file and entry.suffix == ".md"):
-                continue
-        created, updated = _stat_times(entry)
-        out.append(
-            VaultItem(
-                name=entry.name,
-                type=item_type,
-                path=str(entry),
-                description=_read_description_for_item(entry, item_type),
-                in_vault=True,
-                created_at=created,
-                updated_at=updated,
-                version=_read_version_for_item(entry, item_type),
-            )
-        )
+        out.append(_make_vault_item(entry, item_type, in_vault=True))
     return out
 
 
 def list_vault_items(vault_dir: os.PathLike[str] | str) -> list[VaultItem]:
     vd = Path(vault_dir)
     items: list[VaultItem] = []
-    items += _scan_vault_dir(vd, "skills", "skill")
-    items += _scan_vault_dir(vd, "commands", "command")
-    items += _scan_vault_dir(vd, "agents", "agent")
+    for sub, item_type in LINKABLE_TYPES:
+        items += _scan_vault_dir(vd, sub, item_type)
     return items
 
 
@@ -1811,7 +1821,7 @@ def sync_project(project_dir: os.PathLike[str] | str, vault_dir: os.PathLike[str
     unlinked: list[str] = []
     errors: list[str] = []
 
-    for item_type, sub in (("skill", "skills"), ("command", "commands"), ("agent", "agents")):
+    for sub, item_type in LINKABLE_TYPES:
         vault_sub = Path(vault_dir) / sub
         project_sub = Path(project_dir) / ".claude" / sub
         project_sub.mkdir(parents=True, exist_ok=True)
@@ -1858,53 +1868,56 @@ def sync_project(project_dir: os.PathLike[str] | str, vault_dir: os.PathLike[str
     return SyncResult(tuple(linked), tuple(unlinked), tuple(errors))
 
 
-def _list_global_non_vault_items(global_dir: Path, vault_dir: Path) -> list[VaultItem]:
-    """Items present in `~/.claude/<sub>/` but NOT in the vault yet."""
-    vault_items = list_vault_items(vault_dir)
-    vault_names_by_type: dict[str, set[str]] = {}
-    for v in vault_items:
-        vault_names_by_type.setdefault(v.type, set()).add(v.name)
+def _collect_skip_names(
+    vault_dir: Path, *extra_roots: Optional[Path]
+) -> dict[str, set[str]]:
+    """type → names to skip: every vault item, plus every item directly under
+    each `extra_roots/<sub>` tree (used to shadow project items by global ones)."""
+    skip: dict[str, set[str]] = {}
+    for v in list_vault_items(vault_dir):
+        skip.setdefault(v.type, set()).add(v.name)
+    for root in extra_roots:
+        if root is None:
+            continue
+        for sub, item_type in LINKABLE_TYPES:
+            for entry in _iter_item_entries(root / sub):
+                skip.setdefault(item_type, set()).add(entry.name)
+    return skip
 
+
+def _list_non_vault_items(
+    root: Path,
+    skip_by_type: dict[str, set[str]],
+    *,
+    skip_symlinks: bool,
+    item_flags: dict[str, Any],
+) -> list[VaultItem]:
+    """Items under `root/<sub>/` of each linkable type that are NOT in
+    `skip_by_type`. `item_flags` is merged into each produced VaultItem."""
     out: list[VaultItem] = []
-    for sub, item_type in (("skills", "skill"), ("commands", "command"), ("agents", "agent")):
-        d = global_dir / sub
-        if not d.exists() or not d.is_dir():
-            continue
-        try:
-            entries = sorted(d.iterdir(), key=lambda p: p.name)
-        except OSError:
-            continue
-        skip_names = vault_names_by_type.get(item_type, set())
-        for entry in entries:
-            if entry.name.startswith("."):
-                continue
+    for sub, item_type in LINKABLE_TYPES:
+        skip_names = skip_by_type.get(item_type, set())
+        for entry in _iter_item_entries(root / sub):
             if entry.name in skip_names:
                 continue
-            try:
-                s = entry.stat()
-            except OSError:
+            # Symlinks here typically resolve to a vault target or another
+            # already-managed location — not a fresh import candidate.
+            if skip_symlinks and entry.is_symlink():
                 continue
-            if item_type == "skill":
-                if not entry.is_dir():
-                    continue
-            else:
-                if not (entry.is_file() and entry.suffix == ".md"):
-                    continue
-            created, updated = _stat_times(entry)
-            out.append(
-                VaultItem(
-                    name=entry.name,
-                    type=item_type,
-                    path=str(entry),
-                    description=_read_description_for_item(entry, item_type),
-                    is_global_linked=True,
-                    in_vault=False,
-                    created_at=created,
-                    updated_at=updated,
-                    version=_read_version_for_item(entry, item_type),
-                )
-            )
+            if not _entry_is_item(entry, item_type):
+                continue
+            out.append(_make_vault_item(entry, item_type, in_vault=False, **item_flags))
     return out
+
+
+def _list_global_non_vault_items(global_dir: Path, vault_dir: Path) -> list[VaultItem]:
+    """Items present in `~/.claude/<sub>/` but NOT in the vault yet."""
+    return _list_non_vault_items(
+        global_dir,
+        _collect_skip_names(vault_dir),
+        skip_symlinks=False,
+        item_flags={"is_global_linked": True},
+    )
 
 
 def _list_project_non_vault_items(
@@ -1919,68 +1932,15 @@ def _list_project_non_vault_items(
     are already pointing into the vault (or some other resolved location) and
     should not be presented as fresh import candidates.
     """
-    vault_items = list_vault_items(vault_dir)
-    skip_by_type: dict[str, set[str]] = {}
-    for v in vault_items:
-        skip_by_type.setdefault(v.type, set()).add(v.name)
-    if global_dir is not None:
-        for sub, item_type in (("skills", "skill"), ("commands", "command"), ("agents", "agent")):
-            gd = Path(global_dir) / sub
-            if not gd.exists() or not gd.is_dir():
-                continue
-            try:
-                for entry in gd.iterdir():
-                    if entry.name.startswith("."):
-                        continue
-                    skip_by_type.setdefault(item_type, set()).add(entry.name)
-            except OSError:
-                continue
-
-    out: list[VaultItem] = []
-    for sub, item_type in (("skills", "skill"), ("commands", "command"), ("agents", "agent")):
-        d = Path(project_dir) / ".claude" / sub
-        if not d.exists() or not d.is_dir():
-            continue
-        try:
-            entries = sorted(d.iterdir(), key=lambda p: p.name)
-        except OSError:
-            continue
-        skip_names = skip_by_type.get(item_type, set())
-        for entry in entries:
-            if entry.name.startswith("."):
-                continue
-            if entry.name in skip_names:
-                continue
-            # Symlinks here typically resolve to a vault target or another
-            # already-managed location — not an import candidate.
-            if entry.is_symlink():
-                continue
-            try:
-                entry.stat()
-            except OSError:
-                continue
-            if item_type == "skill":
-                if not entry.is_dir():
-                    continue
-            else:
-                if not (entry.is_file() and entry.suffix == ".md"):
-                    continue
-            created, updated = _stat_times(entry)
-            out.append(
-                VaultItem(
-                    name=entry.name,
-                    type=item_type,
-                    path=str(entry),
-                    description=_read_description_for_item(entry, item_type),
-                    is_linked=True,         # lives inside the current project
-                    is_global_linked=False,
-                    in_vault=False,
-                    created_at=created,
-                    updated_at=updated,
-                    version=_read_version_for_item(entry, item_type),
-                )
-            )
-    return out
+    skip = _collect_skip_names(
+        vault_dir, Path(global_dir) if global_dir is not None else None
+    )
+    return _list_non_vault_items(
+        Path(project_dir) / ".claude",
+        skip,
+        skip_symlinks=True,
+        item_flags={"is_linked": True, "is_global_linked": False},
+    )
 
 
 def import_to_vault(
@@ -2038,30 +1998,11 @@ def migrate_to_vault(
     for sub in ("skills", "commands", "agents"):
         (vd / sub).mkdir(parents=True, exist_ok=True)
 
-    for item_type, sub, is_dir in (
-        ("skill", "skills", True),
-        ("command", "commands", False),
-        ("agent", "agents", False),
-    ):
-        src_dir = gd / sub
-        if not src_dir.exists() or not src_dir.is_dir():
-            continue
-        try:
-            entries = sorted(src_dir.iterdir(), key=lambda p: p.name)
-        except OSError:
-            continue
-        for entry in entries:
-            if entry.name.startswith("."):
+    for sub, item_type in LINKABLE_TYPES:
+        is_dir = item_type == "skill"
+        for entry in _iter_item_entries(gd / sub):
+            if not _entry_is_item(entry, item_type):
                 continue
-            try:
-                s = entry.stat()
-            except OSError:
-                continue
-            if is_dir and not entry.is_dir():
-                continue
-            if not is_dir:
-                if not entry.is_file() or entry.suffix != ".md":
-                    continue
             dest = vd / sub / entry.name
             if dest.exists():
                 skipped.append(f"{item_type}:{entry.name}")
@@ -4351,17 +4292,9 @@ def _scan_profile_at(project_path: str, index: UsageIndex, ref: ProjectRef) -> N
 
 
 def _scan_symlinks_at(project_path: str, vault_dir: str, index: UsageIndex, ref: ProjectRef) -> None:
-    for sub, type_ in (("skills", "skill"), ("commands", "command"), ("agents", "agent")):
+    for sub, type_ in LINKABLE_TYPES:
         dir_path = Path(project_path) / ".claude" / sub
-        if not dir_path.exists():
-            continue
-        try:
-            entries = list(dir_path.iterdir())
-        except OSError:
-            continue
-        for entry in entries:
-            if entry.name.startswith("."):
-                continue
+        for entry in _iter_item_entries(dir_path):
             try:
                 if not entry.is_symlink():
                     continue
