@@ -633,24 +633,36 @@ def _shared_usage_load(args, *, since: Optional[str] = None, until: Optional[str
     return entries
 
 
-def cli_usage_today(args) -> int:
-    config = load_config(AXT_CONFIG_PATH)
-    tz = args.timezone or config.timezone
-    today = _today_in_tz(tz)
-    unified = _shared_usage_load(args, since=today, until=today)
-    entries = [_unified_to_claude(e) for e in unified]
-    if not entries:
-        print("No usage data for today.")
-        return 0
-    daily = aggregate_daily(entries, tz)
-    d = daily[0]
-    cost = sum(
+def _load_usage_entries(
+    args, *, since: Optional[str] = None, until: Optional[str] = None
+) -> list[ClaudeUsageEntry]:
+    """Filter-load usage then adapt unified→claude — the shared opening of every
+    `axt usage` subcommand."""
+    return [_unified_to_claude(e) for e in _shared_usage_load(args, since=since, until=until)]
+
+
+def _entries_cost(entries: list[ClaudeUsageEntry]) -> float:
+    """Total USD cost across `entries` via the pricing table."""
+    return sum(
         calculate_cost(
             TokenUsage(e.input_tokens, e.output_tokens, e.cache_creation_tokens, e.cache_read_tokens),
             e.model,
         )
         for e in entries
     )
+
+
+def cli_usage_today(args) -> int:
+    config = load_config(AXT_CONFIG_PATH)
+    tz = args.timezone or config.timezone
+    today = _today_in_tz(tz)
+    entries = _load_usage_entries(args, since=today, until=today)
+    if not entries:
+        print("No usage data for today.")
+        return 0
+    daily = aggregate_daily(entries, tz)
+    d = daily[0]
+    cost = _entries_cost(entries)
     if args.json:
         print(json.dumps({
             "date": d.date,
@@ -681,8 +693,7 @@ def cli_usage_week(args) -> int:
     until = _today_in_tz(tz)
     week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
     since = week_ago.strftime("%Y-%m-%d")
-    unified = _shared_usage_load(args, since=since, until=until)
-    entries = [_unified_to_claude(e) for e in unified]
+    entries = _load_usage_entries(args, since=since, until=until)
     daily = aggregate_daily(entries, tz)
     if args.json:
         print(json.dumps([
@@ -717,14 +728,7 @@ def cli_usage_week(args) -> int:
 
 
 def _day_cost(entries: list[ClaudeUsageEntry], date: str, tz: str) -> float:
-    return sum(
-        calculate_cost(
-            TokenUsage(e.input_tokens, e.output_tokens, e.cache_creation_tokens, e.cache_read_tokens),
-            e.model,
-        )
-        for e in entries
-        if _date_in_tz(e.timestamp, tz) == date
-    )
+    return _entries_cost([e for e in entries if _date_in_tz(e.timestamp, tz) == date])
 
 
 def cli_usage_month(args) -> int:
@@ -733,15 +737,8 @@ def cli_usage_month(args) -> int:
     now = datetime.now()
     since = f"{now.year}-{now.month:02d}-01"
     until = _today_in_tz(tz)
-    unified = _shared_usage_load(args, since=since, until=until)
-    entries = [_unified_to_claude(e) for e in unified]
-    total_cost = sum(
-        calculate_cost(
-            TokenUsage(e.input_tokens, e.output_tokens, e.cache_creation_tokens, e.cache_read_tokens),
-            e.model,
-        )
-        for e in entries
-    )
+    entries = _load_usage_entries(args, since=since, until=until)
+    total_cost = _entries_cost(entries)
     sessions = {e.session_id for e in entries}
     print(_bold(f"Month: {since} ~ {until}"))
     print(f"  Sessions:    {len(sessions)}")
@@ -757,8 +754,7 @@ def cli_usage_blocks(args) -> int:
     tz = args.timezone or config.timezone
     three_days_ago = datetime.now(timezone.utc) - timedelta(days=3)
     since = three_days_ago.strftime("%Y-%m-%d")
-    unified = _shared_usage_load(args, since=since)
-    entries = [_unified_to_claude(e) for e in unified]
+    entries = _load_usage_entries(args, since=since)
     blocks = compute_blocks(entries, tz)
     if args.active:
         blocks = [b for b in blocks if b.is_active]
@@ -781,20 +777,13 @@ def cli_usage_blocks(args) -> int:
 
 def cli_usage_session(args) -> int:
     config = load_config(AXT_CONFIG_PATH)
-    unified = _shared_usage_load(args)
-    entries = [_unified_to_claude(e) for e in unified if e.session_id.startswith(args.session_id)]
+    entries = [e for e in _load_usage_entries(args) if e.session_id.startswith(args.session_id)]
     if not entries:
         print(_red(f'Session "{args.session_id}" not found.'))
         return 1
     sessions = aggregate_by_session(entries)
     s = sessions[0]
-    cost = sum(
-        calculate_cost(
-            TokenUsage(e.input_tokens, e.output_tokens, e.cache_creation_tokens, e.cache_read_tokens),
-            e.model,
-        )
-        for e in entries
-    )
+    cost = _entries_cost(entries)
     print(_bold(f"Session: {s.session_id}"))
     print(f"  Project:     {s.project_path}")
     print(f"  Models:      {', '.join(s.models)}")
