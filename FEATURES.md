@@ -122,30 +122,36 @@ TUI 대시보드 실행.
 포커스 가능한 본문이 없는 탭(Usage)은 mainTab에서 `↓`를 받아도 포커스가 그대로 mainTab에 머무름 — capability 기반 분기.
 
 ### 2.4 Extensions 탭 (8개 서브탭, `EXTENSION_SUB_TABS` 순서)
-- **Vault** (기본) — `# Name Type Vault Proj Glob Used Added Updated`
-- **Skills** — `Skill Source Type Proj Path`
-- **Commands** — `Command Source Proj Description`
-- **Agents** — `Agent Source Proj Description`
-- **MCP** — MCP 서버 / Scope / Transport / command / args / env
-- **Hooks** — `Event Type Source Match Detail`
-- **Plugins** — `Plugin Version Status(G/P) Marketplace`
-- **Market** — `Marketplace Version Updated Source`
+모든 서브탭이 좌측 체크박스(■/□, Space 마크) + `#` 행 번호 + 이름 뒤의 공통 상태 블록 `Ver Vault Proj Glob`을 공유한다 (Vault 레이아웃과 동일).
+- Vault 셀: `✓` = 항목 실체가 `~/.axt/vault/`에 저장됨 / `─` = vault 미관리 (vault가 다루지 않는 타입 포함)
+- Proj/Glob 셀: `●` 활성 / `○` 비활성 / `·` unset(Plugins) / `─` 해당 없음
+- **Vault** (기본) — `# Name Ver Type Vault Proj Glob Used`
+- **Skills** — `# Skill Ver Vault Proj Glob Source Type Path`
+- **Commands** — `# Command Ver Vault Proj Glob Source Description`
+- **Agents** — `# Agent Ver Vault Proj Glob Source Description`
+- **MCP** — `# Server Ver Vault Proj Glob Scope Transport Detail` (Ver는 plugin 소속 서버만, Glob `─` — 프로젝트 단위 토글만 존재)
+- **Hooks** — `# Event Ver Vault Proj Glob Type Source Detail` (훅이 속한 설정 파일 스코프 쪽만 ●/○, 반대쪽 `─`)
+- **Plugins** — `# Plugin Ver Vault Proj Glob Marketplace`
+- **Market** — `# Marketplace Ver Vault Proj Glob Source Location Updated` (Proj `─`, Glob `●` — 전역 레지스트리)
 
 ### 2.5 키바인딩 (Vault 전체)
 ```
-j/k ↓/↑     이동             g           global 토글
+j/k ↓/↑     이동             g           global 토글 (pending; 마크 있으면 일괄)
 PgUp/PgDn   페이지           c           필터(all/skill/command/agent/plugin)
-p           project 토글     s           정렬 순환(Name→Type→Proj→Glob→Used→Added→Updated), 활성 컬럼 헤더 ▲/▼
+p           project 토글 (pending; 마크 있으면 일괄)   s   정렬 순환(Name→Type→Proj→Glob→Used→Added→Updated), 활성 컬럼 헤더 ▲/▼
 Enter       적용 또는 detail i           import to vault (global-only)
 Esc         폐기/뒤로        f           프로젝트 재스캔(실행 시 백그라운드 자동, Used 갱신)
 /           검색             F           scan mode toggle (default/full) + 재스캔 (f의 확장)
 Tab         리스트↔detail포커스 m         migrate (글로벌→vault)
 o           터미널 열기       S           sync project
-Space       포커스 항목 선택/해제 — 일괄 unlink 마킹 (좌측 체크박스 ■/□, 필터/검색 넘어 유지)
+Space       포커스 항목 선택/해제 — 일괄 액션 마킹 (좌측 체크박스 ■/□, 필터/검색 넘어 유지)
+            마크가 있으면 p/g가 마크 전체의 pending 토글, U가 일괄 unlink로 동작
 U           모든 프로젝트에서 unlink: 선택된 항목 있으면 일괄, 없으면 포커스 항목 (스캔 인덱스 기준, 확인 모달)
 ```
 
 ### 2.6 키바인딩 (서브탭별 고유)
+- **공통(모든 서브탭)**: `p` = PROJECT 스코프 토글, `g` = GLOBAL 스코프 토글 (아래 서브탭별 의미 참조)
+- **공통(모든 서브탭)**: `Space` = 포커스 항목 마크/해제 (좌측 체크박스 ■/□). 마크가 있으면 `p`/`g`가 마크된 전체 항목에 일괄 적용 (확인 모달), `Esc`가 마크 해제 → 검색 해제 → 포커스 상승 순으로 동작
 - **공통(모든 서브탭)**: `o` 포커스된 항목의 저장 경로에서 새 터미널 열기 (cst 방식 — TERM_PROGRAM 매칭, cmux 안에서는 workspace/window 선택 모달)
 - **공통(모든 서브탭)**: `/` 검색 필터 (입력 중 Esc 취소, 적용 후 Esc 해제 — 서브탭별로 독립 유지)
 - **공통(모든 서브탭)**: `s` 정렬 순환 (Vault와 동일 방식 — 활성 정렬 컬럼 헤더에 ▲/▼ 표시, 상태바에 `s:sort(<key>)` 노출). 서브탭별 순환 키:
@@ -155,13 +161,13 @@ U           모든 프로젝트에서 unlink: 선택된 항목 있으면 일괄,
   - **MCP**: Name→Scope→Transport
   - **Hooks**: Event→Type→Source
   - **Market**: Name→Source→Updated
-- **키 문법(통일 규칙)**: `Space` = project 스코프 토글, `g` = global 스코프 토글, `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열. 단 Vault 탭은 다중 선택이 있어 `Space` = 포커스 항목 선택, `p` = project 토글 (2.5 참조)
-- **Plugins**: `Space` project 토글, `g` global 토글, `x` uninstall (확인 모달). Status 컬럼 G/P = ● enabled / ○ disabled / · unset
-- **MCP**: `Space` 토글 (현재 프로젝트 `disabledMcpServers`; global 스코프 없음 — `g`는 안내 메시지)
-- **Hooks**: `Space` 토글 (설정 파일 내 `hooks`↔`disabledHooks` 이동, plugin 훅은 읽기 전용), `p` preview (dry-run)
-- **Skills**: `a` link (path 입력), `x` unlink (확인 모달)
-- **Market**: `a` add (2-step source+name 입력), `S` sync (대문자 — `s`는 정렬로 이동), `x` remove (확인)
-- **Commands** / **Agents**: `e` 소스 파일을 `$EDITOR`로 열기
+- **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열 — Vault 포함 모든 서브탭 동일
+- **Plugins**: `p`/`g` = project/global settings의 `enabledPlugins` 토글, `x` uninstall (확인 모달)
+- **MCP**: `p` 토글 (현재 프로젝트 `disabledMcpServers`; global 스코프 없음 — `g`는 안내 메시지, Glob 컬럼 `─`)
+- **Hooks**: `p`/`g` 토글 (설정 파일 내 `hooks`↔`disabledHooks` 이동 — user 파일 훅은 `g`, project/local 파일 훅은 `p`, plugin 훅은 읽기 전용), `v` preview (dry-run)
+- **Skills**: `p`/`g` = `.claude/skills` / `~/.claude/skills`에 symlink 링크/해제 (실제 파일·디렉터리는 삭제하지 않음 — symlink만 해제), `a` link (path 입력), `x` unlink (확인 모달)
+- **Market**: `a` add (2-step source+name 입력), `S` sync (대문자 — `s`는 정렬로 이동), `x` remove (확인). `p`/`g`는 안내 메시지 (전역 레지스트리)
+- **Commands** / **Agents**: `p`/`g` = `.claude/<sub>/` / `~/.claude/<sub>/`에 `.md` symlink 링크/해제, `e` 소스 파일을 `$EDITOR`로 열기
 - **모든 서브탭 (Vault / Skills / Commands / Agents / MCP / Hooks / Plugins / Market)**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
 
 ### 2.7 Context 탭 (2개 서브탭)

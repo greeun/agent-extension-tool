@@ -450,3 +450,27 @@ def test_compute_blocks_inactive_block_has_no_burn_rate():
     blocks = axt.compute_blocks([e], "UTC")
     assert blocks[0].is_active is False
     assert blocks[0].burn_rate_per_min is None
+
+
+def test_compute_blocks_cost_uses_model_pricing_not_hardcoded_opus():
+    """Block cost must come from the per-model pricing table, so a Sonnet
+    block is priced at Sonnet rates — not the old hardcoded Opus rates."""
+    e = _entry("s", "2026-04-29T12:30:00Z", model="claude-sonnet-4-6",
+               input=1_000_000, output=1_000_000)
+    blocks = axt.compute_blocks([e], "UTC")
+    assert len(blocks) == 1
+    # sonnet-4-6: input 3.00 + output 15.00 per million = 18.00
+    # (hardcoded Opus rates would have yielded 15.00 + 75.00 = 90.00).
+    assert blocks[0].cost == pytest.approx(18.0)
+
+
+def test_compute_blocks_cost_sums_per_entry_across_models():
+    """A block mixing models sums each entry's own model rate."""
+    entries = [
+        _entry("s", "2026-04-29T12:00:00Z", model="claude-opus-4-7", input=1_000_000),
+        _entry("s", "2026-04-29T12:10:00Z", model="claude-haiku-4-5", input=1_000_000),
+    ]
+    blocks = axt.compute_blocks(entries, "UTC")
+    assert len(blocks) == 1  # both fall in the 10:00–15:00 window
+    # opus input 15.00 + haiku input 0.80
+    assert blocks[0].cost == pytest.approx(15.80)

@@ -69,9 +69,9 @@ Navigation
   PgUp / PgDn   Page up / page down
 
 Vault
-  Space         Select/deselect focused item for bulk unlink (left checkbox ■/□)
-  p             Toggle PROJECT link for selected item (pending)
-  g             Toggle GLOBAL link for selected item (pending)
+  Space         Select/deselect focused item for bulk actions (left checkbox ■/□)
+  p             Toggle PROJECT link (pending) — marked items in bulk, else focused
+  g             Toggle GLOBAL link (pending) — marked items in bulk, else focused
   U             Unlink from ALL projects: selected items if any, else focused (confirm)
   Enter         Apply pending toggles (confirm y/N) OR focus detail panel
   Esc           Discard pending / clear marks → clear search → blur detail panel
@@ -89,6 +89,15 @@ Vault
   o             Open a new terminal at the item's storage path
 
 Extensions sub-tab actions
+  All sub-tabs: shared status columns Ver / Vault / Proj / Glob —
+                Vault:     ✓ stored in ~/.axt/vault  ─ not vault-managed
+                Proj/Glob: ● active  ○ inactive  · unset (plugins)
+                           ─ not applicable (MCP global, Market project)
+  All sub-tabs: p=toggle PROJECT activation  g=toggle GLOBAL activation
+                (per-sub-tab semantics below)
+  All sub-tabs: Space=mark/unmark the focused item (left checkbox ■/□);
+                with marks set, p/g toggle every marked item at once
+                (confirm) and Esc clears the marks
   All sub-tabs: o=open a new terminal at the item's directory
                 (matches your terminal via TERM_PROGRAM; inside cmux a
                  workspace/window chooser appears first)
@@ -101,8 +110,9 @@ Extensions sub-tab actions
                   Hooks    Event→Type→Source
                   Market   Name→Source→Updated
 {subtab_help_block()}
-  Notes:        Plugins status column G/P: ● enabled  ○ disabled  · unset
-                Hooks [off] = parked; plugin-sourced hooks are read-only
+  Notes:        Hooks toggle only in their own scope: a hook in the user
+                settings file is global (g), one in project/local settings
+                is project (p); plugin-sourced hooks are read-only
   All sub-tabs: a detail panel sits below the list. Tab focuses it,
                 j/k (or PgUp/PgDn) scroll it, Esc or Tab blurs back to the list.
 
@@ -150,10 +160,14 @@ def _extensions_shortcuts(state: TuiState) -> str:
     q = state.ext_search.get(sub, "")
     if q:
         parts.append(f"search:{q!r}(Esc:clear)")
+    marks = state.ext_marked.get(sub) or set()
+    if marks:
+        parts.append(f"{len(marks)} marked(p/g:bulk Esc:clear)")
     sort_label = subtab_sort_label(state, sub)
     if sort_label:
         parts.append(f"s:sort({sort_label})")
     parts.append("/:search")
+    parts.append("Space:mark")
     actions = subtab_shortcuts(sub)
     if actions:
         parts.append(actions)
@@ -209,7 +223,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
         elif state.vault_marked:
             shortcuts = (
                 f"{len(state.vault_marked)} marked  U:unlink-all marked (confirm)  "
-                "Space:mark/unmark  Esc:clear marks  j/k:nav"
+                "p/g:toggle marked (pending)  Space:mark/unmark  Esc:clear marks  j/k:nav"
             )
         else:
             shortcuts = (
@@ -308,17 +322,20 @@ def _handle_content_layer_key(stdscr, state: TuiState, key: int, tab_key: str) -
     # with the panel blurred, then climbs as usual.
     if tab_key == "extensions" and state.ext_detail_focused:
         climb = False
-    # Search exception (vault and non-vault sub-tabs alike): when a search
-    # filter is active, the first Esc clears the filter (handled by the tab
-    # handler) before climbing out. The second Esc then proceeds with the
-    # normal climb because the query is empty by then.
+    # Marks/search exception (vault and non-vault sub-tabs alike): while
+    # Space marks or an applied search filter are active, Esc peels those
+    # back first (handled by the tab handler — marks, then the filter). The
+    # next Esc, with nothing left to clear, proceeds with the normal climb.
     if (
         key == KEY_ESC
         and tab_key == "extensions"
         and not state.vault_detail_focused
         and (
-            (state.ext_sub_tab == "vault" and state.vault_search)
-            or (state.ext_sub_tab != "vault" and state.ext_search.get(state.ext_sub_tab))
+            (state.ext_sub_tab == "vault"
+             and (state.vault_search or state.vault_marked))
+            or (state.ext_sub_tab != "vault"
+                and (state.ext_search.get(state.ext_sub_tab)
+                     or state.ext_marked.get(state.ext_sub_tab)))
         )
     ):
         climb = False

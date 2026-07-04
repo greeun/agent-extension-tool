@@ -2288,6 +2288,42 @@ def _fetch_github_head_sha(repo: str) -> str:
     return body.strip()
 
 
+def _is_within_dir(path: Path, base: Path) -> bool:
+    """True when `path` (resolved) is `base` itself or nested under it."""
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_tar_extractall(tf, dest: Path) -> None:
+    """Extract every member of `tf` into `dest`, refusing any member whose
+    resolved path — or symlink/hardlink target — escapes `dest`. Guards against
+    `../` traversal, absolute member names, and link escapes (CWE-22). Prefers
+    the stdlib hardened `data` filter on Python 3.12+, and otherwise validates
+    each member's destination explicitly for 3.9–3.11."""
+    import tarfile
+
+    dest = dest.resolve()
+    if getattr(tarfile, "data_filter", None) is not None:  # Python 3.12+
+        try:
+            tf.extractall(dest, filter="data")
+        except tarfile.FilterError as e:
+            raise RuntimeError(f"Unsafe tarball member: {e}") from e
+        return
+    for member in tf.getmembers():
+        if not _is_within_dir(dest / member.name, dest):
+            raise RuntimeError(f"Unsafe path in tarball: {member.name!r}")
+        if member.issym() or member.islnk():
+            link_dest = (dest / member.name).parent / member.linkname
+            if not _is_within_dir(link_dest, dest):
+                raise RuntimeError(
+                    f"Unsafe link in tarball: {member.name!r} -> {member.linkname!r}"
+                )
+    tf.extractall(dest)
+
+
 def download_and_extract_tarball(repo: str, dest: os.PathLike[str] | str) -> str:
     """Download `<repo>` HEAD tarball, extract to `dest`, write `.gcs-sha`.
     Returns the full commit SHA."""
@@ -2313,7 +2349,7 @@ def download_and_extract_tarball(repo: str, dest: os.PathLike[str] | str) -> str
         extract = tmp_dir / "extract"
         extract.mkdir()
         with tarfile.open(archive, "r:gz") as tf:
-            tf.extractall(extract)  # noqa: S202 — trusted source
+            _safe_tar_extractall(tf, extract)
 
         entries = [p for p in extract.iterdir() if p.is_dir()]
         if not entries:
@@ -3080,6 +3116,7 @@ class BlockUsage:
     cache_read_tokens: int
     is_active: bool
     burn_rate_per_min: Optional[float]
+    cost: float = 0.0  # USD, summed per-entry via the pricing table (model-aware)
 
 
 def _date_in_tz(iso: str, tz: str) -> str:
@@ -3220,6 +3257,13 @@ def compute_blocks(entries: list[ClaudeUsageEntry], timezone_name: str) -> list[
         total_cw = sum(e.cache_creation_tokens for e in window_entries)
         total_cr = sum(e.cache_read_tokens for e in window_entries)
         total = total_input + total_output + total_cw + total_cr
+        total_cost = sum(
+            calculate_cost(
+                TokenUsage(e.input_tokens, e.output_tokens, e.cache_creation_tokens, e.cache_read_tokens),
+                e.model,
+            )
+            for e in window_entries
+        )
 
         is_active = window_start <= now_ms < window_end
         burn: Optional[float] = None
@@ -3239,6 +3283,7 @@ def compute_blocks(entries: list[ClaudeUsageEntry], timezone_name: str) -> list[
                 cache_read_tokens=total_cr,
                 is_active=is_active,
                 burn_rate_per_min=burn,
+                cost=total_cost,
             )
         )
     blocks.sort(key=lambda b: b.start_time)
@@ -3331,6 +3376,14 @@ def _is_real_model(model: str) -> bool:
     return bool(model) and model != "unknown" and not model.startswith("<")
 
 
+def _encode_project_dir_name(project_dir: os.PathLike[str] | str) -> str:
+    """Encode an absolute project path to its Claude Code projects-dir name:
+    ``/`` and ``.`` both collapse to ``-`` and the leading dash is preserved
+    (e.g. ``/Users/x/p.y`` → ``-Users-x-p-y``). Inverse of
+    :func:`_decode_project_dir_name`."""
+    return str(Path(project_dir)).replace("/", "-").replace(".", "-")
+
+
 def _project_transcript_dir(project_dir: os.PathLike[str] | str) -> Optional[Path]:
     """Claude transcript dir for a project path, or None if absent.
 
@@ -3338,8 +3391,7 @@ def _project_transcript_dir(project_dir: os.PathLike[str] | str) -> Optional[Pat
     in a dir whose name is the absolute path with ``/`` and ``.`` collapsed
     to ``-`` (the inverse of :func:`_decode_project_dir_name`).
     """
-    name = str(Path(project_dir)).replace("/", "-").replace(".", "-")
-    d = Path(PATHS.projects) / name
+    d = Path(PATHS.projects) / _encode_project_dir_name(project_dir)
     return d if d.is_dir() else None
 
 
@@ -4027,7 +4079,7 @@ def collect_context_sources(
             sources.append(_make_src(name, "claude-md", str(p), content, actionable=True, scope=scope))
 
     # 3. settings (global + per-project encoded path)
-    project_settings_key = str(proj).replace("/", "-").lstrip("-")
+    project_settings_key = _encode_project_dir_name(proj)
     project_settings_dir = home / ".claude" / "projects" / project_settings_key
     candidates_settings = [
         ("settings.json (global)", home / ".claude" / "settings.json", "global"),

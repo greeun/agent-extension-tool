@@ -582,6 +582,26 @@ def test_download_and_extract_tarball_empty_archive(tmp_path: Path, monkeypatch)
         axt.download_and_extract_tarball("o/r", tmp_path / "install")
 
 
+def test_download_and_extract_tarball_rejects_path_traversal(tmp_path: Path, monkeypatch):
+    sha = "beadfeed00000000"
+    monkeypatch.setattr(axt, "_fetch_github_head_sha", lambda repo: sha)
+    # A member whose name escapes the extraction dir via `../`.
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        raw = b"pwned"
+        info = tarfile.TarInfo(name="../evil.txt")
+        info.size = len(raw)
+        tf.addfile(info, io.BytesIO(raw))
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda req, timeout=None: _FakeResponse(buf.getvalue()),
+    )
+    with pytest.raises(RuntimeError, match="Unsafe"):
+        axt.download_and_extract_tarball("o/r", tmp_path / "install")
+    # Extraction aborted before the copy step, so dest was never created.
+    assert not (tmp_path / "install").exists()
+
+
 # ─── add_marketplace (git URL construction + clone) ──────────────────────────
 
 

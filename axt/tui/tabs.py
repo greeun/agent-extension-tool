@@ -112,6 +112,9 @@ class TuiState:
     ext_detail_scroll: int = 0
     ext_search: dict[str, str] = field(default_factory=dict)  # applied `/` query per sub-tab
     ext_searching: bool = False  # True while typing in a non-vault `/` prompt
+    # Space-marked item keys per non-vault sub-tab (mirrors vault_marked).
+    # Marks accumulate across sort/search changes; p/g apply to the whole set.
+    ext_marked: dict[str, set[str]] = field(default_factory=dict)
 
     # Usage data caches (None = not loaded yet).
     usage_entries: Optional[list] = None
@@ -953,6 +956,15 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         # Open a new terminal at the item's storage path (file → parent dir).
         p = Path(current.path)
         return _open_terminal_for_dir(state, str(p if p.is_dir() else p.parent))
+    elif key in (ord("p"), ord("g")) and state.vault_marked:
+        # Marks present → bulk: flip the pending scope toggle for every
+        # marked item at once (Space multi-select + p/g; Enter applies).
+        pending = (state.vault_pending_project if key == ord("p")
+                   else state.vault_pending_global)
+        pending ^= state.vault_marked
+        scope = "project" if key == ord("p") else "global"
+        return (f"Toggled {scope} pending for {len(state.vault_marked)} marked "
+                f"— Enter to apply")
     elif key == ord("p") and current and current.type != "plugin":
         # Toggle pending project link for the selected item.
         if current.name in state.vault_pending_project:
@@ -2401,12 +2413,14 @@ _SUBTAB_DETAIL_FIELD_FNS = {
 }
 
 
-def _render_list_with_detail(stdscr, state, y0, h, w, key, columns, rows, items, field_fn):
+def _render_list_with_detail(stdscr, state, y0, h, w, key, columns, rows, items, field_fn,
+                             checked=None):
     """Selectable list with a read-only detail panel pinned to the bottom.
 
     ``field_fn(item)`` returns ``(title, [(label, value), ...])`` for the
     selected row. ``items`` is the cached object list parallel to ``rows``.
-    Used by the MCP and Hooks sub-tabs.
+    ``checked`` carries the Space-marked row indices (■/□ prefix, mirrors
+    Vault); the row number lives in the explicit `#` column.
     """
     state.ext_selected.setdefault(key, 0)
     state.ext_selected[key] = max(0, min(state.ext_selected[key], max(0, len(rows) - 1)))
@@ -2420,8 +2434,8 @@ def _render_list_with_detail(stdscr, state, y0, h, w, key, columns, rows, items,
     detail_h = min(detail_h, max(0, h - 4))
     table_h = max(1, h - detail_h)
     render_table(stdscr, y0, 0, table_h, w, columns, rows,
-                 selected=state.ext_selected[key], show_header=True,
-                 header_rule=False)
+                 selected=state.ext_selected[key], checked=checked,
+                 show_header=True, header_rule=False)
     if detail_h >= 3:
         idx = state.ext_selected[key]
         if 0 <= idx < len(items):
@@ -2454,13 +2468,19 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     # the row the user acts on always matches the highlighted row.
     data = _subtab_view(state, sub)
 
-    # Non-Vault sub-tabs use the default render_table prefix (` N`/`▸N`) for
-    # row numbering — no separate `#` data column needed (it would duplicate).
+    # Uniform status columns (mirror Vault): the leftmost ■/□ prefix shows
+    # the Space marks, `#` carries the row number, and every sub-tab shares
+    # the `Ver Vault Proj Glob` block right after the name column —
+    # Vault: ✓ stored in ~/.axt/vault / ─ not vault-managed;
+    # Proj/Glob: ● active ○ inactive · unset (plugins) ─ n/a.
     if sub == "plugins":
         cols = [
-            TableColumn("name", "Plugin", max(20, w - 60)),
-            TableColumn("version", "Version", 10),
-            TableColumn("status", "G/P", 10),
+            TableColumn("no", "#", 3),
+            TableColumn("name", "Plugin", max(20, w - 72)),
+            TableColumn("version", "Ver", 8),
+            TableColumn("vault", "Vault", 5),
+            TableColumn("proj", "Proj", 4),
+            TableColumn("glob", "Glob", 4),
             TableColumn("market", "Marketplace", 24),
         ]
         enabled_g = read_enabled_plugins(PATHS.settings)
@@ -2474,105 +2494,170 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             return "·"
 
         rows = [{
+            "no": str(i + 1),
             "name": p.name,
             "version": p.version or "—",
-            "status": f"{_glyph(enabled_g.get(p.id))} / {_glyph(enabled_p.get(p.id))}",
+            "vault": _vault_cell(sub, p),
+            "proj": _glyph(enabled_p.get(p.id)),
+            "glob": _glyph(enabled_g.get(p.id)),
             "market": p.marketplace or "—",
-        } for p in data]
+        } for i, p in enumerate(data)]
 
     elif sub == "skills":
+        proj_names = _scope_link_names(state, sub, "project")
+        glob_names = _scope_link_names(state, sub, "global")
         cols = [
-            TableColumn("name", "Skill", max(25, w - 58)),
+            TableColumn("no", "#", 3),
+            TableColumn("name", "Skill", max(20, w - 91)),
             TableColumn("ver", "Ver", 8),
+            TableColumn("vault", "Vault", 5),
+            TableColumn("proj", "Proj", 4),
+            TableColumn("glob", "Glob", 4),
             TableColumn("source", "Source", 9),
             TableColumn("type", "Type", 8),
             TableColumn("path", "Path", 30),
         ]
         rows = [{
+            "no": str(i + 1),
             "name": s.name,
             "ver": s.version or "─",
+            "vault": _vault_cell(sub, s),
+            "proj": "●" if _item_base_name(sub, s) in proj_names else "○",
+            "glob": "●" if _item_base_name(sub, s) in glob_names else "○",
             "source": s.source,
             "type": "symlink" if s.is_symlink else "dir",
             "path": (s.target or s.path)[:60],
-        } for s in data]
+        } for i, s in enumerate(data)]
 
     elif sub == "commands":
+        proj_names = _scope_link_names(state, sub, "project")
+        glob_names = _scope_link_names(state, sub, "global")
         cols = [
-            TableColumn("name", "Command", max(20, w - 68)),
+            TableColumn("no", "#", 3),
+            TableColumn("name", "Command", max(20, w - 92)),
             TableColumn("ver", "Ver", 8),
+            TableColumn("vault", "Vault", 5),
+            TableColumn("proj", "Proj", 4),
+            TableColumn("glob", "Glob", 4),
             TableColumn("source", "Source", 9),
             TableColumn("desc", "Description", 50),
         ]
         rows = [{
+            "no": str(i + 1),
             "name": f"/{c.name}",
             "ver": c.version or "─",
+            "vault": _vault_cell(sub, c),
+            "proj": "●" if _item_base_name(sub, c) in proj_names else "○",
+            "glob": "●" if _item_base_name(sub, c) in glob_names else "○",
             "source": c.source,
             "desc": (c.description or "")[:80],
-        } for c in data]
+        } for i, c in enumerate(data)]
 
     elif sub == "agents":
+        proj_names = _scope_link_names(state, sub, "project")
+        glob_names = _scope_link_names(state, sub, "global")
         cols = [
-            TableColumn("name", "Agent", max(20, w - 68)),
+            TableColumn("no", "#", 3),
+            TableColumn("name", "Agent", max(20, w - 92)),
             TableColumn("ver", "Ver", 8),
+            TableColumn("vault", "Vault", 5),
+            TableColumn("proj", "Proj", 4),
+            TableColumn("glob", "Glob", 4),
             TableColumn("source", "Source", 9),
             TableColumn("desc", "Description", 50),
         ]
         rows = [{
+            "no": str(i + 1),
             "name": a.name,
             "ver": a.version or "─",
+            "vault": _vault_cell(sub, a),
+            "proj": "●" if _item_base_name(sub, a) in proj_names else "○",
+            "glob": "●" if _item_base_name(sub, a) in glob_names else "○",
             "source": a.source,
             "desc": (a.description or "")[:80],
-        } for a in data]
+        } for i, a in enumerate(data)]
 
     elif sub == "mcp":
         cols = [
-            TableColumn("name", "Server", max(18, w - 69)),
-            TableColumn("on", "On", 3),
+            TableColumn("no", "#", 3),
+            TableColumn("name", "Server", max(18, w - 98)),
+            TableColumn("ver", "Ver", 8),
+            TableColumn("vault", "Vault", 5),
+            TableColumn("proj", "Proj", 4),
+            TableColumn("glob", "Glob", 4),
             TableColumn("scope", "Scope", 13),
             TableColumn("transport", "Transport", 10),
             TableColumn("detail", "Detail", 30),
         ]
         rows = [{
+            "no": str(i + 1),
             "name": s.name,
-            "on": "○" if s.disabled else "●",
+            "ver": getattr(s, "version", "") or "─",  # plugin-sourced servers only
+            "vault": _vault_cell(sub, s),
+            "proj": "○" if s.disabled else "●",
+            "glob": "─",  # MCP servers have no global on/off switch
             "scope": s.scope,
             "transport": s.transport,
             "detail": (s.url or " ".join([s.command, *s.args_list]).strip())[:60],
-        } for s in data]
+        } for i, s in enumerate(data)]
 
     elif sub == "hooks":
         cols = [
+            TableColumn("no", "#", 3),
             TableColumn("event", "Event", 22),
-            TableColumn("on", "On", 3),
             TableColumn("ver", "Ver", 8),
+            TableColumn("vault", "Vault", 5),
+            TableColumn("proj", "Proj", 4),
+            TableColumn("glob", "Glob", 4),
             TableColumn("type", "Type", 10),
             TableColumn("source", "Source", 10),
-            TableColumn("detail", "Detail", max(20, w - 83)),
+            TableColumn("detail", "Detail", max(20, w - 102)),
         ]
-        rows = [{
-            "event": h.event,
-            "on": "○" if h.disabled else "●",
-            "ver": h.version or "─",
-            "type": h.type,
-            "source": h.source,
-            "detail": get_hook_detail(h)[:80],
-        } for h in data]
+
+        def _hook_cells(h) -> tuple[str, str]:
+            own = _hook_scope(h)
+            on = "○" if h.disabled else "●"
+            return (on if own == "project" else "─",
+                    on if own == "global" else "─")
+
+        rows = []
+        for i, h in enumerate(data):
+            proj_cell, glob_cell = _hook_cells(h)
+            rows.append({
+                "no": str(i + 1),
+                "event": h.event,
+                "ver": h.version or "─",
+                "vault": _vault_cell(sub, h),
+                "proj": proj_cell,
+                "glob": glob_cell,
+                "type": h.type,
+                "source": h.source,
+                "detail": get_hook_detail(h)[:80],
+            })
 
     elif sub == "market":
         cols = [
-            TableColumn("name", "Marketplace", max(20, w - 78)),
+            TableColumn("no", "#", 3),
+            TableColumn("name", "Marketplace", max(20, w - 102)),
             TableColumn("ver", "Ver", 8),
+            TableColumn("vault", "Vault", 5),
+            TableColumn("proj", "Proj", 4),
+            TableColumn("glob", "Glob", 4),
             TableColumn("kind", "Source", 10),
             TableColumn("loc", "Location", 30),
             TableColumn("updated", "Updated", 12),
         ]
         rows = [{
+            "no": str(i + 1),
             "name": m.name,
             "ver": "─",  # marketplace has no per-source version concept
+            "vault": _vault_cell(sub, m),
+            "proj": "─",  # marketplaces are a global-only registry
+            "glob": "●",
             "kind": m.source.kind,
             "loc": m.install_location[:50],
             "updated": m.last_updated[:10],
-        } for m in data]
+        } for i, m in enumerate(data)]
     else:
         return
 
@@ -2583,7 +2668,10 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         field_fn = lambda p: _plugin_detail_fields(p, enabled_g, enabled_p)  # noqa: E731
     else:
         field_fn = _SUBTAB_DETAIL_FIELD_FNS[sub]
-    _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, field_fn)
+    marks = state.ext_marked.get(sub) or set()
+    checked = {i for i, item in enumerate(data) if _item_key(sub, item) in marks}
+    _render_list_with_detail(stdscr, state, sub_y, sub_h, w, sub, cols, rows, data, field_fn,
+                             checked=checked)
 
 
 def _cycle_sub_tab(state: TuiState, tab_key: str, direction: int) -> None:
@@ -2718,6 +2806,22 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
         _cycle_subtab_sort(state, sub)
         return f"Sort: {state.ext_sort.get(sub)}"
 
+    # Space = select: toggle the focused item's bulk mark (mirrors Vault).
+    # Marks accumulate across sort/search changes; the next p/g applies to
+    # the whole marked set, and Esc clears the marks.
+    if key == ord(" "):
+        item = _selected_item(state, sub)
+        if item is None:
+            return None
+        marks = state.ext_marked.setdefault(sub, set())
+        item_key = _item_key(sub, item)
+        label = _item_label(item)
+        if item_key in marks:
+            marks.discard(item_key)
+            return f"Unmarked {label!r} ({len(marks)} marked)"
+        marks.add(item_key)
+        return f"Marked {label!r} for bulk toggle ({len(marks)} marked)"
+
     # Tab toggles focus into the bottom detail panel (sub-tabs that have one).
     if key in (ord("\t"), curses.KEY_BTAB) and sub in _SUBTABS_WITH_DETAIL:
         if not state.ext_cache.get(sub):
@@ -2747,9 +2851,13 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
             return None
         return _handle_subtab_action(state, sub, key)
 
-    # First Esc on a search-filtered list clears the filter; the next Esc
-    # climbs a focus layer (loop.py routes it here via the climb exception
-    # while a query is active).
+    # Esc peels back one UI state at a time (mirrors Vault): marks first,
+    # then an applied search filter, and only then does the next Esc climb a
+    # focus layer (loop.py routes it here via the climb exception while
+    # marks or a query are active).
+    if key == KEY_ESC and state.ext_marked.get(sub):
+        state.ext_marked[sub].clear()
+        return "Cleared marks"
     if key == KEY_ESC and state.ext_search.get(sub):
         state.ext_search.pop(sub, None)
         state.ext_selected[sub] = 0
@@ -2857,30 +2965,241 @@ def _act_open_terminal(state: TuiState, stdscr: Any, sub: str, key: int) -> Opti
     return _open_terminal_for_dir(state, _item_terminal_dir(sub, item))
 
 
-def _act_plugin_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
-    """Space/g: flip the plugin's enabled flag in project/global settings.
+# ── Uniform project/global activation layer ─────────────────────────────────
+# Every non-vault sub-tab shares the Vault interaction grammar: Proj/Glob
+# status columns, `p`/`g` scope toggles, and Space multi-select marks that
+# turn the next p/g into a bulk toggle. What "active" means per sub-tab:
+#   plugins             settings `enabledPlugins` flag (global + project files)
+#   skills/commands/    symlink present in the scope directory
+#     agents              (~/.claude/<sub>/ vs <cwd>/.claude/<sub>/)
+#   mcp                 project-only: `disabledMcpServers` in ~/.claude.json
+#   hooks               own settings file (user file = global, project/local
+#                         files = project); rule moved hooks ↔ disabledHooks
+#   market              global-only registry — no per-scope toggle
+
+
+def _item_key(sub: str, item: Any) -> str:
+    """Stable identity for Space marks, resilient to re-sorting/refreshes."""
+    if sub == "plugins":
+        return item.id
+    if sub == "skills":
+        return item.path
+    if sub in ("commands", "agents"):
+        return item.source_path
+    if sub == "mcp":
+        return f"{item.scope}:{item.name}"
+    if sub == "hooks":
+        return "|".join((
+            item.source_path, item.event,
+            getattr(item, "matcher", "") or "*", item.type,
+            getattr(item, "command", "") or "", getattr(item, "url", "") or "",
+            getattr(item, "prompt", "") or "",
+        ))
+    return getattr(item, "name", str(item))
+
+
+def _item_label(item: Any) -> str:
+    return getattr(item, "name", None) or getattr(item, "event", "?")
+
+
+def _file_scope_dir(sub: str, scope: str) -> Path:
+    """Directory holding scope links for a file-backed sub-tab
+    (skills/commands/agents): global → ~/.claude/<sub>, project → .claude/<sub>."""
+    if sub == "skills":
+        return Path(PATHS.skills) if scope == "global" else Path.cwd() / ".claude" / "skills"
+    return (Path(PATHS.claude_dir) / sub) if scope == "global" else Path.cwd() / ".claude" / sub
+
+
+def _item_disk_path(sub: str, item: Any) -> str:
+    return item.path if sub == "skills" else item.source_path
+
+
+def _item_base_name(sub: str, item: Any) -> str:
+    """Scope-independent identity: dir name for skills, stem for .md files.
+    (Display names of plugin-sourced items carry a `plugin:` prefix, so the
+    on-disk name is the cross-scope match key.)"""
+    p = Path(_item_disk_path(sub, item))
+    return p.name if sub == "skills" else p.stem
+
+
+def _scope_link_names(state: TuiState, sub: str, scope: str) -> set[str]:
+    """Base names present in the given scope for a file-backed sub-tab."""
+    src = "user" if scope == "global" else "project"
+    return {
+        _item_base_name(sub, i)
+        for i in state.ext_cache.get(sub, [])
+        if i.source == src
+    }
+
+
+def _vault_cell(sub: str, item: Any) -> str:
+    """`✓` when the row's content lives in vault storage (vault-managed),
+    `─` otherwise — including the sub-tabs whose types the vault does not
+    store (plugins/mcp/hooks/market).
+
+    Compares against the resolved per-type vault SUBDIR, not the vault root:
+    `~/.axt/vault/<sub>` may itself be a symlink to external storage, in
+    which case fully-resolved item paths never contain the vault root but do
+    land inside the subdir's target."""
+    if sub not in ("skills", "commands", "agents"):
+        return "─"
+    try:
+        p = Path(_item_disk_path(sub, item)).resolve()
+        vault_sub = (Path(PATHS.vault) / sub).resolve()
+    except OSError:
+        return "─"
+    return "✓" if p.is_relative_to(vault_sub) else "─"
+
+
+def _toggle_plugin_scope(item: Any, scope: str) -> tuple[bool, str]:
+    """Flip the plugin's enabled flag in project/global settings.
 
     An unset flag counts as enabled (installed plugins run by default), so
     the first toggle of an unset plugin disables it. The project toggle flips
-    the *effective* value (project falls back to global), so Space always
+    the *effective* value (project falls back to global), so `p` always
     visibly changes state."""
-    plugin = _selected_item(state, "plugins")
-    if plugin is None:
-        return None
-    scope = "global" if key == ord("g") else "project"
     path = PATHS.settings if scope == "global" else project_settings_path()
-    gv = read_enabled_plugins(PATHS.settings).get(plugin.id)
-    pv = read_enabled_plugins(project_settings_path()).get(plugin.id)
+    gv = read_enabled_plugins(PATHS.settings).get(item.id)
+    pv = read_enabled_plugins(project_settings_path()).get(item.id)
     if scope == "global":
         current = gv if gv is not None else True
     else:
         current = pv if pv is not None else (gv if gv is not None else True)
     try:
-        set_plugin_enabled(path, plugin.id, not current)
+        set_plugin_enabled(path, item.id, not current)
     except OSError as exc:
-        return f"Toggle failed: {exc}"
-    _refresh_ext(state, "plugins")
-    return f"{'Disabled' if current else 'Enabled'} {plugin.id} ({scope})"
+        return False, f"Toggle failed: {exc}"
+    return True, f"{'Disabled' if current else 'Enabled'} {item.id} ({scope})"
+
+
+def _toggle_mcp_scope(item: Any, scope: str) -> tuple[bool, str]:
+    if scope == "global":
+        return False, "MCP servers toggle per project only — use p"
+    want_disabled = not item.disabled
+    try:
+        set_mcp_disabled(item.name, disabled=want_disabled)
+    except OSError as exc:
+        return False, f"Toggle failed: {exc}"
+    return True, f"{'Disabled' if want_disabled else 'Enabled'} MCP {item.name} (project)"
+
+
+def _hook_scope(hook: Any) -> Optional[str]:
+    """Which p/g scope owns this hook — its settings file decides."""
+    if hook.source == "user":
+        return "global"
+    if hook.source in ("project", "local"):
+        return "project"
+    return None  # plugin — read-only
+
+
+def _toggle_hook_scope(item: Any, scope: str) -> tuple[bool, str]:
+    own = _hook_scope(item)
+    if own is None:
+        return False, "Plugin hooks are read-only (manage them in the plugin)"
+    if own != scope:
+        other = "g" if own == "global" else "p"
+        return False, f"Hook lives in {item.source} settings — use {other}"
+    want_disabled = not item.disabled
+    try:
+        moved = set_hook_disabled(item.source_path, item, disabled=want_disabled)
+    except OSError as exc:
+        return False, f"Toggle failed: {exc}"
+    if not moved:
+        return False, "Hook not found in its settings file"
+    return True, f"{'Disabled' if want_disabled else 'Enabled'} hook {item.event} ({item.source})"
+
+
+def _toggle_file_item_scope(state: TuiState, sub: str, item: Any, scope: str) -> tuple[bool, str]:
+    """Link/unlink a skill dir or command/agent .md into the scope directory.
+
+    Active in a scope = an entry with the same base name exists there. The
+    toggle removes that entry when it is a symlink (real files/dirs are never
+    deleted — that's `x`/rm territory) and otherwise symlinks this row's
+    resolved path into the scope directory."""
+    if not is_symlink_supported():
+        return False, "Symlinks unsupported on this platform"
+    src = "user" if scope == "global" else "project"
+    base = _item_base_name(sub, item)
+    existing = next(
+        (i for i in state.ext_cache.get(sub, [])
+         if i.source == src and _item_base_name(sub, i) == base),
+        None,
+    )
+    if existing is not None:
+        p = Path(_item_disk_path(sub, existing))
+        if not p.is_symlink():
+            return False, f"{base} is not a symlink in {scope} scope (cannot unlink)"
+        try:
+            p.unlink()
+        except OSError as exc:
+            return False, f"Unlink failed: {exc}"
+        return True, f"Unlinked {base} ({scope})"
+    disk = Path(_item_disk_path(sub, item))
+    try:
+        # Link the resolved target (no symlink chains), but keep the row's
+        # on-disk entry name — resolving may change the basename.
+        target = disk.resolve()
+    except OSError:
+        target = disk
+    try:
+        link_skill(_file_scope_dir(sub, scope), target, name=disk.name)
+    except OSError as exc:
+        return False, f"Link failed: {exc}"
+    return True, f"Linked {base} ({scope})"
+
+
+def _scope_toggle_one(state: TuiState, sub: str, item: Any, scope: str) -> tuple[bool, str]:
+    """Apply one project/global activation toggle. Returns (changed, message)."""
+    if sub == "plugins":
+        return _toggle_plugin_scope(item, scope)
+    if sub == "mcp":
+        return _toggle_mcp_scope(item, scope)
+    if sub == "hooks":
+        return _toggle_hook_scope(item, scope)
+    if sub in ("skills", "commands", "agents"):
+        return _toggle_file_item_scope(state, sub, item, scope)
+    return False, "Marketplaces are global-only — no project/global toggle"
+
+
+def _act_scope_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    """p/g: toggle project/global activation — for the whole marked set when
+    Space marks exist (bulk, confirmed), else for the selected row."""
+    scope = "global" if key == ord("g") else "project"
+    marks = state.ext_marked.get(sub) or set()
+    if marks:
+        items = [i for i in state.ext_cache.get(sub, []) if _item_key(sub, i) in marks]
+        if not items:
+            return "No marked item found (press r to refresh)"
+        if stdscr is not None and not confirm_modal(
+            stdscr,
+            f"Toggle {scope} activation for {len(items)} marked item(s)?",
+            title="Confirm bulk toggle",
+        ):
+            return "Cancelled"
+        changed, skipped = 0, []
+        for item in items:
+            ok, msg = _scope_toggle_one(state, sub, item, scope)
+            if ok:
+                changed += 1
+            else:
+                skipped.append(msg)
+        if not changed:
+            return f"No marked item toggled — {skipped[0]}"
+        marks.clear()
+        _refresh_ext(state, sub)
+        note = f" — {skipped[0]}" if skipped else ""
+        return f"Applied {scope} toggle to {changed}/{len(items)} marked{note}"
+    item = _selected_item(state, sub)
+    if item is None:
+        return None
+    changed, msg = _scope_toggle_one(state, sub, item, scope)
+    if changed:
+        _refresh_ext(state, sub)
+    return msg
+
+
+def _act_market_scope_note(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    return "Marketplaces are global-only — no project/global toggle"
 
 
 def _act_plugin_uninstall(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
@@ -2898,23 +3217,6 @@ def _act_plugin_uninstall(state: TuiState, stdscr: Any, sub: str, key: int) -> O
         except OSError as exc:
             return f"Uninstall failed: {exc}"
     return "Cancelled"
-
-
-def _act_mcp_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
-    server = _selected_item(state, "mcp")
-    if server is None:
-        return None
-    want_disabled = not server.disabled
-    try:
-        set_mcp_disabled(server.name, disabled=want_disabled)
-    except OSError as exc:
-        return f"Toggle failed: {exc}"
-    _refresh_ext(state, "mcp")
-    return f"{'Disabled' if want_disabled else 'Enabled'} MCP {server.name} (project)"
-
-
-def _act_mcp_scope_note(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
-    return "MCP servers toggle per project only — use Space"
 
 
 def _act_skill_link(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
@@ -3008,27 +3310,6 @@ def _act_market_remove(state: TuiState, stdscr: Any, sub: str, key: int) -> Opti
     return "Cancelled"
 
 
-def _act_hook_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
-    hook = _selected_item(state, "hooks")
-    if hook is None:
-        return None
-    if hook.source == "plugin":
-        return "Plugin hooks are read-only (manage them in the plugin)"
-    want_disabled = not hook.disabled
-    try:
-        moved = set_hook_disabled(hook.source_path, hook, disabled=want_disabled)
-    except OSError as exc:
-        return f"Toggle failed: {exc}"
-    if not moved:
-        return "Hook not found in its settings file"
-    _refresh_ext(state, "hooks")
-    return f"{'Disabled' if want_disabled else 'Enabled'} hook {hook.event} ({hook.source})"
-
-
-def _act_hook_scope_note(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
-    return "Hooks toggle inside their own settings file — use Space"
-
-
 def _act_hook_preview(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
     hook = _selected_item(state, "hooks")
     if hook is None:
@@ -3081,23 +3362,29 @@ _SUBTAB_COMMON: tuple[SubtabBinding, ...] = (
 
 SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
     "plugins": (
-        SubtabBinding((ord(" "),), "Space:project",
-                      "Space=toggle enabled (project settings)",
-                      False, _act_plugin_toggle),
+        SubtabBinding((ord("p"),), "p:project",
+                      "p=toggle enabled in project settings (marked items in bulk)",
+                      False, _act_scope_toggle),
         SubtabBinding((ord("g"),), "g:global",
-                      "g=toggle enabled (global settings)",
-                      False, _act_plugin_toggle),
+                      "g=toggle enabled in global settings (marked items in bulk)",
+                      False, _act_scope_toggle),
         SubtabBinding((ord("x"),), "x:uninstall",
                       "x=uninstall (confirm)",
                       True, _act_plugin_uninstall),
     ),
     "mcp": (
-        SubtabBinding((ord(" "),), "Space:toggle",
-                      "Space=toggle enabled (this project's disabledMcpServers)",
-                      False, _act_mcp_toggle),
-        SubtabBinding((ord("g"),), "", "", False, _act_mcp_scope_note),
+        SubtabBinding((ord("p"),), "p:project",
+                      "p=toggle enabled (this project's disabledMcpServers)",
+                      False, _act_scope_toggle),
+        SubtabBinding((ord("g"),), "", "", False, _act_scope_toggle),
     ),
     "skills": (
+        SubtabBinding((ord("p"),), "p:project",
+                      "p=link/unlink into .claude/skills (project)",
+                      False, _act_scope_toggle),
+        SubtabBinding((ord("g"),), "g:global",
+                      "g=link/unlink into ~/.claude/skills (global)",
+                      False, _act_scope_toggle),
         SubtabBinding((ord("a"),), "a:link",
                       "a=link new path (input)",
                       True, _act_skill_link),
@@ -3106,6 +3393,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
                       True, _act_skill_unlink),
     ),
     "market": (
+        SubtabBinding((ord("p"), ord("g")), "", "", False, _act_market_scope_note),
         SubtabBinding((ord("a"),), "a:add",
                       "a=add (source+name input)",
                       True, _act_market_add),
@@ -3117,20 +3405,34 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
                       True, _act_market_remove),
     ),
     "hooks": (
-        SubtabBinding((ord(" "),), "Space:toggle",
-                      "Space=toggle enabled (moves the rule within its settings file)",
-                      False, _act_hook_toggle),
-        SubtabBinding((ord("g"),), "", "", False, _act_hook_scope_note),
-        SubtabBinding((ord("p"),), "p:preview",
-                      "p=preview hook execution (scrollable modal)",
+        SubtabBinding((ord("p"),), "p:project",
+                      "p=toggle a project-scope hook (moves it within its settings file)",
+                      False, _act_scope_toggle),
+        SubtabBinding((ord("g"),), "g:global",
+                      "g=toggle a user-scope (global) hook",
+                      False, _act_scope_toggle),
+        SubtabBinding((ord("v"),), "v:preview",
+                      "v=preview hook execution (scrollable modal)",
                       True, _act_hook_preview),
     ),
     "commands": (
+        SubtabBinding((ord("p"),), "p:project",
+                      "p=link/unlink into .claude/commands (project)",
+                      False, _act_scope_toggle),
+        SubtabBinding((ord("g"),), "g:global",
+                      "g=link/unlink into ~/.claude/commands (global)",
+                      False, _act_scope_toggle),
         SubtabBinding((ord("e"),), "e:edit",
                       "e=open source file in $EDITOR",
                       True, _act_edit_source),
     ),
     "agents": (
+        SubtabBinding((ord("p"),), "p:project",
+                      "p=link/unlink into .claude/agents (project)",
+                      False, _act_scope_toggle),
+        SubtabBinding((ord("g"),), "g:global",
+                      "g=link/unlink into ~/.claude/agents (global)",
+                      False, _act_scope_toggle),
         SubtabBinding((ord("e"),), "e:edit",
                       "e=open source file in $EDITOR",
                       True, _act_edit_source),

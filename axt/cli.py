@@ -773,13 +773,7 @@ def cli_usage_blocks(args) -> int:
         end = b.end_time[11:16]
         status = _green("● active") if b.is_active else _dim("○ done")
         burn = f"{format_tokens(b.burn_rate_per_min)}/min" if b.burn_rate_per_min else "—"
-        cost = (
-            (b.input_tokens / 1e6) * 15
-            + (b.output_tokens / 1e6) * 75
-            + (b.cache_creation_tokens / 1e6) * 18.75
-            + (b.cache_read_tokens / 1e6) * 1.5
-        )
-        print(f" {f'{start}~{end}'.ljust(30)} {status.ljust(19)} {format_tokens(b.total_tokens).ljust(12)} {burn.ljust(12)} ${cost:.2f}")
+        print(f" {f'{start}~{end}'.ljust(30)} {status.ljust(19)} {format_tokens(b.total_tokens).ljust(12)} {burn.ljust(12)} ${b.cost:.2f}")
     return 0
 
 
@@ -911,12 +905,10 @@ def _add_usage_filter_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--until", help="End date (YYYY-MM-DD or YYYYMMDD)")
     p.add_argument("--model", help="Filter by model")
     p.add_argument("--project", help="Filter by project")
-    p.add_argument("--breakdown", action="store_true", help="Show per-model breakdown")
     p.add_argument("--timezone", help="Timezone for grouping")
     p.add_argument("--locale", help="Date locale")
-    p.add_argument("--json", action="store_true", help="Output JSON")
-    p.add_argument("--csv", action="store_true", help="Output CSV")
-    p.add_argument("--export", help="Export to file")
+    p.add_argument("--json", action="store_true", help="Output JSON (today, week)")
+    p.add_argument("--csv", action="store_true", help="Output CSV (week)")
 
 
 def build_parser() -> argparse.ArgumentParser:

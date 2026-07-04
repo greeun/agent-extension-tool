@@ -456,8 +456,9 @@ def test_collect_context_memory_and_settings(tmp_path: Path, monkeypatch):
     (home / ".claude").mkdir(parents=True)
     (home / ".claude" / "settings.json").write_text('{"enabledPlugins": {}}')
 
-    # Memory dir (encoded project path under home/.claude/projects).
-    project_key = str(proj).replace("/", "-").lstrip("-")
+    # Memory dir (encoded project path under home/.claude/projects, named the
+    # way Claude Code does: `/` and `.` → `-`, leading dash preserved).
+    project_key = axt._encode_project_dir_name(proj)
     mem_dir = home / ".claude" / "projects" / project_key / "memory"
     mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("# Memory index\n- topic one\n")
@@ -484,6 +485,13 @@ def test_collect_context_memory_and_settings(tmp_path: Path, monkeypatch):
     # git-status fixed source carries the stubbed status text.
     git_srcs = by_cat["git-status"]
     assert "M file.py" in (git_srcs[0].content or "")
+
+
+def test_encode_project_dir_name_matches_claude_code_rule():
+    # `/` and `.` both collapse to `-`, and the leading dash is preserved —
+    # exactly how Claude Code names dirs under ~/.claude/projects.
+    assert axt._encode_project_dir_name("/Users/x/my.proj") == "-Users-x-my-proj"
+    assert axt._encode_project_dir_name("/a/b") == "-a-b"
 
 
 def test_collect_context_with_plugin_skills_mcp_commands_agents(tmp_path: Path, monkeypatch):

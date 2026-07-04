@@ -1867,34 +1867,53 @@ def _ext_idx() -> int:
 
 
 def test_status_bar_shows_mcp_toggle_shortcuts(monkeypatch):
-    """MCP sub-tab status bar advertises the Space toggle."""
+    """MCP sub-tab status bar advertises the p toggle + Space marking."""
     scr = _make_stdscr(rows=30, cols=200)
     state = axt.TuiState()
     state.tab_idx = _ext_idx()
     state.ext_sub_tab = "mcp"
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Space:toggle" in flat
+    assert "p:project" in flat
+    assert "Space:mark" in flat
 
 
 def test_status_bar_shows_hooks_toggle_shortcuts(monkeypatch):
-    """Hooks sub-tab status bar advertises Space toggle / p:preview."""
+    """Hooks sub-tab status bar advertises p/g toggles / v:preview."""
     scr = _make_stdscr(rows=30, cols=200)
     state = axt.TuiState()
     state.tab_idx = _ext_idx()
     state.ext_sub_tab = "hooks"
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Space:toggle" in flat
-    assert "p:preview" in flat
+    assert "p:project" in flat
+    assert "g:global" in flat
+    assert "v:preview" in flat
+
+
+def test_status_bar_shows_marked_count_for_subtab(monkeypatch):
+    """With Space marks set, the status bar shows the count + bulk hint."""
+    from types import SimpleNamespace
+    scr = _make_stdscr(rows=30, cols=200)
+    state = axt.TuiState()
+    state.tab_idx = _ext_idx()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [SimpleNamespace(
+        name="srv", scope="user", transport="stdio", disabled=False,
+        plugin_id="", version="", url="", command="node", args_list=[],
+        env_dict={})]
+    state.ext_marked["mcp"] = {"user:srv"}
+    axt._render_frame(scr, state)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "1 marked" in flat
 
 
 # ─── Non-Vault Extensions sub-tabs: no duplicated row number ─────────────────
 
 
-def test_extensions_plugins_sub_tab_no_duplicate_number_column():
-    """Plugins sub-tab should NOT have a `#` data column — render_table's
-    own prefix already shows the row number."""
+def test_extensions_plugins_sub_tab_checkbox_prefix_and_number_column():
+    """Plugins sub-tab mirrors Vault's layout: the leftmost prefix is the
+    Space-mark checkbox (■/□) and the row number lives in ONE `#` column."""
     import json
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
@@ -1903,7 +1922,7 @@ def test_extensions_plugins_sub_tab_no_duplicate_number_column():
         ip_path.write_text(json.dumps({
             "version": 2,
             "plugins": {"plug@m": [{
-                "scope": "user", "installPath": "/p", "version": "1",
+                "scope": "user", "installPath": "/p", "version": "9.9",
                 "installedAt": "", "lastUpdated": "",
             }]},
         }))
@@ -1915,17 +1934,43 @@ def test_extensions_plugins_sub_tab_no_duplicate_number_column():
             state.ext_sub_tab = "plugins"
             scr = _make_stdscr(rows=20, cols=120)
             axt.render_extensions_tab(scr, state, 0, 18, 120)
-            # Count standalone '1' cells next to "plug" row — only ONE (the prefix).
             plug_y = next(c[0] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str) and "plug" in c[2])
-            # Count cells on plug_y whose content equals exactly "1" or starts with "1 ".
-            # The render_table prefix is `▸ 1 ` or ` 1 ` (single contiguous cell).
             cells_on_row = [c for c in scr.calls if len(c) >= 3 and c[0] == plug_y and isinstance(c[2], str)]
+            # Exactly one isolated "1" cell — the `#` column (the prefix is now
+            # a checkbox, not a number).
             number_cells = [c for c in cells_on_row if c[2].strip() == "1"]
-            # Exactly one occurrence of an isolated "1" cell — the prefix number,
-            # NOT also a duplicated `no` column.
-            assert len(number_cells) <= 1
+            assert len(number_cells) == 1
+            # The selected-row prefix carries the (unmarked) checkbox.
+            assert any("□" in c[2] for c in cells_on_row)
         finally:
             axt.PATHS = original
+
+
+def test_extensions_row_checkbox_reflects_marks(tmp_path, monkeypatch):
+    """A Space-marked row renders the filled ■ checkbox (mirrors Vault)."""
+    from types import SimpleNamespace
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [
+        SimpleNamespace(name="alpha", scope="user", transport="stdio",
+                        disabled=False, plugin_id="", version="", url="",
+                        command="node", args_list=[], env_dict={}),
+        SimpleNamespace(name="beta", scope="user", transport="stdio",
+                        disabled=False, plugin_id="", version="", url="",
+                        command="node", args_list=[], env_dict={}),
+    ]
+    state.ext_marked["mcp"] = {"user:beta"}
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 0, 28, 120)
+
+    def _prefix(name: str) -> str:
+        row_y = next(c[0] for c in scr.calls
+                     if len(c) >= 3 and isinstance(c[2], str) and name in c[2])
+        return "".join(c[2] for c in scr.calls
+                       if len(c) >= 3 and c[0] == row_y and isinstance(c[2], str))
+
+    assert "■" in _prefix("beta")   # marked → filled box
+    assert "□" in _prefix("alpha")  # unmarked → empty box
 
 
 def _flat(scr) -> str:
@@ -2310,15 +2355,15 @@ def _plugin_toggle_state(tmp_path, monkeypatch):
     return state
 
 
-def test_plugin_space_toggles_project_scope(tmp_path, monkeypatch):
+def test_plugin_p_toggles_project_scope(tmp_path, monkeypatch):
     state = _plugin_toggle_state(tmp_path, monkeypatch)
     proj_settings = tmp_path / ".claude" / "settings.json"
-    # Unset counts as enabled → the first Space disables, in project settings.
-    msg = axt._handle_subtab_action(state, "plugins", ord(" "))
+    # Unset counts as enabled → the first `p` disables, in project settings.
+    msg = axt._handle_subtab_action(state, "plugins", ord("p"))
     assert "Disabled" in (msg or "") and "(project)" in msg
     assert axt.read_enabled_plugins(proj_settings)["p@m"] is False
     state.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
-    msg = axt._handle_subtab_action(state, "plugins", ord(" "))
+    msg = axt._handle_subtab_action(state, "plugins", ord("p"))
     assert "Enabled" in (msg or "")
     assert axt.read_enabled_plugins(proj_settings)["p@m"] is True
 
@@ -2335,10 +2380,10 @@ def test_plugin_g_toggles_global_scope(tmp_path, monkeypatch):
 
 
 def test_plugin_project_toggle_starts_from_global_value(tmp_path, monkeypatch):
-    """Project unset + global False → effective disabled → Space enables (project)."""
+    """Project unset + global False → effective disabled → `p` enables (project)."""
     state = _plugin_toggle_state(tmp_path, monkeypatch)
     axt.set_plugin_enabled(tmp_path / "settings.json", "p@m", False)
-    msg = axt._handle_subtab_action(state, "plugins", ord(" "))
+    msg = axt._handle_subtab_action(state, "plugins", ord("p"))
     assert "Enabled" in (msg or "") and "(project)" in msg
     assert axt.read_enabled_plugins(tmp_path / ".claude" / "settings.json")["p@m"] is True
 
@@ -2348,7 +2393,7 @@ def test_plugin_toggle_failure_reports(tmp_path, monkeypatch):
     def boom(path, pid, enabled):
         raise OSError("disk full")
     monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled", boom)
-    msg = axt._handle_subtab_action(state, "plugins", ord(" "))
+    msg = axt._handle_subtab_action(state, "plugins", ord("p"))
     assert "Toggle failed" in (msg or "")
 
 
@@ -2363,51 +2408,415 @@ def _mcp_state(disabled):
     return state
 
 
-def test_mcp_space_flips_disabled_state(monkeypatch):
+def test_mcp_p_flips_disabled_state(monkeypatch):
     calls = []
     monkeypatch.setattr("axt.tui.tabs.set_mcp_disabled",
                         lambda name, disabled: calls.append((name, disabled)))
     monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
-    msg = axt._handle_subtab_action(_mcp_state(disabled=False), "mcp", ord(" "))
+    msg = axt._handle_subtab_action(_mcp_state(disabled=False), "mcp", ord("p"))
     assert calls == [("srv", True)] and "Disabled" in msg
     calls.clear()
-    msg = axt._handle_subtab_action(_mcp_state(disabled=True), "mcp", ord(" "))
+    msg = axt._handle_subtab_action(_mcp_state(disabled=True), "mcp", ord("p"))
     assert calls == [("srv", False)] and "Enabled" in msg
 
 
 def test_mcp_g_explains_project_only_scope():
     msg = axt._handle_subtab_action(_mcp_state(disabled=False), "mcp", ord("g"))
-    assert msg == "MCP servers toggle per project only — use Space"
+    assert msg == "MCP servers toggle per project only — use p"
 
 
-def test_hook_g_explains_settings_scope():
+def _hook_state(source: str, source_path: str = "/tmp/settings.json"):
     from types import SimpleNamespace
     state = axt.TuiState()
     state.ext_sub_tab = "hooks"
     state.ext_cache["hooks"] = [SimpleNamespace(
-        event="PreToolUse", type="command", source="user",
-        source_path="/tmp/settings.json", disabled=False)]
+        event="PreToolUse", type="command", source=source,
+        source_path=source_path, disabled=False)]
     state.ext_selected["hooks"] = 0
     state.stdscr_callbacks = {"stdscr": None}
-    msg = axt._handle_subtab_action(state, "hooks", ord("g"))
-    assert msg == "Hooks toggle inside their own settings file — use Space"
+    return state
 
 
-def test_hook_space_flips_disabled_state(monkeypatch):
+def test_hook_p_on_user_hook_explains_scope():
+    """A user-settings hook lives in the global scope → `p` points at `g`."""
+    msg = axt._handle_subtab_action(_hook_state("user"), "hooks", ord("p"))
+    assert msg == "Hook lives in user settings — use g"
+
+
+def test_hook_g_on_project_hook_explains_scope():
+    msg = axt._handle_subtab_action(_hook_state("project"), "hooks", ord("g"))
+    assert msg == "Hook lives in project settings — use p"
+
+
+def test_hook_g_flips_user_hook_disabled_state(monkeypatch):
+    calls = []
+    monkeypatch.setattr("axt.tui.tabs.set_hook_disabled",
+                        lambda path, hook, disabled: calls.append(disabled) or True)
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    msg = axt._handle_subtab_action(_hook_state("user"), "hooks", ord("g"))
+    assert calls == [True] and "Disabled" in msg
+
+
+def test_hook_p_flips_project_hook_disabled_state(monkeypatch):
+    calls = []
+    monkeypatch.setattr("axt.tui.tabs.set_hook_disabled",
+                        lambda path, hook, disabled: calls.append(disabled) or True)
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    msg = axt._handle_subtab_action(_hook_state("project"), "hooks", ord("p"))
+    assert calls == [True] and "Disabled" in msg
+
+
+def test_hook_toggle_plugin_hook_read_only():
+    msg = axt._handle_subtab_action(_hook_state("plugin"), "hooks", ord("p"))
+    assert msg == "Plugin hooks are read-only (manage them in the plugin)"
+
+
+# ─── Uniform Space marking + bulk p/g toggles (non-vault sub-tabs) ───────────
+
+
+def test_space_marks_and_unmarks_item():
+    state = _mcp_state(disabled=False)
+    msg = axt.handle_extensions_input(state, ord(" "))
+    assert "Marked 'srv'" in msg and "(1 marked)" in msg
+    assert state.ext_marked["mcp"] == {"user:srv"}
+    msg = axt.handle_extensions_input(state, ord(" "))
+    assert "Unmarked 'srv'" in msg and "(0 marked)" in msg
+    assert state.ext_marked["mcp"] == set()
+
+
+def test_esc_clears_marks_before_search():
+    state = _mcp_state(disabled=False)
+    state.ext_marked["mcp"] = {"user:srv"}
+    state.ext_search["mcp"] = "sr"
+    msg = axt.handle_extensions_input(state, 27)
+    assert msg == "Cleared marks"
+    assert not state.ext_marked["mcp"]
+    msg = axt.handle_extensions_input(state, 27)
+    assert msg == "Search cleared"
+
+
+def test_ext_content_esc_with_marks_does_not_climb():
+    """Content-layer Esc must fall through to handle_extensions_input while
+    Space marks exist so the first Esc clears them (mirrors the search
+    exception)."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "mcp"
+    state.focused_layer = "content"
+    state.ext_marked["mcp"] = {"user:srv"}
+    scr = _make_stdscr()
+    assert axt._handle_content_layer_key(scr, state, 27, "extensions") is False
+    assert state.focused_layer == "content"
+
+
+def test_vault_content_esc_with_marks_does_not_climb():
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "vault"
+    state.focused_layer = "content"
+    state.vault_marked = {"alpha"}
+    scr = _make_stdscr()
+    assert axt._handle_content_layer_key(scr, state, 27, "extensions") is False
+    assert state.focused_layer == "content"
+
+
+def test_bulk_p_toggle_applies_to_marked_plugins(tmp_path, monkeypatch):
+    import json
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json",
+        settings=tmp_path / "settings.json",
+    ))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {
+            "a@m": [{"scope": "u", "installPath": "/a", "version": "1",
+                     "installedAt": "", "lastUpdated": ""}],
+            "b@m": [{"scope": "u", "installPath": "/b", "version": "1",
+                     "installedAt": "", "lastUpdated": ""}],
+        },
+    }))
+    state = axt.TuiState()
+    state.ext_sub_tab = "plugins"
+    state.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    state.ext_selected["plugins"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    state.ext_marked["plugins"] = {"a@m", "b@m"}
+    msg = axt._handle_subtab_action(state, "plugins", ord("p"))
+    assert "Applied project toggle to 2/2 marked" in msg
+    flags = axt.read_enabled_plugins(tmp_path / ".claude" / "settings.json")
+    assert flags == {"a@m": False, "b@m": False}
+    assert state.ext_marked["plugins"] == set()  # marks consumed on success
+
+
+def test_bulk_toggle_reports_skipped_wrong_scope(monkeypatch):
+    """Bulk p on mixed-scope hooks: project hooks flip, user hooks are
+    skipped with the first skip reason attached."""
     from types import SimpleNamespace
     calls = []
     monkeypatch.setattr("axt.tui.tabs.set_hook_disabled",
                         lambda path, hook, disabled: calls.append(disabled) or True)
     monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    proj = SimpleNamespace(event="Stop", type="command", source="project",
+                           source_path="/p.json", disabled=False, matcher="*",
+                           command="x", url=None, prompt=None)
+    user = SimpleNamespace(event="Stop", type="command", source="user",
+                           source_path="/u.json", disabled=False, matcher="*",
+                           command="y", url=None, prompt=None)
     state = axt.TuiState()
     state.ext_sub_tab = "hooks"
-    state.ext_cache["hooks"] = [SimpleNamespace(
-        event="PreToolUse", type="command", source="user",
-        source_path="/tmp/settings.json", disabled=False)]
+    state.ext_cache["hooks"] = [proj, user]
     state.ext_selected["hooks"] = 0
     state.stdscr_callbacks = {"stdscr": None}
-    msg = axt._handle_subtab_action(state, "hooks", ord(" "))
-    assert calls == [True] and "Disabled" in msg
+    state.ext_marked["hooks"] = {axt._item_key("hooks", proj),
+                                 axt._item_key("hooks", user)}
+    msg = axt._handle_subtab_action(state, "hooks", ord("p"))
+    assert calls == [True]
+    assert "1/2 marked" in msg and "use g" in msg
+
+
+def test_bulk_toggle_nothing_changed_keeps_marks():
+    state = _mcp_state(disabled=False)
+    state.ext_marked["mcp"] = {"user:srv"}
+    msg = axt._handle_subtab_action(state, "mcp", ord("g"))
+    assert msg.startswith("No marked item toggled")
+    assert state.ext_marked["mcp"] == {"user:srv"}  # kept for retry
+
+
+def test_skill_p_links_into_project_scope(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        skills=tmp_path / "global-skills", claude_dir=tmp_path / "claude"))
+    src = tmp_path / "somewhere" / "myskill"
+    src.mkdir(parents=True)
+    state = axt.TuiState()
+    state.ext_sub_tab = "skills"
+    state.ext_cache["skills"] = [axt.SkillInfo(
+        name="myskill", path=str(src), is_symlink=False, source="user")]
+    state.ext_selected["skills"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(state, "skills", ord("p"))
+    assert msg == "Linked myskill (project)"
+    link = tmp_path / ".claude" / "skills" / "myskill"
+    assert link.is_symlink()
+    assert link.resolve() == src.resolve()
+
+
+def test_skill_p_unlinks_project_symlink(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    src = tmp_path / "store" / "myskill"
+    src.mkdir(parents=True)
+    proj_dir = tmp_path / ".claude" / "skills"
+    proj_dir.mkdir(parents=True)
+    link = proj_dir / "myskill"
+    link.symlink_to(src)
+    state = axt.TuiState()
+    state.ext_sub_tab = "skills"
+    state.ext_cache["skills"] = [
+        axt.SkillInfo(name="myskill", path=str(src), is_symlink=False, source="user"),
+        axt.SkillInfo(name="myskill", path=str(link), is_symlink=True, source="project"),
+    ]
+    state.ext_selected["skills"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(state, "skills", ord("p"))
+    assert msg == "Unlinked myskill (project)"
+    assert not link.exists() and not link.is_symlink()
+
+
+def test_skill_toggle_refuses_real_dir_in_scope(tmp_path, monkeypatch):
+    """A real (non-symlink) directory in the target scope is never deleted."""
+    monkeypatch.chdir(tmp_path)
+    proj_dir = tmp_path / ".claude" / "skills" / "myskill"
+    proj_dir.mkdir(parents=True)
+    state = axt.TuiState()
+    state.ext_sub_tab = "skills"
+    state.ext_cache["skills"] = [axt.SkillInfo(
+        name="myskill", path=str(proj_dir), is_symlink=False, source="project")]
+    state.ext_selected["skills"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(state, "skills", ord("p"))
+    assert msg == "myskill is not a symlink in project scope (cannot unlink)"
+    assert proj_dir.is_dir()
+
+
+def test_command_g_links_into_global_scope(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(claude_dir=tmp_path / "claude"))
+    src = tmp_path / "proj-cmds" / "foo.md"
+    src.parent.mkdir()
+    src.write_text("# hi")
+    state = axt.TuiState()
+    state.ext_sub_tab = "commands"
+    state.ext_cache["commands"] = [axt.CommandInfo(
+        name="foo", source="project", source_path=str(src),
+        description="", content="")]
+    state.ext_selected["commands"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(state, "commands", ord("g"))
+    assert msg == "Linked foo (global)"
+    link = tmp_path / "claude" / "commands" / "foo.md"
+    assert link.is_symlink()
+    assert link.resolve() == src.resolve()
+
+
+def test_agent_p_links_into_project_scope(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(claude_dir=tmp_path / "claude"))
+    src = tmp_path / "claude" / "agents" / "bot.md"
+    src.parent.mkdir(parents=True)
+    src.write_text("# bot")
+    state = axt.TuiState()
+    state.ext_sub_tab = "agents"
+    state.ext_cache["agents"] = [axt.AgentInfo(
+        name="bot", source="user", source_path=str(src), description="")]
+    state.ext_selected["agents"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(state, "agents", ord("p"))
+    assert msg == "Linked bot (project)"
+    assert (tmp_path / ".claude" / "agents" / "bot.md").is_symlink()
+
+
+def test_market_p_and_g_explain_global_only():
+    state = axt.TuiState()
+    state.ext_sub_tab = "market"
+    state.stdscr_callbacks = {"stdscr": None}
+    for key in (ord("p"), ord("g")):
+        msg = axt._handle_subtab_action(state, "market", key)
+        assert msg == "Marketplaces are global-only — no project/global toggle"
+
+
+def test_vault_p_g_with_marks_toggle_pending_in_bulk():
+    state = axt.TuiState()
+    state.vault_items = [
+        axt.VaultItem(name="alpha", type="skill", path="", description=""),
+        axt.VaultItem(name="beta", type="skill", path="", description=""),
+    ]
+    state.vault_marked = {"alpha", "beta"}
+    msg = axt.handle_vault_input(state, ord("p"))
+    assert state.vault_pending_project == {"alpha", "beta"}
+    assert "2 marked" in msg
+    # Second press flips the same pending entries back off.
+    axt.handle_vault_input(state, ord("p"))
+    assert state.vault_pending_project == set()
+    axt.handle_vault_input(state, ord("g"))
+    assert state.vault_pending_global == {"alpha", "beta"}
+
+
+def test_skills_proj_glob_columns_reflect_scope_presence():
+    state = axt.TuiState()
+    state.ext_sub_tab = "skills"
+    state.ext_cache["skills"] = [
+        axt.SkillInfo(name="both", path="/u/skills/both", is_symlink=False, source="user"),
+        axt.SkillInfo(name="both", path="/p/.claude/skills/both", is_symlink=True, source="project"),
+        axt.SkillInfo(name="globonly", path="/u/skills/globonly", is_symlink=False, source="user"),
+    ]
+    scr = _make_stdscr(rows=30, cols=140)
+    axt.render_extensions_tab(scr, state, 0, 28, 140)
+    flat = _flat(scr)
+    assert "Proj" in flat and "Glob" in flat
+
+    def _row(name: str) -> str:
+        row_y = next(c[0] for c in scr.calls
+                     if len(c) >= 3 and isinstance(c[2], str) and name in c[2])
+        return "".join(c[2] for c in scr.calls
+                       if len(c) >= 3 and c[0] == row_y and isinstance(c[2], str))
+
+    # globonly: not in project scope (○) but present globally (●).
+    assert "○" in _row("globonly") and "●" in _row("globonly")
+    # both: linked in both scopes → no empty circle on that row.
+    assert "○" not in _row("both")
+
+
+def test_vault_cell_marks_vault_backed_rows(tmp_path, monkeypatch):
+    """Skills whose content resolves into ~/.axt/vault get ✓; others ─.
+    Sub-tabs whose types the vault does not store always get ─."""
+    from types import SimpleNamespace
+    vault = tmp_path / "vault"
+    (vault / "skills" / "inv").mkdir(parents=True)
+    plain = tmp_path / "plain-skill"
+    plain.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(vault / "skills" / "inv")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(vault=vault))
+    in_vault = axt.SkillInfo(name="inv", path=str(vault / "skills" / "inv"),
+                             is_symlink=False, source="user")
+    via_link = axt.SkillInfo(name="linked", path=str(linked),
+                             is_symlink=True, source="user")
+    outside = axt.SkillInfo(name="plain-skill", path=str(plain),
+                            is_symlink=False, source="user")
+    assert axt._vault_cell("skills", in_vault) == "✓"
+    assert axt._vault_cell("skills", via_link) == "✓"   # symlink → resolves into vault
+    assert axt._vault_cell("skills", outside) == "─"
+    mcp = SimpleNamespace(name="srv", scope="user")
+    assert axt._vault_cell("mcp", mcp) == "─"
+    assert axt._vault_cell("market", SimpleNamespace(name="m")) == "─"
+
+
+def test_vault_cell_handles_symlinked_vault_subdir(tmp_path, monkeypatch):
+    """`~/.axt/vault/skills` may itself be a symlink to external storage —
+    items resolving into that storage still count as vault-managed."""
+    store = tmp_path / "external-store"
+    store.mkdir()
+    (store / "sk").mkdir()
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "skills").symlink_to(store)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(vault=vault))
+    # A user-scope skill symlinked through the vault path.
+    link = tmp_path / "claude-skill"
+    link.symlink_to(vault / "skills" / "sk")
+    row = axt.SkillInfo(name="sk", path=str(link), is_symlink=True, source="user")
+    assert axt._vault_cell("skills", row) == "✓"
+
+
+def test_uniform_status_columns_rendered_on_every_subtab(tmp_path, monkeypatch):
+    """Every non-vault sub-tab renders the shared Ver/Vault/Proj/Glob block."""
+    import json
+    from types import SimpleNamespace
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json",
+        settings=tmp_path / "s.json",
+        vault=tmp_path / "vault",
+        claude_dir=tmp_path / "claude",
+    ))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
+                             "installedAt": "", "lastUpdated": ""}]},
+    }))
+    caches = {
+        "plugins": axt.list_installed_plugins(tmp_path / "ip.json"),
+        "skills": [axt.SkillInfo(name="sk", path="/u/skills/sk",
+                                 is_symlink=False, source="user")],
+        "commands": [axt.CommandInfo(name="c", source="user", source_path="/c.md",
+                                     description="", content="")],
+        "agents": [axt.AgentInfo(name="a", source="user", source_path="/a.md",
+                                 description="")],
+        "mcp": [SimpleNamespace(name="srv", scope="user", transport="stdio",
+                                disabled=False, plugin_id="", version="2.0",
+                                url="", command="node", args_list=[], env_dict={})],
+        "hooks": [axt.HookInfo(event="Stop", matcher="*", source="user",
+                               source_path="/s.json", type="command", command="x")],
+        "market": [axt.MarketplaceInfo(
+            name="mkt", source=axt.MarketplaceSource(kind="github", repo="o/r"),
+            install_location="/loc", last_updated="2026-01-01T00:00:00Z")],
+    }
+    for sub, cache in caches.items():
+        state = axt.TuiState()
+        state.ext_sub_tab = sub
+        state.ext_cache[sub] = cache
+        scr = _make_stdscr(rows=30, cols=160)
+        axt.render_extensions_tab(scr, state, 0, 28, 160)
+        flat = _flat(scr)
+        for header in ("Ver", "Vault", "Proj", "Glob"):
+            assert header in flat, f"{sub}: {header} column missing"
+    # MCP: the plugin-sourced server's version lands in the Ver column.
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = caches["mcp"]
+    scr = _make_stdscr(rows=30, cols=160)
+    axt.render_extensions_tab(scr, state, 0, 28, 160)
+    assert "2.0" in _flat(scr)
 
 
 def test_subtab_action_without_stdscr_is_noop():
@@ -4679,7 +5088,7 @@ def test_subtab_action_hook_preview(monkeypatch):
     ]
     s.ext_selected["hooks"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "hooks", ord("p"))
+    msg = axt._handle_subtab_action(s, "hooks", ord("v"))
     assert msg is None  # preview returns None
     assert captured
     assert "ran echo" in captured[0][1]
@@ -4691,7 +5100,7 @@ def test_subtab_action_hook_preview_none_selected():
     s.ext_sub_tab = "hooks"
     s.ext_cache["hooks"] = []
     s.stdscr_callbacks = {"stdscr": object()}
-    assert axt._handle_subtab_action(s, "hooks", ord("p")) is None
+    assert axt._handle_subtab_action(s, "hooks", ord("v")) is None
 
 
 # ─── _handle_subtab_action: commands/agents editor ────────────────────────────
@@ -6344,8 +6753,7 @@ def test_subtab_action_market_remove_cancelled(monkeypatch):
 
 
 def test_subtab_action_hook_preview_failure(monkeypatch):
-    """`p` preview where preview_hook raises OSError → 'Preview failed'
-    (lines 2085-2086)."""
+    """`v` preview where preview_hook raises OSError → 'Preview failed'."""
     monkeypatch.setattr("axt.tui.tabs.preview_hook",
                         lambda hook: (_ for _ in ()).throw(OSError("exec boom")))
     s = axt.TuiState()
@@ -6356,7 +6764,7 @@ def test_subtab_action_hook_preview_failure(monkeypatch):
     ]
     s.ext_selected["hooks"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "hooks", ord("p"))
+    msg = axt._handle_subtab_action(s, "hooks", ord("v"))
     assert msg is not None and "Preview failed" in msg
 
 
@@ -6378,7 +6786,7 @@ def test_subtab_action_hook_preview_includes_stderr(monkeypatch):
     ]
     s.ext_selected["hooks"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    axt._handle_subtab_action(s, "hooks", ord("p"))
+    axt._handle_subtab_action(s, "hooks", ord("v"))
     assert captured
     assert "stderr" in captured[0]
     assert "boom on stderr" in captured[0]
@@ -7036,9 +7444,9 @@ def test_subtab_keymap_no_duplicate_keys():
 
 def test_subtab_keymap_avoids_reserved_navigation_keys():
     """Keys consumed by handle_extensions_input's shared navigation layer
-    ([, ], r, s, Tab, j, k, /) must never appear in an action binding."""
+    ([, ], r, s, Tab, j, k, /, Space) must never appear in an action binding."""
     reserved = {ord("["), ord("]"), ord("r"), ord("s"), ord("\t"),
-                ord("j"), ord("k"), ord("/")}
+                ord("j"), ord("k"), ord("/"), ord(" ")}
     for sub, bindings in axt.SUBTAB_KEYMAP.items():
         for b in axt._SUBTAB_COMMON + bindings:
             assert not (set(b.keys) & reserved), f"{sub}: {b.hint!r} uses a reserved key"
@@ -7123,9 +7531,9 @@ def test_extensions_shortcuts_show_search_state():
 
 
 def test_subtab_shortcuts_generated_from_keymap():
-    assert axt.subtab_shortcuts("plugins") == "Space:project  g:global  x:uninstall  Tab:detail"
-    assert axt.subtab_shortcuts("commands") == "e:edit  Tab:detail"
-    assert axt.subtab_shortcuts("mcp") == "Space:toggle  Tab:detail"
+    assert axt.subtab_shortcuts("plugins") == "p:project  g:global  x:uninstall  Tab:detail"
+    assert axt.subtab_shortcuts("commands") == "p:project  g:global  e:edit  Tab:detail"
+    assert axt.subtab_shortcuts("mcp") == "p:project  Tab:detail"
     assert axt.subtab_shortcuts("vault") == ""  # vault owns its own status line
 
 

@@ -1,6 +1,7 @@
 ---
 name: agent-extension-tool
 description: Use `axt` (Agent eXtension Tool) — a Python+curses CLI/TUI — to inspect and manage extensions, plugins, skills, MCP servers, hooks, commands, agents, marketplaces, and usage/cost for Claude Code. Trigger phrases — EN ("axt", "list plugins", "install plugin", "list skills", "list MCP", "enable/disable MCP", "show hooks", "enable/disable hook", "list agents", "claude usage", "claude plan", "billing cycle", "marketplace add/sync", "vault list", "link skill", "context analyze", "token usage at session start"). KO ("axt", "플러그인 목록", "플러그인 설치", "스킬 목록", "MCP 서버", "MCP 켜기/끄기", "훅 보기", "훅 켜기/끄기", "에이전트 목록", "클로드 사용량", "마켓플레이스", "볼트", "스킬 링크", "컨텍스트 분석", "에이전트 확장 도구").
+version: 1.0.0
 ---
 
 # axt — Agent eXtension Tool
@@ -41,8 +42,9 @@ axt mcp      {list, info <name>, enable <name>, disable <name>}
 axt hook     {list, enable <index>, disable <index>}
 axt usage    [today | week | month | blocks [--active] | session <id>]
              [--since YYYY-MM-DD] [--until YYYY-MM-DD]
-             [--model <id>] [--project <name>] [--breakdown]
-             [--json | --csv | --export <path>]
+             [--model <id>] [--project <name>]
+             [--json]   # today, week only
+             [--csv]    # week only
 axt plan     [overview | set <plan-name|auto>]
 axt project  {init, add <type> <name>..., remove <type> <name>, sync, status}
 axt context  [--detail] [--json] [--category <name>] [--model <id>]

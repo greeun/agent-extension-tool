@@ -19,6 +19,19 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run every test from a tmp dir.
+
+    Several TUI/CLI code paths treat `Path.cwd()` as the project dir
+    (vault link/sync, `.axt-profile.json` writes). Without this, tests
+    that exercise them leave symlinks and profile files in the repo root
+    (git-ignored, so the leak is silent). Tests that need a specific cwd
+    still call `monkeypatch.chdir(...)` themselves, which overrides this.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 @pytest.fixture
 def tmp_settings(tmp_path: Path) -> Path:
     """Path to an empty settings.json under a tmp dir (file does NOT exist yet)."""
