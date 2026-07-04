@@ -1892,6 +1892,60 @@ def test_ext_detail_blurred_on_subtab_cycle():
     assert state.ext_detail_scroll == 0
 
 
+def _plugin(name: str) -> "axt.PluginInfo":
+    return axt.PluginInfo(
+        id=f"{name}@m", name=name, marketplace="m", version="1",
+        install_path="/p", scope="user", installed_at="", last_updated="",
+    )
+
+
+def test_ext_detail_esc_blurs_back_to_list():
+    """Esc while the detail panel is focused blurs it back to the list
+    (mirrors Vault's Esc-blur) so j/k move the selection again."""
+    state = axt.TuiState()
+    state.ext_sub_tab = "plugins"
+    state.ext_cache["plugins"] = [_plugin("a"), _plugin("b")]
+    state.ext_detail_focused = True
+    state.ext_detail_scroll = 3
+    axt.handle_extensions_input(state, 27)  # Esc
+    assert state.ext_detail_focused is False
+    assert state.ext_detail_scroll == 0
+    # j now moves the list selection, not the detail scroll.
+    axt.handle_extensions_input(state, ord("j"))
+    assert state.ext_selected["plugins"] == 1
+
+
+def test_ext_content_esc_with_detail_focused_does_not_climb():
+    """Esc with the detail panel focused must NOT climb to the sub-tab bar —
+    it has to fall through to handle_extensions_input so it blurs the panel
+    first (the second Esc, with the panel blurred, then climbs)."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "plugins"
+    state.focused_layer = "content"
+    state.ext_detail_focused = True
+    scr = _make_stdscr()
+    consumed = axt._handle_content_layer_key(scr, state, 27, "extensions")
+    assert consumed is False
+    assert state.focused_layer == "content"  # unchanged
+
+
+def test_ext_content_up_with_detail_focused_does_not_climb():
+    """↑ at the top of the list scrolls the focused detail panel instead of
+    climbing out of the content layer."""
+    import curses
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("extensions")
+    state.ext_sub_tab = "plugins"
+    state.focused_layer = "content"
+    state.ext_selected["plugins"] = 0  # at top → would climb if unguarded
+    state.ext_detail_focused = True
+    scr = _make_stdscr()
+    consumed = axt._handle_content_layer_key(scr, state, curses.KEY_UP, "extensions")
+    assert consumed is False
+    assert state.focused_layer == "content"  # unchanged
+
+
 def test_extensions_subtab_header_has_no_underline_rule():
     """Non-Vault Extensions sub-tabs match Vault: the column header attaches
     directly to the list with no ──── rule below it (header_rule=False)."""
@@ -5074,6 +5128,36 @@ def test_tui_loop_content_layer_routes_keys_to_tab_handler(monkeypatch, tmp_path
     assert captured["layer"] == "content"
 
 
+def test_tui_loop_plugins_detail_esc_returns_focus_to_list(monkeypatch, tmp_path):
+    """Full loop: focus the plugins detail panel (Tab), Esc blurs it back to
+    the list — staying on the content layer — and `j` then moves the list
+    selection."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    _quiet_curses(monkeypatch)
+    monkeypatch.setattr("axt.tui.tabs.list_installed_plugins",
+                        lambda _: [_plugin("a"), _plugin("b")])
+    captured = {}
+    real_render = axt.tui.loop._render_frame
+    def spy_render(stdscr, state):
+        captured["layer"] = state.focused_layer
+        captured["detail"] = state.ext_detail_focused
+        captured["selected"] = state.ext_selected.get("plugins", 0)
+        return real_render(stdscr, state)
+    monkeypatch.setattr("axt.tui.loop._render_frame", spy_render)
+    # ↓ → subTab; ←← → vault→market→plugins; ↓ → content; Tab → focus detail;
+    # Esc → blur back to list (content layer); j → next row; q → quit.
+    scr = _loop_stdscr([
+        curses.KEY_DOWN, curses.KEY_LEFT, curses.KEY_LEFT, curses.KEY_DOWN,
+        9, 27, ord("j"), ord("q"),
+    ])
+    axt._tui_loop(scr)
+    assert captured["layer"] == "content"
+    assert captured["detail"] is False
+    assert captured["selected"] == 1
+
+
 def test_tui_loop_resize_in_modal_state_redraws(monkeypatch, tmp_path):
     """KEY_RESIZE while in a vault modal sub-state takes the modal resize
     branch (still redraws), then quits via the handler path."""
@@ -6761,3 +6845,31 @@ def test_sort_cycle_keys_match_columns():
         for key, _fn, _rev, marked, _glyph in specs:
             assert marked is None or marked in col_keys[sub], \
                 f"{sub} sort {key!r} marks unknown column {marked!r}"
+
+
+# ─── SUBTAB_KEYMAP table (single source of truth for dispatch/hints/help) ───
+
+
+def test_subtab_keymap_no_duplicate_keys():
+    """Common + per-sub-tab bindings must not claim the same key twice."""
+    for sub, bindings in axt.SUBTAB_KEYMAP.items():
+        seen = set()
+        for b in axt._SUBTAB_COMMON + bindings:
+            for k in b.keys:
+                assert k not in seen, f"{sub}: key {chr(k)!r} bound twice"
+                seen.add(k)
+
+
+def test_subtab_keymap_avoids_reserved_navigation_keys():
+    """Keys consumed by handle_extensions_input's shared navigation layer
+    ([, ], r, s, Tab, j, k, /) must never appear in an action binding."""
+    reserved = {ord("["), ord("]"), ord("r"), ord("s"), ord("\t"),
+                ord("j"), ord("k"), ord("/")}
+    for sub, bindings in axt.SUBTAB_KEYMAP.items():
+        for b in axt._SUBTAB_COMMON + bindings:
+            assert not (set(b.keys) & reserved), f"{sub}: {b.hint!r} uses a reserved key"
+
+
+def test_subtab_keymap_covers_all_non_vault_subtabs():
+    subs = {k for k, _ in axt.EXTENSION_SUB_TABS} - {"vault"}
+    assert set(axt.SUBTAB_KEYMAP) == subs

@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 # Widget primitives — bring in everything from the TUI widgets layer.
 from axt.tui.widgets import *  # noqa: F401,F403
@@ -2546,11 +2546,15 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
             return None
         state.ext_detail_focused = not state.ext_detail_focused
         state.ext_detail_scroll = 0
-        return "Detail focused — j/k scroll, Tab to blur" if state.ext_detail_focused else None
+        return "Detail focused — j/k scroll, Esc/Tab to blur" if state.ext_detail_focused else None
 
     # While the detail panel is focused, navigation keys scroll it instead of
-    # moving the list selection. Action keys (e/d/p/o/…) still fall through.
+    # moving the list selection. Esc blurs back to the list (mirrors Vault).
+    # Action keys (e/d/p/o/…) still fall through.
     if state.ext_detail_focused and sub in _SUBTABS_WITH_DETAIL:
+        if key == KEY_ESC:
+            _blur_ext_detail(state)
+            return None
         if key in (ord("j"), curses.KEY_DOWN):
             state.ext_detail_scroll += 1
             return None
@@ -2662,197 +2666,296 @@ _PLUGIN_TOGGLES = {
 }
 
 
+# ── Sub-tab action handlers ──────────────────────────────────────────────────
+# Uniform signature (state, stdscr, sub, key) → status message. Wired through
+# SUBTAB_KEYMAP below; never called directly by the input loop.
+
+
+def _act_open_terminal(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    item = _selected_item(state, sub)
+    if item is None:
+        return None
+    return _open_terminal_for_dir(state, _item_terminal_dir(sub, item))
+
+
+def _act_plugin_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    plugin = _selected_item(state, "plugins")
+    if plugin is None:
+        return None
+    want_enabled, scope = _PLUGIN_TOGGLES[key]
+    path = PATHS.settings if scope == "global" else project_settings_path()
+    try:
+        set_plugin_enabled(path, plugin.id, want_enabled)
+    except OSError as exc:
+        return f"{'Enable' if want_enabled else 'Disable'} failed: {exc}"
+    _refresh_ext(state, "plugins")
+    return f"{'Enabled' if want_enabled else 'Disabled'} {plugin.id} ({scope})"
+
+
+def _act_plugin_uninstall(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    plugin = _selected_item(state, "plugins")
+    if plugin is None:
+        return None
+    if confirm_modal(stdscr, f"Uninstall plugin {plugin.id}?\nThis removes {plugin.install_path}."):
+        import shutil
+        try:
+            shutil.rmtree(plugin.install_path, ignore_errors=True)
+            remove_installed_plugin(PATHS.installed_plugins, plugin.id)
+            remove_plugin_from_settings(PATHS.settings, plugin.id)
+            _refresh_ext(state, "plugins")
+            return f"Uninstalled {plugin.id}"
+        except OSError as exc:
+            return f"Uninstall failed: {exc}"
+    return "Cancelled"
+
+
+def _act_mcp_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    server = _selected_item(state, "mcp")
+    if server is None:
+        return None
+    want_disabled = key == ord("d")
+    if server.disabled == want_disabled:
+        return f"MCP {server.name} already {'disabled' if want_disabled else 'enabled'}"
+    try:
+        set_mcp_disabled(server.name, disabled=want_disabled)
+    except OSError as exc:
+        return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
+    _refresh_ext(state, "mcp")
+    return f"{'Disabled' if want_disabled else 'Enabled'} MCP {server.name} (project)"
+
+
+def _act_skill_link(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    if not is_symlink_supported():
+        return "Symlinks unsupported on this platform"
+    target = text_input_modal(stdscr,
+                              "Path to skill directory to link",
+                              title="Skill link",
+                              initial="")
+    if not target:
+        return None
+    try:
+        link_skill(PATHS.skills, target.strip())
+        _refresh_ext(state, "skills")
+        return f"Linked {target}"
+    except (OSError, ValueError) as exc:
+        return f"Link failed: {exc}"
+
+
+def _act_skill_unlink(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    skill = _selected_item(state, "skills")
+    if skill is None:
+        return None
+    if not skill.is_symlink:
+        return "Selected skill is not a symlink (cannot unlink)"
+    if confirm_modal(stdscr, f"Unlink skill {skill.name}?", title="Confirm unlink"):
+        try:
+            unlink_skill(PATHS.skills, skill.name)
+            _refresh_ext(state, "skills")
+            return f"Unlinked {skill.name}"
+        except (OSError, ValueError) as exc:
+            return f"Unlink failed: {exc}"
+    return "Cancelled"
+
+
+def _act_market_add(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    source_str = text_input_modal(
+        stdscr,
+        "Source (github:user/repo, git:url, dir:/path)",
+        title="Marketplace add",
+    )
+    if not source_str:
+        return None
+    try:
+        source = parse_marketplace_source(source_str.strip())
+    except ValueError as exc:
+        return f"Parse failed: {exc}"
+    if source.kind == "github":
+        default_name = source.repo.split("/")[-1] if source.repo else ""
+    elif source.kind == "directory":
+        default_name = (source.path or "").rstrip("/").split("/")[-1]
+    else:
+        default_name = "custom"
+    name = text_input_modal(stdscr, "Local name for this marketplace",
+                            title="Marketplace name",
+                            initial=default_name)
+    if not name:
+        return None
+    try:
+        add_marketplace(PATHS.known_marketplaces, PATHS.marketplaces, name.strip(), source)
+        state.ext_cache.pop("market", None)
+        return f"Added {name.strip()}"
+    except (RuntimeError, FileNotFoundError, ValueError) as exc:
+        return f"Add failed: {exc}"
+
+
+def _act_market_sync(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    m = _selected_item(state, "market")
+    if m is None:
+        return None
+    try:
+        result = sync_marketplace(PATHS.known_marketplaces, m.name)
+        state.ext_cache.pop("market", None)
+        return f"Synced {m.name}: {result.before} → {result.after}" if result.updated else f"{m.name} up to date"
+    except (RuntimeError, KeyError) as exc:
+        return f"Sync failed: {exc}"
+
+
+def _act_market_remove(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    m = _selected_item(state, "market")
+    if m is None:
+        return None
+    if confirm_modal(stdscr, f"Remove marketplace {m.name}?\nThis deletes {m.install_location}.",
+                     title="Confirm remove"):
+        try:
+            remove_marketplace(PATHS.known_marketplaces, PATHS.marketplaces, m.name)
+            state.ext_cache.pop("market", None)
+            return f"Removed {m.name}"
+        except KeyError as exc:
+            return f"Remove failed: {exc}"
+    return "Cancelled"
+
+
+def _act_hook_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    hook = _selected_item(state, "hooks")
+    if hook is None:
+        return None
+    want_disabled = key == ord("d")
+    if hook.disabled == want_disabled:
+        return f"Hook already {'disabled' if want_disabled else 'enabled'}"
+    if hook.source == "plugin":
+        return "Plugin hooks are read-only (manage them in the plugin)"
+    try:
+        moved = set_hook_disabled(hook.source_path, hook, disabled=want_disabled)
+    except OSError as exc:
+        return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
+    if not moved:
+        return "Hook not found in its settings file"
+    _refresh_ext(state, "hooks")
+    return f"{'Disabled' if want_disabled else 'Enabled'} hook {hook.event} ({hook.source})"
+
+
+def _act_hook_preview(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    hook = _selected_item(state, "hooks")
+    if hook is None:
+        return None
+    try:
+        result = preview_hook(hook)
+    except OSError as exc:
+        return f"Preview failed: {exc}"
+    lines = [
+        f"Type:    {result.type}",
+        f"Summary: {result.summary}",
+        "",
+    ]
+    if result.exit_code is not None:
+        lines.append(f"Exit:    {result.exit_code}")
+    if result.output:
+        lines += ["", "── stdout ──", result.output]
+    if result.error:
+        lines += ["", "── stderr ──", result.error]
+    preview_modal(stdscr, "\n".join(lines), title=f"Hook preview: {hook.event}")
+    return None
+
+
+def _act_edit_source(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    item = _selected_item(state, sub)
+    if item is None or not item.source_path:
+        return None
+    ok = open_in_editor(stdscr, item.source_path)
+    return f"Opened {item.source_path}" if ok else "Editor failed"
+
+
+# ── Sub-tab keymap: single source of truth for dispatch + hints + help ───────
+# Each binding: key codes → handler, plus the status-bar hint fragment and the
+# `?`-help line it advertises ("" = hidden). `needs_stdscr` bindings are
+# no-ops when no curses screen is available (tests, headless) — this mirrors
+# the `and stdscr` guards of the old if-chain exactly.
+class SubtabBinding(NamedTuple):
+    keys: tuple[int, ...]
+    hint: str
+    help: str
+    needs_stdscr: bool
+    handler: Callable[[TuiState, Any, str, int], Optional[str]]
+
+
+_SUBTAB_COMMON: tuple[SubtabBinding, ...] = (
+    SubtabBinding((ord("o"),), "o:term",
+                  "o=open a new terminal at the item's directory",
+                  False, _act_open_terminal),
+)
+
+SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
+    "plugins": (
+        SubtabBinding((ord("e"), ord("d")), "e/d:on/off(G)",
+                      "e=enable (global)  d=disable (global)",
+                      False, _act_plugin_toggle),
+        SubtabBinding((ord("E"), ord("D")), "E/D:on/off(P)",
+                      "E=enable (project)  D=disable (project)",
+                      False, _act_plugin_toggle),
+        SubtabBinding((ord("x"),), "x:uninstall",
+                      "x=uninstall (confirm)",
+                      True, _act_plugin_uninstall),
+    ),
+    "mcp": (
+        SubtabBinding((ord("e"), ord("d")), "e:enable  d:disable",
+                      "e=enable  d=disable (this project's disabledMcpServers)",
+                      False, _act_mcp_toggle),
+    ),
+    "skills": (
+        SubtabBinding((ord("l"),), "l:link",
+                      "l=link new path (input)",
+                      True, _act_skill_link),
+        SubtabBinding((ord("u"),), "u:unlink",
+                      "u=unlink (confirm)",
+                      True, _act_skill_unlink),
+    ),
+    "market": (
+        SubtabBinding((ord("a"),), "a:add",
+                      "a=add (source+name input)",
+                      True, _act_market_add),
+        SubtabBinding((ord("S"),), "S:sync",
+                      "S=sync (selected)",
+                      True, _act_market_sync),
+        SubtabBinding((ord("x"),), "x:remove",
+                      "x=remove (confirm)",
+                      True, _act_market_remove),
+    ),
+    "hooks": (
+        SubtabBinding((ord("e"), ord("d")), "e:enable  d:disable",
+                      "e=enable  d=disable (moves the rule within its settings file)",
+                      False, _act_hook_toggle),
+        SubtabBinding((ord("p"),), "p:preview",
+                      "p=preview hook execution (scrollable modal)",
+                      True, _act_hook_preview),
+    ),
+    "commands": (
+        SubtabBinding((ord("e"),), "e:edit",
+                      "e=open source file in $EDITOR",
+                      True, _act_edit_source),
+    ),
+    "agents": (
+        SubtabBinding((ord("e"),), "e:edit",
+                      "e=open source file in $EDITOR",
+                      True, _act_edit_source),
+    ),
+}
+
+
 def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
-    """Sub-tab-specific actions (l/u/a/s/r/p/e/x/o). Returns status message."""
-    # Note: stdscr-bound actions (confirm_modal, text_input_modal,
-    # preview_modal, open_in_editor) are wired through _tab_stdscr_actions
-    # because handler functions don't have stdscr. We use a callback.
+    """Table-driven sub-tab actions (see SUBTAB_KEYMAP). Returns status message.
+
+    stdscr-bound actions (confirm_modal, text_input_modal, preview_modal,
+    open_in_editor) get the curses screen through state.stdscr_callbacks;
+    handlers never receive it directly from the loop so they stay testable."""
     cb = state.stdscr_callbacks
     if not cb:
         return None  # No interactive context available (e.g. tests)
     stdscr = cb.get("stdscr")
-
-    # ── All sub-tabs: o=open a new terminal at the item's directory ───────
-    if key == ord("o"):
-        item = _selected_item(state, sub)
-        if item is None:
-            return None
-        return _open_terminal_for_dir(state, _item_terminal_dir(sub, item))
-
-    # ── Plugins: e/d=global, E/D=project, x=uninstall i=info ───────────────
-    if sub == "plugins":
-        plugin = _selected_item(state, "plugins")
-        if plugin is None:
-            return None
-        if key in _PLUGIN_TOGGLES:
-            want_enabled, scope = _PLUGIN_TOGGLES[key]
-            path = PATHS.settings if scope == "global" else project_settings_path()
-            try:
-                set_plugin_enabled(path, plugin.id, want_enabled)
-            except OSError as exc:
-                return f"{'Enable' if want_enabled else 'Disable'} failed: {exc}"
-            _refresh_ext(state, "plugins")
-            return f"{'Enabled' if want_enabled else 'Disabled'} {plugin.id} ({scope})"
-        if key == ord("x") and stdscr:
-            if confirm_modal(stdscr, f"Uninstall plugin {plugin.id}?\nThis removes {plugin.install_path}."):
-                import shutil
-                try:
-                    shutil.rmtree(plugin.install_path, ignore_errors=True)
-                    remove_installed_plugin(PATHS.installed_plugins, plugin.id)
-                    remove_plugin_from_settings(PATHS.settings, plugin.id)
-                    _refresh_ext(state, "plugins")
-                    return f"Uninstalled {plugin.id}"
-                except OSError as exc:
-                    return f"Uninstall failed: {exc}"
-            return "Cancelled"
-
-    # ── MCP: e=enable d=disable in this project's disabledMcpServers ───────
-    if sub == "mcp":
-        server = _selected_item(state, "mcp")
-        if server is None:
-            return None
-        if key in (ord("e"), ord("d")):
-            want_disabled = key == ord("d")
-            if server.disabled == want_disabled:
-                return f"MCP {server.name} already {'disabled' if want_disabled else 'enabled'}"
-            try:
-                set_mcp_disabled(server.name, disabled=want_disabled)
-            except OSError as exc:
-                return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
-            _refresh_ext(state, "mcp")
-            return f"{'Disabled' if want_disabled else 'Enabled'} MCP {server.name} (project)"
-
-    # ── Skills: l=link new path, u=unlink selected (confirmed) ─────────────
-    if sub == "skills" and stdscr:
-        if key == ord("l"):
-            if not is_symlink_supported():
-                return "Symlinks unsupported on this platform"
-            target = text_input_modal(stdscr,
-                                       "Path to skill directory to link",
-                                       title="Skill link",
-                                       initial="")
-            if not target:
+    for binding in _SUBTAB_COMMON + SUBTAB_KEYMAP.get(sub, ()):
+        if key in binding.keys:
+            if binding.needs_stdscr and not stdscr:
                 return None
-            try:
-                link_skill(PATHS.skills, target.strip())
-                _refresh_ext(state, "skills")
-                return f"Linked {target}"
-            except (OSError, ValueError) as exc:
-                return f"Link failed: {exc}"
-        if key == ord("u"):
-            skill = _selected_item(state, "skills")
-            if skill is None:
-                return None
-            if not skill.is_symlink:
-                return "Selected skill is not a symlink (cannot unlink)"
-            if confirm_modal(stdscr, f"Unlink skill {skill.name}?", title="Confirm unlink"):
-                try:
-                    unlink_skill(PATHS.skills, skill.name)
-                    _refresh_ext(state, "skills")
-                    return f"Unlinked {skill.name}"
-                except (OSError, ValueError) as exc:
-                    return f"Unlink failed: {exc}"
-            return "Cancelled"
-
-    # ── Marketplace: a=add (2-step), s=sync (selected), x=remove (confirmed)
-    if sub == "market" and stdscr:
-        if key == ord("a"):
-            source_str = text_input_modal(
-                stdscr,
-                "Source (github:user/repo, git:url, dir:/path)",
-                title="Marketplace add",
-            )
-            if not source_str:
-                return None
-            try:
-                source = parse_marketplace_source(source_str.strip())
-            except ValueError as exc:
-                return f"Parse failed: {exc}"
-            if source.kind == "github":
-                default_name = source.repo.split("/")[-1] if source.repo else ""
-            elif source.kind == "directory":
-                default_name = (source.path or "").rstrip("/").split("/")[-1]
-            else:
-                default_name = "custom"
-            name = text_input_modal(stdscr, "Local name for this marketplace",
-                                     title="Marketplace name",
-                                     initial=default_name)
-            if not name:
-                return None
-            try:
-                add_marketplace(PATHS.known_marketplaces, PATHS.marketplaces, name.strip(), source)
-                state.ext_cache.pop("market", None)
-                return f"Added {name.strip()}"
-            except (RuntimeError, FileNotFoundError, ValueError) as exc:
-                return f"Add failed: {exc}"
-        m = _selected_item(state, "market")
-        if m is None:
-            return None
-        if key == ord("S"):  # `s` is the sort cycle; sync moved to `S`
-            try:
-                result = sync_marketplace(PATHS.known_marketplaces, m.name)
-                state.ext_cache.pop("market", None)
-                return f"Synced {m.name}: {result.before} → {result.after}" if result.updated else f"{m.name} up to date"
-            except (RuntimeError, KeyError) as exc:
-                return f"Sync failed: {exc}"
-        if key == ord("x"):
-            if confirm_modal(stdscr, f"Remove marketplace {m.name}?\nThis deletes {m.install_location}.",
-                             title="Confirm remove"):
-                try:
-                    remove_marketplace(PATHS.known_marketplaces, PATHS.marketplaces, m.name)
-                    state.ext_cache.pop("market", None)
-                    return f"Removed {m.name}"
-                except KeyError as exc:
-                    return f"Remove failed: {exc}"
-            return "Cancelled"
-
-    # ── Hooks: e=enable d=disable (move rule within its settings file),
-    #          p=preview hook execution in a scrollable modal ───────────────
-    if sub == "hooks":
-        hook = _selected_item(state, "hooks")
-        if hook is None:
-            return None
-        if key in (ord("e"), ord("d")):
-            want_disabled = key == ord("d")
-            if hook.disabled == want_disabled:
-                return f"Hook already {'disabled' if want_disabled else 'enabled'}"
-            if hook.source == "plugin":
-                return "Plugin hooks are read-only (manage them in the plugin)"
-            try:
-                moved = set_hook_disabled(hook.source_path, hook, disabled=want_disabled)
-            except OSError as exc:
-                return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
-            if not moved:
-                return "Hook not found in its settings file"
-            _refresh_ext(state, "hooks")
-            return f"{'Disabled' if want_disabled else 'Enabled'} hook {hook.event} ({hook.source})"
-        if key == ord("p") and stdscr:
-            try:
-                result = preview_hook(hook)
-            except OSError as exc:
-                return f"Preview failed: {exc}"
-            lines = [
-                f"Type:    {result.type}",
-                f"Summary: {result.summary}",
-                "",
-            ]
-            if result.exit_code is not None:
-                lines.append(f"Exit:    {result.exit_code}")
-            if result.output:
-                lines += ["", "── stdout ──", result.output]
-            if result.error:
-                lines += ["", "── stderr ──", result.error]
-            preview_modal(stdscr, "\n".join(lines), title=f"Hook preview: {hook.event}")
-            return None
-
-    # ── Commands / Agents: e=open source file in $EDITOR ──────────────────
-    if sub in ("commands", "agents") and stdscr and key == ord("e"):
-        item = _selected_item(state, sub)
-        if item is None or not item.source_path:
-            return None
-        ok = open_in_editor(stdscr, item.source_path)
-        return f"Opened {item.source_path}" if ok else "Editor failed"
-
+            return binding.handler(state, stdscr, sub, key)
     return None
 
 
