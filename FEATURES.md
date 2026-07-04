@@ -124,12 +124,12 @@ TUI 대시보드 실행.
 ### 2.4 Extensions 탭 (8개 서브탭, `EXTENSION_SUB_TABS` 순서)
 모든 서브탭이 좌측 체크박스(■/□, Space 마크) + `#` 행 번호 + 이름 뒤의 공통 상태 블록 `Ver Vault Proj Glob`을 공유한다 (Vault 레이아웃과 동일).
 - Vault 셀: `✓` = 항목 실체가 `~/.axt/vault/`에 저장됨 / `─` = vault 미관리 (vault가 다루지 않는 타입 포함)
-- Proj/Glob 셀: `●` 활성 / `○` 비활성 / `·` unset(Plugins) / `─` 해당 없음
+- Proj/Glob 셀: `●` 활성 / `○` 비활성 / `·` unset(Plugins) / `─` 해당 없음. MCP만 예외 — Proj/Glob은 **등록 위치** 표시(읽기 전용)이고 활성 상태는 별도 On 컬럼이 담당 (등록≠활성, 아래 MCP 행 참조)
 - **Vault** (기본) — `# Name Ver Type Vault Proj Glob Used`
 - **Skills** — `# Skill Ver Vault Proj Glob Source Type Path`
 - **Commands** — `# Command Ver Vault Proj Glob Source Description`
 - **Agents** — `# Agent Ver Vault Proj Glob Source Description`
-- **MCP** — `# Server Ver Vault Proj Glob Scope Transport Detail` (Ver는 plugin 소속 서버만, Glob `─` — 프로젝트 단위 토글만 존재)
+- **MCP** — `# Server Ver Vault Proj Glob On Scope Transport Detail` (Ver는 plugin 소속 서버만. Proj `●` = project/`.mcp.json` 등록, Glob `●` = user(`~/.claude.json` 최상위) 등록, plugin/claude.ai/built-in은 둘 다 `─`. On = 현재 프로젝트 활성 상태 — MCP 활성화는 등록 스코프와 무관하게 항상 프로젝트 단위)
 - **Hooks** — `# Event Ver Vault Proj Glob Type Source Detail` (훅이 속한 설정 파일 스코프 쪽만 ●/○, 반대쪽 `─`)
 - **Plugins** — `# Plugin Ver Vault Proj Glob Marketplace`
 - **Market** — `# Marketplace Ver Vault Proj Glob Source Location Updated` (Proj `─`, Glob `●` — 전역 레지스트리)
@@ -163,7 +163,7 @@ U           모든 프로젝트에서 unlink: 선택된 항목 있으면 일괄,
   - **Market**: Name→Source→Updated
 - **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열 — Vault 포함 모든 서브탭 동일
 - **Plugins**: `p`/`g` = project/global settings의 `enabledPlugins` 토글, `x` uninstall (확인 모달)
-- **MCP**: `p` 토글 (현재 프로젝트 `disabledMcpServers`; global 스코프 없음 — `g`는 안내 메시지, Glob 컬럼 `─`)
+- **MCP**: `p` = On 토글 (현재 프로젝트 `disabledMcpServers`, built-in은 `enabledMcpServers` opt-in; global 활성 스코프 없음 — `g`는 안내 메시지). Proj/Glob은 등록 위치 표시로 읽기 전용 — `p`/`g`로 등록을 옮길 수 없음
 - **Hooks**: `p`/`g` 토글 (설정 파일 내 `hooks`↔`disabledHooks` 이동 — user 파일 훅은 `g`, project/local 파일 훅은 `p`, plugin 훅은 읽기 전용), `v` preview (dry-run)
 - **Skills**: `p`/`g` = `.claude/skills` / `~/.claude/skills`에 symlink 링크/해제 (실제 파일·디렉터리는 삭제하지 않음 — symlink만 해제), `a` link (path 입력), `x` unlink (확인 모달)
 - **Market**: `a` add (2-step source+name 입력), `S` sync (대문자 — `s`는 정렬로 이동), `x` remove (확인). `p`/`g`는 안내 메시지 (전역 레지스트리)

@@ -2578,13 +2578,19 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         } for i, a in enumerate(data)]
 
     elif sub == "mcp":
+        # MCP splits the two axes the file-backed sub-tabs collapse into one:
+        # Proj/Glob mirror the *registration* scope (where the definition
+        # lives — read-only; plugin/claude.ai/built-in live outside both), and
+        # On carries the *activation* flag, which is always project-scoped
+        # (`disabledMcpServers` / built-in opt-in `enabledMcpServers`).
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Server", max(18, w - 98)),
+            TableColumn("name", "Server", max(18, w - 103)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
+            TableColumn("on", "On", 3),
             TableColumn("scope", "Scope", 13),
             TableColumn("transport", "Transport", 10),
             TableColumn("detail", "Detail", 30),
@@ -2594,8 +2600,9 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "name": s.name,
             "ver": getattr(s, "version", "") or "─",  # plugin-sourced servers only
             "vault": _vault_cell(sub, s),
-            "proj": "○" if s.disabled else "●",
-            "glob": "─",  # MCP servers have no global on/off switch
+            "proj": "●" if s.scope in ("project", "project-file") else "─",
+            "glob": "●" if s.scope == "user" else "─",
+            "on": "○" if s.disabled else "●",
             "scope": s.scope,
             "transport": s.transport,
             "detail": (s.url or " ".join([s.command, *s.args_list]).strip())[:60],
@@ -2972,7 +2979,9 @@ def _act_open_terminal(state: TuiState, stdscr: Any, sub: str, key: int) -> Opti
 #   plugins             settings `enabledPlugins` flag (global + project files)
 #   skills/commands/    symlink present in the scope directory
 #     agents              (~/.claude/<sub>/ vs <cwd>/.claude/<sub>/)
-#   mcp                 project-only: `disabledMcpServers` in ~/.claude.json
+#   mcp                 activation is project-only (`disabledMcpServers` in
+#                         ~/.claude.json) → shown in the On column, toggled by
+#                         p; Proj/Glob are read-only registration markers
 #   hooks               own settings file (user file = global, project/local
 #                         files = project); rule moved hooks ↔ disabledHooks
 #   market              global-only registry — no per-scope toggle
@@ -3373,8 +3382,8 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
                       True, _act_plugin_uninstall),
     ),
     "mcp": (
-        SubtabBinding((ord("p"),), "p:project",
-                      "p=toggle enabled (this project's disabledMcpServers)",
+        SubtabBinding((ord("p"),), "p:on",
+                      "p=toggle On for this project (disabledMcpServers)",
                       False, _act_scope_toggle),
         SubtabBinding((ord("g"),), "", "", False, _act_scope_toggle),
     ),

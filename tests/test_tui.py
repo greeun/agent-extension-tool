@@ -1867,14 +1867,14 @@ def _ext_idx() -> int:
 
 
 def test_status_bar_shows_mcp_toggle_shortcuts(monkeypatch):
-    """MCP sub-tab status bar advertises the p toggle + Space marking."""
+    """MCP sub-tab status bar advertises the p (On) toggle + Space marking."""
     scr = _make_stdscr(rows=30, cols=200)
     state = axt.TuiState()
     state.tab_idx = _ext_idx()
     state.ext_sub_tab = "mcp"
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "p:project" in flat
+    assert "p:on" in flat
     assert "Space:mark" in flat
 
 
@@ -1992,6 +1992,44 @@ def test_mcp_sub_tab_renders_detail_panel():
     assert "Status:" in flat
     assert "disabled" in flat
     assert "Command:" in flat
+
+
+def test_mcp_rows_split_registration_and_activation():
+    """MCP Proj/Glob mirror the *registration* scope (user → Glob ●,
+    project/.mcp.json → Proj ●, plugin/claude.ai/built-in → both ─) while the
+    On column carries the per-project activation flag."""
+    from types import SimpleNamespace
+
+    def _srv(name, scope, disabled):
+        return SimpleNamespace(
+            name=name, scope=scope, transport="http", disabled=disabled,
+            plugin_id="", version="", url="", command="", args_list=[],
+            env_dict={})
+
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [
+        _srv("glob-srv", "user", False),
+        _srv("proj-srv", "project-file", False),
+        _srv("builtin-srv", "built-in", True),
+    ]
+    scr = _make_stdscr(rows=30, cols=160)
+    axt.render_extensions_tab(scr, state, 0, 28, 160)
+
+    def _proj_glob_on(name: str) -> list[str]:
+        row_y = next(c[0] for c in scr.calls
+                     if len(c) >= 3 and isinstance(c[2], str) and name in c[2])
+        cells = sorted((c for c in scr.calls
+                        if len(c) >= 3 and c[0] == row_y and isinstance(c[2], str)),
+                       key=lambda c: c[1])
+        # Glyph cells on an MCP row, in x order: Ver, Vault, Proj, Glob, On
+        # (transport/detail hold plain text) — the last three are the target.
+        glyphs = [t for t in (c[2].strip() for c in cells) if t in ("●", "○", "─")]
+        return glyphs[-3:]
+
+    assert _proj_glob_on("glob-srv") == ["─", "●", "●"]
+    assert _proj_glob_on("proj-srv") == ["●", "─", "●"]
+    assert _proj_glob_on("builtin-srv") == ["─", "─", "○"]
 
 
 def test_hooks_sub_tab_renders_detail_panel():
@@ -7533,7 +7571,7 @@ def test_extensions_shortcuts_show_search_state():
 def test_subtab_shortcuts_generated_from_keymap():
     assert axt.subtab_shortcuts("plugins") == "p:project  g:global  x:uninstall  Tab:detail"
     assert axt.subtab_shortcuts("commands") == "p:project  g:global  e:edit  Tab:detail"
-    assert axt.subtab_shortcuts("mcp") == "p:project  Tab:detail"
+    assert axt.subtab_shortcuts("mcp") == "p:on  Tab:detail"
     assert axt.subtab_shortcuts("vault") == ""  # vault owns its own status line
 
 

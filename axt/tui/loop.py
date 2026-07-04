@@ -92,7 +92,11 @@ Extensions sub-tab actions
   All sub-tabs: shared status columns Ver / Vault / Proj / Glob —
                 Vault:     ✓ stored in ~/.axt/vault  ─ not vault-managed
                 Proj/Glob: ● active  ○ inactive  · unset (plugins)
-                           ─ not applicable (MCP global, Market project)
+                           ─ not applicable (Market project)
+                MCP only:  Proj/Glob mark the REGISTRATION scope (read-only:
+                           user config → Glob, project/.mcp.json → Proj,
+                           plugin/claude.ai/built-in → neither); the On
+                           column holds this project's activation state
   All sub-tabs: p=toggle PROJECT activation  g=toggle GLOBAL activation
                 (per-sub-tab semantics below)
   All sub-tabs: Space=mark/unmark the focused item (left checkbox ■/□);
@@ -132,6 +136,9 @@ Context
 linked vs enabled (activation mechanism)
   skill / command / agent → "linked"   = SYMLINK at .claude/<type>s/<name>
   plugin                  → "enabled"  = settings.json's enabledPlugins[<id>]
+  mcp                     → "enabled"  = not in this project's
+                            disabledMcpServers (built-in servers are opt-in
+                            via enabledMcpServers) — always project-scoped
   The TUI shows ● / ○ for both, with the DetailPanel labeling the kind.
 
 Vault column meanings
