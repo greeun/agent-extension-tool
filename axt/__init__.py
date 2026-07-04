@@ -34,7 +34,7 @@ import sys as _sys
 # both ``tui.widgets`` and ``tui.tabs``.
 # ``cli`` is last so its names win over any same-named helpers (the
 # CLI module owns the user-facing ``main`` and console-output formatters).
-_SUBMODULES: list[str] = ["tui.widgets", "core", "tui.tabs", "tui.loop", "cli"]
+_SUBMODULES: list[str] = ["tui.widgets", "core", "update", "tui.tabs", "tui.loop", "cli"]
 
 # Imported submodule objects, in the same order as _SUBMODULES. Populated
 # by _load_submodules() / _reload_submodules() below.

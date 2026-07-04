@@ -59,6 +59,9 @@ from axt.core import (  # noqa: F401
 # runs with no args. Lives in :mod:`axt.tui.loop` after C5.
 from axt.tui.loop import launch_tui, HELP_TEXT  # noqa: F401
 
+# Update orchestration — check/apply entry points for `axt update`.
+from axt.update import check_all_updates, apply_updates, UpdateStatus, UpdateResult  # noqa: F401
+
 
 # ─── Subcommand implementations ──────────────────────────────────────────────
 
@@ -897,6 +900,111 @@ def cli_tui(args) -> int:
     return launch_tui(theme)
 
 
+# update — check (dry-run) or apply extension updates across all item types.
+
+_UPDATE_TYPES = ("all", "plugin", "marketplace", "skill", "command", "agent", "mcp", "claude-code")
+
+
+def _status_json(s) -> dict:
+    return {"item_type": s.item_type, "name": s.name, "tier": s.tier,
+            "current": s.current, "available": s.available,
+            "updatable": s.updatable, "note": s.note, "error": s.error}
+
+
+def _result_json(r) -> dict:
+    return {"item_type": r.item_type, "name": r.name, "before": r.before,
+            "after": r.after, "updated": r.updated, "action": r.action, "error": r.error}
+
+
+def _print_update_report(statuses) -> None:
+    tier1 = [s for s in statuses if s.tier == 1]
+    tier2 = [s for s in statuses if s.tier == 2]
+    tier3 = [s for s in statuses if s.tier == 3]
+    up = [s for s in tier1 if s.updatable]
+    ok = [s for s in tier1 if not s.updatable]
+    if up:
+        print(_bold("Updatable:"))
+        for s in up:
+            print(f"  {s.item_type.ljust(12)} {s.name.ljust(28)} "
+                  f"{_dim(s.current)} → {_yellow(s.available)}"
+                  + (_red(f"  ! {s.error}") if s.error else ""))
+    if ok:
+        print(_dim("Up to date:"))
+        for s in ok:
+            note = s.error or s.note
+            print(_dim(f"  {s.item_type.ljust(12)} {s.name.ljust(28)} {s.current}"
+                       + (f"  ({note})" if note else "")))
+    if tier2:
+        print(_bold("Manual (report only):"))
+        for s in tier2:
+            print(f"  {s.item_type.ljust(12)} {s.name.ljust(28)} {_dim(s.note or '')}")
+    if tier3:
+        print(_bold("Delegated:"))
+        for s in tier3:
+            msg = s.error or s.note
+            print(f"  {s.item_type.ljust(12)} {s.name.ljust(28)} {_dim(s.current)}  {_dim(msg)}")
+    print()
+    print(f"{_yellow(str(len(up)))} updatable, {len(ok)} up to date, "
+          f"{len(tier2)} manual, {len(tier3)} delegated")
+
+
+def cli_update(args) -> int:
+    types = None if args.type == "all" else [args.type]
+    statuses = check_all_updates(types=types)
+    if args.name:
+        statuses = [s for s in statuses if s.name == args.name]
+
+    if not args.apply:
+        if args.json:
+            print(json.dumps([_status_json(s) for s in statuses], indent=2))
+            return 0
+        _print_update_report(statuses)
+        return 0
+
+    # --apply. "Explicit" = a named item OR a specific type was chosen
+    # (not the default "all"). Bulk (all types) never auto-runs the Tier-3
+    # `claude update`; an explicit type/name may.
+    if args.name:
+        targets = [(s.item_type, s.name) for s in statuses]
+    elif args.type != "all":
+        # explicit type, e.g. `axt update claude-code --apply`: apply this
+        # type's updatable tier-1 items plus tier-3 (delegated; its `updatable`
+        # flag is always False).
+        targets = [(s.item_type, s.name) for s in statuses if s.updatable or s.tier == 3]
+    else:
+        # bulk over all types: tier-1 updatable only.
+        targets = [(s.item_type, s.name) for s in statuses if s.tier == 1 and s.updatable]
+    if not targets:
+        if not args.json:
+            print(_dim("Nothing to update."))
+        else:
+            print("[]")
+        return 0
+    if not args.yes and not args.json:
+        print(_bold("Will update:"))
+        for t, n in targets:
+            print(f"  {t}: {n}")
+        try:
+            reply = input("Proceed? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print(_dim("Aborted."))
+            return 1
+    results = apply_updates(targets, no_sync=args.no_sync)
+    if args.json:
+        print(json.dumps([_result_json(r) for r in results], indent=2))
+        return 0
+    for r in results:
+        if r.error:
+            print(_red(f"✗ {r.item_type}:{r.name} — {r.error}"))
+        elif r.updated:
+            print(_green(f"✓ {r.item_type}:{r.name}") + _dim(f" {r.before} → ") + _cyan(r.after))
+        else:
+            print(_green(f"✓ {r.item_type}:{r.name}") + _dim(f" {r.after} ({r.action})"))
+    return 0
+
+
 # ─── Argparse wiring ─────────────────────────────────────────────────────────
 
 
@@ -932,6 +1040,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp_ctx.add_argument("--category", help="Filter by category")
     sp_ctx.add_argument("--model", default=None, help="Model override (default: auto-detect current model)")
     sp_ctx.set_defaults(func=cli_context)
+
+    # update
+    sp_upd = sub.add_parser("update", help="Check and apply extension updates")
+    sp_upd.add_argument("type", nargs="?", choices=_UPDATE_TYPES, default="all")
+    sp_upd.add_argument("name", nargs="?", default=None)
+    sp_upd.add_argument("--apply", action="store_true", help="Apply updates (default: check only)")
+    sp_upd.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+    sp_upd.add_argument("--json", action="store_true", help="Machine-readable output")
+    sp_upd.add_argument("--no-sync", dest="no_sync", action="store_true", help="Skip marketplace pre-sync on plugin apply")
+    sp_upd.set_defaults(func=cli_update)
 
     # market
     sp_mkt = sub.add_parser("market", help="Manage marketplaces").add_subparsers(dest="action", required=True)

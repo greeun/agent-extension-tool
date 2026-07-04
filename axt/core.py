@@ -367,6 +367,7 @@ class PluginInfo:
     description: Optional[str] = None
     homepage: Optional[str] = None
     repository: Optional[str] = None
+    git_commit_sha: Optional[str] = None
 
 
 def _parse_plugin_id(plugin_id: str) -> tuple[str, str]:
@@ -457,6 +458,7 @@ def add_installed_plugin(
     version: str,
     install_path: str,
     scope: str,
+    git_commit_sha: str = "",
 ) -> None:
     """Write a new entry under `plugins[<id>][0]`, replacing any prior list."""
     from datetime import datetime, timezone
@@ -472,6 +474,39 @@ def add_installed_plugin(
             "version": version,
             "installedAt": now,
             "lastUpdated": now,
+            "gitCommitSha": git_commit_sha,
+        }
+    ]
+    write_json_atomic(ip_path, data)
+
+
+def update_installed_plugin(
+    ip_path: os.PathLike[str] | str,
+    plugin_id: str,
+    *,
+    version: str,
+    git_commit_sha: str,
+    install_path: str,
+) -> None:
+    """Rewrite an existing plugin entry in place: override version /
+    gitCommitSha / installPath, bump lastUpdated, preserve scope + installedAt
+    (defaults for a missing entry: scope='user', installedAt=now)."""
+    from datetime import datetime, timezone
+    data = read_json(ip_path, fallback={"version": 2, "plugins": {}})
+    if not isinstance(data, dict):
+        data = {"version": 2, "plugins": {}}
+    data.setdefault("plugins", {})
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+    prior_list = data["plugins"].get(plugin_id) or [{}]
+    prior = prior_list[0] if isinstance(prior_list, list) and prior_list else {}
+    data["plugins"][plugin_id] = [
+        {
+            "scope": prior.get("scope", "user"),
+            "installPath": install_path,
+            "version": version,
+            "installedAt": prior.get("installedAt", now),
+            "lastUpdated": now,
+            "gitCommitSha": git_commit_sha,
         }
     ]
     write_json_atomic(ip_path, data)

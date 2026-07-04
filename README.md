@@ -104,6 +104,18 @@ axt vault link-global <type> <name>
 
 Full CLI inventory: [`FEATURES.md`](./FEATURES.md).
 
+### Updating extensions
+
+```bash
+axt update                 # dry-run: what is updatable across all types
+axt update --json          # machine-readable
+axt update --apply --yes   # apply all updatable (Tier-1) items
+axt update plugin foo@mk --apply   # update one plugin
+axt update claude-code --apply     # delegate to `claude update`
+```
+
+Capability tiers: plugins, marketplaces, and git-backed standalone skills/commands/agents auto-apply (Tier 1 — bulk `axt update --apply` covers these); MCP servers are report-only since their version is pinned in the launch args (Tier 2 — reports `pinned @x.y.z` / `floating (@latest)` / `unpinned`); the Claude Code binary is delegated to `claude update` and only updates when explicitly targeted via `axt update claude-code --apply` (Tier 3).
+
 ## Updating
 
 ```bash
