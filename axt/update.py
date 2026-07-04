@@ -98,15 +98,31 @@ def _full_head_sha(install_loc: str) -> str:
 
 
 def _materialize_dir(src: Path, dest: Path) -> None:
-    """Copy `src` tree into `dest` via a temp dir + swap (no partial state)."""
+    """Copy `src` tree into `dest` crash-safely. Stage into a temp dir, then
+    swap. When `dest` already exists it is renamed aside first and restored if
+    the swap fails, so a failed materialize never leaves `dest` missing or
+    half-populated (upholds the "no partial cache state" invariant)."""
     tmp = Path(tempfile.mkdtemp(prefix="axt-plugin-"))
+    backup = None
     try:
         staged = tmp / "staged"
         shutil.copytree(src, staged)
-        if dest.exists():
-            shutil.rmtree(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(staged), str(dest))
+        if dest.exists():
+            backup = dest.with_name(dest.name + ".axt-bak")
+            if backup.exists():
+                shutil.rmtree(backup)
+            dest.rename(backup)           # atomic within dest's own filesystem
+        try:
+            shutil.move(str(staged), str(dest))
+        except Exception:
+            if backup is not None and not dest.exists():
+                backup.rename(dest)       # restore prior content
+                backup = None
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+            backup = None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

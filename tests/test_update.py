@@ -130,6 +130,22 @@ def test_plugin_apply_reinstalls_and_bumps_version(tmp_path, monkeypatch):
     assert (cache / "mk" / "foo" / "0.2.0" / ".claude-plugin" / "plugin.json").exists()
 
 
+def test_materialize_dir_overwrites_existing_dest(tmp_path):
+    from pathlib import Path
+    import axt
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "new.txt").write_text("new")
+    (src / "sub" / "keep.txt").write_text("keep")
+    dest = tmp_path / "cache" / "plugin" / "1.0.0"
+    dest.mkdir(parents=True)
+    (dest / "stale.txt").write_text("stale")      # must be gone after
+    axt.update._materialize_dir(src, dest)
+    assert (dest / "new.txt").read_text() == "new"
+    assert (dest / "sub" / "keep.txt").read_text() == "keep"
+    assert not (dest / "stale.txt").exists()        # old content replaced
+
+
 def test_plugin_check_flags_version_bump(tmp_path, monkeypatch):
     km, mk_loc = _make_marketplace_with_plugin(tmp_path, version="0.2.0")
     ip = tmp_path / "installed_plugins.json"
