@@ -252,3 +252,23 @@ def test_command_and_agent_updaters_resolve_source_path(tmp_path, monkeypatch):
     cmd = {x.name: x for x in axt.update.check_all_updates(types=["command"])}["c"]
     agt = {x.name: x for x in axt.update.check_all_updates(types=["agent"])}["a"]
     assert cmd.tier == 1 and agt.tier == 1     # both inside a git repo
+
+
+def test_mcp_pin_note():
+    from axt.update import _mcp_pin_note
+    assert _mcp_pin_note(("-y", "server@0.4.5")) == "pinned @0.4.5"
+    assert _mcp_pin_note(("-y", "server@latest")) == "floating (@latest)"
+    assert _mcp_pin_note(("mcp_pkg==1.2.3",)) == "pinned ==1.2.3"
+    assert _mcp_pin_note(("-m", "some_module", "serve")) == "unpinned"
+
+
+def test_mcp_updater_is_report_only(monkeypatch):
+    from axt.core import McpServerInfo
+    srv = McpServerInfo(name="s", plugin_id="", command="npx", args=("-y", "s@0.4.5"), env=())
+    monkeypatch.setattr("axt.update.collect_mcp_servers", lambda ip: [srv])
+    monkeypatch.setattr("axt.update.list_installed_plugins", lambda p: [])
+    out = axt.update.check_all_updates(types=["mcp"])
+    assert out[0].tier == 2 and out[0].updatable is False and "0.4.5" in out[0].note
+    # report-only: apply is a no-op skip
+    res = axt.update.apply_updates([("mcp", "s")])
+    assert res[0].action == "skipped"

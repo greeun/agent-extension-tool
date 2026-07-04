@@ -7,7 +7,11 @@ Capability tiers: 1 auto-apply, 2 report-only, 3 delegate.
 """
 from __future__ import annotations
 
+import re
+import shutil
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 from axt.core import (
@@ -17,10 +21,8 @@ from axt.core import (
     _read_plugin_manifest, _parse_plugin_id, is_git_repo, read_sha_file, _git,
     update_installed_plugin,
     list_all_skills, list_commands, list_all_agents,
+    collect_mcp_servers,
 )
-import shutil
-import tempfile
-from pathlib import Path
 
 
 # ── Section 4.5: Update orchestration ───────────────────────────────────────
@@ -298,11 +300,46 @@ command_updater = Updater("command", 1, _command_check_all, _command_apply)
 agent_updater = Updater("agent", 1, _agent_check_all, _agent_apply)
 
 
+# ── MCP updater (tier 2) — pin-detection report-only ────────────────────────
+
+def _mcp_pin_note(args: tuple[str, ...]) -> str:
+    concrete = None
+    floating = False
+    for a in args:
+        if "@latest" in a or "@next" in a:
+            floating = True
+            continue
+        m = re.search(r"@(\d[\w.\-]*)$", a)
+        if m:
+            concrete = f"pinned @{m.group(1)}"
+            continue
+        m = re.search(r"==(\d[\w.\-]*)", a)
+        if m:
+            concrete = f"pinned =={m.group(1)}"
+    if concrete:
+        return concrete
+    if floating:
+        return "floating (@latest)"
+    return "unpinned"
+
+
+def _mcp_check_all() -> list[UpdateStatus]:
+    servers = collect_mcp_servers(list_installed_plugins(PATHS.installed_plugins))
+    out: list[UpdateStatus] = []
+    for s in servers:
+        note = _mcp_pin_note(s.args)
+        out.append(UpdateStatus("mcp", s.name, 2, s.version or "n/a", "n/a", False, note=note))
+    return out
+
+
+mcp_updater = Updater("mcp", 2, _mcp_check_all, None)
+
+
 # ── registry + orchestration ────────────────────────────────────────────────
 
 UPDATERS: list[Updater] = [
     marketplace_updater, plugin_updater,
-    skill_updater, command_updater, agent_updater,
+    skill_updater, command_updater, agent_updater, mcp_updater,
 ]
 
 
