@@ -1,5 +1,9 @@
 import json
 import axt
+from axt.update import (
+    UpdateStatus, UpdateResult, Updater,
+    check_all_updates, apply_updates,
+)
 
 
 def test_update_installed_plugin_preserves_installed_at_and_bumps_updated(tmp_path):
@@ -57,3 +61,32 @@ def test_update_installed_plugin_creates_entry_when_absent(tmp_path):
     assert entry["installPath"] == "/p/new/1.0.0"
     assert entry["installedAt"]              # fresh timestamp set
     assert entry["lastUpdated"]              # set
+
+
+def test_check_all_updates_isolates_a_raising_updater(monkeypatch):
+    boom = Updater(item_type="boom", tier=1,
+                   check_all=lambda: (_ for _ in ()).throw(RuntimeError("nope")),
+                   apply_one=None)
+    ok = Updater(item_type="ok", tier=1,
+                 check_all=lambda: [UpdateStatus("ok", "x", 1, "1", "1", False)],
+                 apply_one=None)
+    monkeypatch.setattr("axt.update.UPDATERS", [boom, ok])
+    out = check_all_updates()
+    types = {s.item_type: s for s in out}
+    assert types["ok"].name == "x"
+    assert types["boom"].error and "nope" in types["boom"].error  # captured, not raised
+
+
+def test_marketplace_updater_check_and_apply(monkeypatch, tmp_path):
+    from axt.core import MarketplaceInfo, MarketplaceSource, VersionInfo, SyncMarketplaceResult
+    mk = MarketplaceInfo("m1", MarketplaceSource("github", repo="o/r"), "/loc", "2026-01-01")
+    monkeypatch.setattr("axt.update.list_marketplaces", lambda p: [mk])
+    monkeypatch.setattr("axt.update.get_marketplace_version",
+                        lambda p, n: VersionInfo(current="aaaa", remote="bbbb", updatable=True))
+    out = check_all_updates(types=["marketplace"])
+    assert out[0].item_type == "marketplace" and out[0].updatable is True
+
+    monkeypatch.setattr("axt.update.sync_marketplace",
+                        lambda p, n: SyncMarketplaceResult(before="aaaa", after="bbbb", updated=True))
+    res = apply_updates([("marketplace", "m1")])
+    assert res[0].updated is True and res[0].after == "bbbb"
