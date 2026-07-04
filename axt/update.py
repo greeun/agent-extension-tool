@@ -12,11 +12,14 @@ from typing import Callable, Optional
 
 from axt.core import (
     PATHS,
-    list_marketplaces,
-    get_marketplace_version,
-    sync_marketplace,
-    pooled_map,
+    list_marketplaces, get_marketplace_version, sync_marketplace, pooled_map,
+    read_json, list_installed_plugins, find_plugin_source_dir,
+    _read_plugin_manifest, _parse_plugin_id, is_git_repo, read_sha_file, _git,
+    update_installed_plugin,
 )
+import shutil
+import tempfile
+from pathlib import Path
 
 
 # ── Section 4.5: Update orchestration ───────────────────────────────────────
@@ -83,9 +86,105 @@ def _marketplace_apply(name: str, no_sync: bool = False) -> UpdateResult:
 marketplace_updater = Updater("marketplace", 1, _marketplace_check_all, _marketplace_apply)
 
 
+# ── plugin updater (tier 1) — re-materialize from marketplace source ───────
+
+def _full_head_sha(install_loc: str) -> str:
+    """Full 40-char commit sha for a marketplace install: git HEAD, else .gcs-sha."""
+    if is_git_repo(install_loc):
+        code, out, _ = _git(["git", "-C", install_loc, "rev-parse", "HEAD"])
+        if code == 0 and out.strip():
+            return out.strip()
+    return read_sha_file(install_loc) or ""
+
+
+def _materialize_dir(src: Path, dest: Path) -> None:
+    """Copy `src` tree into `dest` via a temp dir + swap (no partial state)."""
+    tmp = Path(tempfile.mkdtemp(prefix="axt-plugin-"))
+    try:
+        staged = tmp / "staged"
+        shutil.copytree(src, staged)
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(staged), str(dest))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _plugin_source_version(plugin_id: str, mk_install_loc: str) -> tuple[str, Optional[str]]:
+    """Return (source_version, error). Reads the plugin.json in the marketplace."""
+    name, _mk = _parse_plugin_id(plugin_id)
+    src = find_plugin_source_dir(mk_install_loc, name)
+    if src is None:
+        return "?", "plugin source not found in marketplace"
+    manifest = _read_plugin_manifest(src)
+    return (manifest.get("version") or "unknown"), None
+
+
+def _plugin_check_all() -> list[UpdateStatus]:
+    installed = list_installed_plugins(PATHS.installed_plugins)
+    if not installed:
+        return []
+    km = read_json(PATHS.known_marketplaces, fallback={})
+    mkts = sorted({p.marketplace for p in installed if p.marketplace and p.marketplace != "unknown"})
+    pooled = pooled_map(mkts, lambda m: get_marketplace_version(PATHS.known_marketplaces, m)) if mkts else None
+    mk_ver = pooled.results if pooled else {}
+    out: list[UpdateStatus] = []
+    for p in installed:
+        entry = km.get(p.marketplace) if isinstance(km, dict) else None
+        loc = entry.get("installLocation", "") if isinstance(entry, dict) else ""
+        src_ver, src_err = _plugin_source_version(p.id, loc) if loc else ("?", "marketplace not registered")
+        vi = mk_ver.get(p.marketplace)
+        mk_updatable = bool(vi and vi.updatable)
+        ver_changed = src_ver not in ("?", "unknown", p.version)
+        updatable = mk_updatable or ver_changed
+        out.append(UpdateStatus(
+            "plugin", p.id, 1, p.version,
+            src_ver if src_ver not in ("?", "unknown") else (vi.remote if vi else "?"),
+            updatable,
+            note=("up to date" if not updatable and not src_err else ""),
+            error=src_err or (vi.error if vi else None),
+        ))
+    return out
+
+
+def _plugin_apply(name: str, no_sync: bool = False) -> UpdateResult:
+    plugin_id = name
+    pname, mk = _parse_plugin_id(plugin_id)
+    km = read_json(PATHS.known_marketplaces, fallback={})
+    entry = km.get(mk) if isinstance(km, dict) else None
+    if not isinstance(entry, dict):
+        return UpdateResult("plugin", plugin_id, "?", "?", False, "skipped", error=f"marketplace {mk} not found")
+    loc = entry.get("installLocation", "")
+    if not no_sync:
+        try:
+            sync_marketplace(PATHS.known_marketplaces, mk)
+        except Exception as e:  # noqa: BLE001
+            return UpdateResult("plugin", plugin_id, "?", "?", False, "error", error=f"sync failed: {e}")
+    src = find_plugin_source_dir(loc, pname)
+    if src is None:
+        return UpdateResult("plugin", plugin_id, "?", "?", False, "error", error="plugin source not found")
+    manifest = _read_plugin_manifest(src)
+    new_ver = manifest.get("version") or "unknown"
+    new_sha = _full_head_sha(loc)
+    ip = read_json(PATHS.installed_plugins, fallback={"version": 2, "plugins": {}})
+    cur_list = (ip.get("plugins", {}) if isinstance(ip, dict) else {}).get(plugin_id) or [{}]
+    cur = cur_list[0] if cur_list else {}
+    before = cur.get("version", "?")
+    new_path = str(Path(PATHS.plugin_cache) / mk / pname / new_ver)
+    _materialize_dir(Path(src), Path(new_path))
+    update_installed_plugin(PATHS.installed_plugins, plugin_id,
+                            version=new_ver, git_commit_sha=new_sha, install_path=new_path)
+    updated = (before != new_ver) or (cur.get("gitCommitSha") != new_sha)
+    return UpdateResult("plugin", plugin_id, before, new_ver, updated, "reinstall")
+
+
+plugin_updater = Updater("plugin", 1, _plugin_check_all, _plugin_apply)
+
+
 # ── registry + orchestration ────────────────────────────────────────────────
 
-UPDATERS: list[Updater] = [marketplace_updater]
+UPDATERS: list[Updater] = [marketplace_updater, plugin_updater]
 
 
 def _updater_by_type() -> dict[str, Updater]:
