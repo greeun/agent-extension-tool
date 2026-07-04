@@ -111,7 +111,7 @@ Extensions sub-tab actions
                 p=preview hook execution (scrollable modal)
                 [off] = parked; plugin-sourced hooks are read-only
   All sub-tabs: a detail panel sits below the list. Tab focuses it,
-                j/k (or PgUp/PgDn) scroll it, Tab again blurs back to the list.
+                j/k (or PgUp/PgDn) scroll it, Esc or Tab blurs back to the list.
 
 Context
   Rate limits   A persistent strip at the top (shown above both sub-tabs)
@@ -144,21 +144,6 @@ Globals
   q / Q         Quit
   Esc           Quit only at the main-tab layer; otherwise climbs one layer up
 """
-
-
-# Per-sub-tab action hints shown in the status bar (Extensions tab, non-vault
-# sub-tabs). Vault has its own richer status line built inline in
-# `_render_frame`. Keys mirror EXTENSION_SUB_TABS in tabs.py; keep terse so the
-# composed line stays readable before the status bar truncates it.
-_SUBTAB_SHORTCUTS: dict[str, str] = {
-    "skills":   "l:link  u:unlink  Tab:detail",
-    "commands": "e:edit  Tab:detail",
-    "agents":   "e:edit  Tab:detail",
-    "mcp":      "e:enable  d:disable  Tab:detail",
-    "hooks":    "e:enable  d:disable  p:preview  Tab:detail",
-    "plugins":  "e/d:on/off(G)  E/D:on/off(P)  x:uninstall  Tab:detail",
-    "market":   "a:add  S:sync  x:remove  Tab:detail",
-}
 
 
 def _render_frame(stdscr, state: TuiState) -> None:
@@ -212,7 +197,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
             )
     elif tab_key == "extensions":
         sub = state.ext_sub_tab
-        actions = _SUBTAB_SHORTCUTS.get(sub, "")
+        actions = subtab_shortcuts(sub)
         parts = ["1-3:tab", "[/]:sub", "j/k:nav"]
         sort_label = subtab_sort_label(state, sub)
         if sort_label:
@@ -299,6 +284,12 @@ def _handle_content_layer_key(stdscr, state: TuiState, key: int, tab_key: str) -
     climb = key == KEY_ESC or (
         key == curses.KEY_UP and _at_top_of_content(state, tab_key)
     )
+    # Extensions detail-panel exception: while the bottom detail panel is
+    # focused, Esc blurs it back to the list and ↑ scrolls it (both handled
+    # by handle_extensions_input) instead of climbing out. The next Esc,
+    # with the panel blurred, then climbs as usual.
+    if tab_key == "extensions" and state.ext_detail_focused:
+        climb = False
     # Vault exception: when a search filter is active, the first Esc clears
     # the filter (handled by handle_vault_input) before climbing out. The
     # second Esc then proceeds with the normal climb because vault_search

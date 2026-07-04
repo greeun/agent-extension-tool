@@ -2941,6 +2941,16 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
 }
 
 
+def subtab_shortcuts(sub: str) -> str:
+    """Status-bar action hints for a non-vault Extensions sub-tab, generated
+    from SUBTAB_KEYMAP so the bar always matches the live bindings. The
+    common `o:term` hint is omitted — the status line's fixed tail shows it."""
+    parts = [b.hint for b in SUBTAB_KEYMAP.get(sub, ()) if b.hint]
+    if sub in _SUBTABS_WITH_DETAIL:
+        parts.append("Tab:detail")
+    return "  ".join(parts)
+
+
 def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
     """Table-driven sub-tab actions (see SUBTAB_KEYMAP). Returns status message.
 

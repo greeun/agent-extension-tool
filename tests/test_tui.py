@@ -6873,3 +6873,10 @@ def test_subtab_keymap_avoids_reserved_navigation_keys():
 def test_subtab_keymap_covers_all_non_vault_subtabs():
     subs = {k for k, _ in axt.EXTENSION_SUB_TABS} - {"vault"}
     assert set(axt.SUBTAB_KEYMAP) == subs
+
+
+def test_subtab_shortcuts_generated_from_keymap():
+    assert axt.subtab_shortcuts("plugins") == "e/d:on/off(G)  E/D:on/off(P)  x:uninstall  Tab:detail"
+    assert axt.subtab_shortcuts("commands") == "e:edit  Tab:detail"
+    assert axt.subtab_shortcuts("mcp") == "e:enable  d:disable  Tab:detail"
+    assert axt.subtab_shortcuts("vault") == ""  # vault owns its own status line
