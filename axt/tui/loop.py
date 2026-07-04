@@ -144,6 +144,8 @@ linked vs enabled (activation mechanism)
 Vault column meanings
   Vault   ✓        Item lives in ~/.axt/vault/
           glob*    Item only exists in ~/.claude/{{type}}s/ (use `i` to import)
+          proj*    Item only exists in <project>/.claude/{{type}}s/ (`i` imports)
+          ─        Plugins — never vaulted (managed via enabledPlugins)
   Proj    ● / ○    linked/enabled in this project (* = pending toggle)
   Glob    ● / ○    linked/enabled globally
   Used    N proj   Project count; auto-scanned on launch, `f` to refresh

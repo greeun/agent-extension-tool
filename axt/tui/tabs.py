@@ -732,7 +732,10 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     detail_y = table_y_top + table_h
 
     # Columns: # / Name / Ver / Type / Vault / Project / Global / Used in.
-    # "Vault" semantics:  ✓ = item is in ~/.axt/vault/  ;  global = only in ~/.claude/{type}s/
+    # "Vault" semantics:  ✓ = item is in ~/.axt/vault/  ;  glob*/proj* = import
+    # candidate living only in ~/.claude/{type}s/ or <project>/.claude/{type}s/.
+    # Plugins show ─ (never vaulted — enabledPlugins, not symlinks; matches
+    # _vault_cell on the other sub-tabs).
     # "Project" / "Global" show the *intended* state after applying pending toggles.
     no_w = max(3, len(str(len(filtered))) + 1)
     used_w = 6  # "Used" header + " N proj" data ≤ 6
@@ -776,7 +779,9 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
             if state.vault_usage_index and f"{item.type}:{item.name}" in state.vault_usage_index
             else 0
         )
-        if item.in_vault:
+        if item.type == "plugin":
+            vault_cell = "─"
+        elif item.in_vault:
             vault_cell = "✓"
         elif item.is_global_linked:
             vault_cell = "glob*"
@@ -804,7 +809,9 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
 
     # Detail panel.
     current = filtered[state.vault_selected]
-    if current.in_vault:
+    if current.type == "plugin":
+        vault_status = "n/a (plugins are not vaulted)"
+    elif current.in_vault:
         vault_status = "in vault"
     elif current.is_global_linked:
         vault_status = "global only (press `i` to import)"

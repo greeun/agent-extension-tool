@@ -7,6 +7,7 @@ TUI without a TTY.
 from __future__ import annotations
 
 import curses
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -1390,6 +1391,39 @@ def test_vault_global_only_status_clarified(tmp_path, monkeypatch):
     # The "glob*" status must appear at least once.
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "glob*" in flat
+
+
+def test_vault_plugin_rows_show_dash_not_import_candidate(tmp_path, monkeypatch):
+    """Plugins are never vaulted (enabledPlugins, not symlinks), so their Vault
+    cell is `─` — not the `proj*`/`glob*` import-candidate markers — regardless
+    of enabled state, and the detail panel must not suggest `i` import."""
+    claude = tmp_path / "claude"
+    (tmp_path / "pl" / "one").mkdir(parents=True)
+    (tmp_path / "pl" / "two").mkdir(parents=True)
+    ip = tmp_path / "ip.json"
+    ip.write_text(json.dumps({"version": 2, "plugins": {
+        # Disabled everywhere — previously fell through to "proj*".
+        "one@mkt": [{"installPath": str(tmp_path / "pl" / "one"), "version": "1.0.0"}],
+        # Enabled globally — previously rendered "glob*".
+        "two@mkt": [{"installPath": str(tmp_path / "pl" / "two"), "version": "2.0.0"}],
+    }}))
+    claude.mkdir()
+    (claude / "settings.json").write_text(json.dumps(
+        {"enabledPlugins": {"two@mkt": True}}))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=tmp_path / "vault", installed_plugins=ip, claude_dir=claude,
+    ))
+    monkeypatch.chdir(tmp_path)
+    state = axt.TuiState()
+    scr = _make_stdscr(rows=24, cols=140)
+    axt.render_vault_tab(scr, state, 0, 22, 140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "one" in flat and "two" in flat
+    assert "proj*" not in flat
+    assert "glob*" not in flat
+    # Detail panel (selected row is a plugin): n/a status, no import hint.
+    assert "plugins are not vaulted" in flat
+    assert "press `i` to import" not in flat
 
 
 def test_help_text_documents_new_keys():
