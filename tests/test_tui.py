@@ -713,11 +713,11 @@ def test_handle_vault_input_navigation():
     assert s.vault_selected == 1
 
 
-def test_handle_vault_input_filter_shift_f():
+def test_handle_vault_input_filter_c():
     s = axt.TuiState()
-    axt.handle_vault_input(s, ord("F"))
+    axt.handle_vault_input(s, ord("c"))
     assert s.vault_filter == "skill"
-    axt.handle_vault_input(s, ord("F"))
+    axt.handle_vault_input(s, ord("c"))
     assert s.vault_filter == "command"
 
 
@@ -1217,17 +1217,17 @@ def test_vault_scan_runs_without_toggling_mode(tmp_path, monkeypatch):
 
 
 def test_vault_mode_key_toggles_scan_mode(tmp_path, monkeypatch):
-    """`M` (capital) toggles scan_mode default↔full and re-scans."""
+    """`F` (capital, f's extension) toggles scan_mode default↔full and re-scans."""
     monkeypatch.setattr("axt.PATHS", axt.Paths(
         projects=tmp_path / "projects",
         vault=tmp_path / "vault",
     ))
     state = axt.TuiState()
     assert state.vault_scan_mode == "default"
-    msg = axt.handle_vault_input(state, ord("M"))
+    msg = axt.handle_vault_input(state, ord("F"))
     assert state.vault_scan_mode == "full"
     assert msg is not None and "Mode" in msg
-    axt.handle_vault_input(state, ord("M"))
+    axt.handle_vault_input(state, ord("F"))
     assert state.vault_scan_mode == "default"
 
 
@@ -3807,7 +3807,7 @@ def test_render_frame_extensions_vault_shortcuts(tmp_path, monkeypatch):
     state.refresh_token = 1  # avoid disk
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "F:filter" in flat
+    assert "c:filter" in flat
     assert "Space:project" in flat
 
 
@@ -3852,8 +3852,8 @@ def test_render_frame_extensions_nonvault_shortcuts(tmp_path, monkeypatch):
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "[/]:sub" in flat
-    # The vault-specific F:filter hint must NOT be present on a non-vault sub-tab.
-    assert "F:filter" not in flat
+    # The vault-specific c:filter hint must NOT be present on a non-vault sub-tab.
+    assert "c:filter" not in flat
 
 
 def test_render_frame_context_shortcuts(tmp_path, monkeypatch):
@@ -5386,7 +5386,7 @@ def test_handle_vault_input_mode_scan_failure(monkeypatch, tmp_path):
                         lambda state: (_ for _ in ()).throw(OSError("scan boom")))
     s = axt.TuiState()
     s.refresh_token = 1
-    msg = axt.handle_vault_input(s, ord("M"))
+    msg = axt.handle_vault_input(s, ord("F"))
     assert msg is not None and "Scan failed" in msg
     # Mode still toggled despite the scan failure.
     assert s.vault_scan_mode == "full"

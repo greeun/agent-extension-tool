@@ -814,7 +814,8 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         state.vault_selected = min(n - 1, state.vault_selected + 10) if n else 0
     elif key == curses.KEY_PPAGE:
         state.vault_selected = max(0, state.vault_selected - 10)
-    elif key == ord("F"):
+    elif key == ord("c"):
+        # c=cycle type filter (all/skill/command/agent/plugin)
         i = _VAULT_FILTERS.index(state.vault_filter)
         state.vault_filter = _VAULT_FILTERS[(i + 1) % len(_VAULT_FILTERS)]
         state.vault_selected = 0
@@ -926,8 +927,8 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
             )
         except OSError as e:
             return f"Scan failed: {e}"
-    elif key == ord("M"):
-        # Explicit mode toggle (default↔full) + re-scan + persist.
+    elif key == ord("F"):
+        # F = f's extension: toggle mode (default↔full) + re-scan + persist.
         state.vault_scan_mode = "full" if state.vault_scan_mode == "default" else "default"
         try:
             _vault_scan(state)

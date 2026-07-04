@@ -76,12 +76,12 @@ Vault
   Esc           Discard pending → clear search → blur detail panel (in that order)
   Tab           Toggle list ↔ detail panel focus
   /             Search input (type → Enter to apply, Esc to clear)
-  F             Cycle filter (all/skill/command/agent/plugin)
+  c             Cycle filter (all/skill/command/agent/plugin)
   s             Cycle sort (Name→Type→Proj→Glob→Used→Added→Updated); active column header marked ▲/▼
   i             Import a global-only item into the vault (selected row)
   f             Re-scan ALL projects to refresh `Used` (auto-runs on launch in
                 the background; cached to disk; title shows scan age / scanning…)
-  M             Toggle scan mode (default ↔ full) and re-scan
+  F             Toggle scan mode (default ↔ full) and re-scan (f's full variant)
   m             Migrate ~/.claude/skills,commands,agents → vault
   S             Sync .claude/<sub>/ symlinks with .axt-profile.json
   r             Refresh (cheap, no cross-project walk)
@@ -185,7 +185,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
         else:
             shortcuts = (
                 "1-3:tab  [/]:sub  j/k:nav  Space:project  g:global  U:unlink-all  "
-                "Enter:apply  F:filter  s:sort  /:search  i:import  f:scan  M:mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
+                "Enter:apply  c:filter  s:sort  /:search  i:import  f:scan  F:scan+mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
         sub = state.ext_sub_tab
