@@ -272,3 +272,19 @@ def test_mcp_updater_is_report_only(monkeypatch):
     # report-only: apply is a no-op skip
     res = axt.update.apply_updates([("mcp", "s")])
     assert res[0].action == "skipped"
+
+
+def test_mcp_pin_note_edge_cases():
+    from axt.update import _mcp_pin_note
+    # email/URL-like args that merely contain the substrings are NOT floating
+    assert _mcp_pin_note(("--user=admin@nextcloud.example.com",)) == "unpinned"
+    assert _mcp_pin_note(("user@next.example.com",)) == "unpinned"
+    assert _mcp_pin_note(("user@latestcorp.com",)) == "unpinned"
+    # real floating tags still detected
+    assert _mcp_pin_note(("-y", "server@latest")) == "floating (@latest)"
+    assert _mcp_pin_note(("-y", "server@next")) == "floating (@latest)"
+    # scoped npm names: no version → unpinned; with version → pinned
+    assert _mcp_pin_note(("@scope/pkg",)) == "unpinned"
+    assert _mcp_pin_note(("@modelcontextprotocol/server-filesystem@1.2.3",)) == "pinned @1.2.3"
+    # concrete pin wins over floating regardless of order
+    assert _mcp_pin_note(("a@latest", "b@1.2.3")) == "pinned @1.2.3"

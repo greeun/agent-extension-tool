@@ -306,7 +306,7 @@ def _mcp_pin_note(args: tuple[str, ...]) -> str:
     concrete = None
     floating = False
     for a in args:
-        if "@latest" in a or "@next" in a:
+        if re.search(r"@(?:latest|next)$", a):
             floating = True
             continue
         m = re.search(r"@(\d[\w.\-]*)$", a)
