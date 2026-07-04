@@ -303,3 +303,39 @@ def test_claude_code_check_and_apply(monkeypatch):
     monkeypatch.setattr("axt.update._run_claude_update", lambda: (0, "updated", ""))
     res = axt.update.apply_updates([("claude-code", "claude-code")])[0]
     assert res.before == "2.1.100" and res.after == "2.2.0" and res.updated is True
+
+
+# ── CLI: `axt update` ───────────────────────────────────────────────────────
+
+import io
+from contextlib import redirect_stdout
+
+
+def _run_cli(argv):
+    import axt
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = axt.main(argv)
+    return rc, buf.getvalue()
+
+
+def test_cli_update_dry_run_json(monkeypatch):
+    monkeypatch.setattr("axt.cli.check_all_updates",
+                        lambda types=None: [axt.update.UpdateStatus("marketplace", "m1", 1, "a", "b", True)])
+    rc, out = _run_cli(["update", "--json"])
+    assert rc == 0
+    import json as _j
+    data = _j.loads(out)
+    assert data[0]["name"] == "m1" and data[0]["updatable"] is True
+
+
+def test_cli_update_apply_gated_by_yes(monkeypatch):
+    monkeypatch.setattr("axt.cli.check_all_updates",
+                        lambda types=None: [axt.update.UpdateStatus("marketplace", "m1", 1, "a", "b", True)])
+    applied = {}
+    monkeypatch.setattr("axt.cli.apply_updates",
+                        lambda targets, no_sync=False: (applied.setdefault("t", targets),
+                                                        [axt.update.UpdateResult("marketplace", "m1", "a", "b", True, "git pull")])[1])
+    rc, out = _run_cli(["update", "--apply", "--yes"])
+    assert rc == 0
+    assert applied["t"] == [("marketplace", "m1")]     # bulk targets tier-1 updatable
