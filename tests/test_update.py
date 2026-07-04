@@ -39,3 +39,21 @@ def test_add_installed_plugin_writes_git_commit_sha(tmp_path):
     )
     entry = json.loads(ip.read_text())["plugins"]["bar@mk"][0]
     assert entry["gitCommitSha"] == "c" * 40
+
+
+def test_update_installed_plugin_creates_entry_when_absent(tmp_path):
+    """When plugin_id has no prior entry, default scope='user' and set a fresh installedAt."""
+    ip = tmp_path / "installed_plugins.json"
+    ip.write_text(json.dumps({"version": 2, "plugins": {}}))
+    axt.update_installed_plugin(
+        ip, "new@mk",
+        version="1.0.0", git_commit_sha="e" * 40,
+        install_path="/p/new/1.0.0",
+    )
+    entry = json.loads(ip.read_text())["plugins"]["new@mk"][0]
+    assert entry["scope"] == "user"          # default when absent
+    assert entry["version"] == "1.0.0"
+    assert entry["gitCommitSha"] == "e" * 40
+    assert entry["installPath"] == "/p/new/1.0.0"
+    assert entry["installedAt"]              # fresh timestamp set
+    assert entry["lastUpdated"]              # set
