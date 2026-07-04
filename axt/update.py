@@ -217,8 +217,17 @@ def _resolve_real_dir(path_str: str) -> Path:
 
 
 def _find_git_root(d: Path) -> Optional[Path]:
+    """Nearest ancestor of `d` that is a git repo, but never the ambient
+    `~/.claude` config dir or anything above it (`$HOME`, `/`). A plain item
+    physically under `~/.claude` must not adopt a git-tracked config/home repo;
+    only a dedicated repo (the item's own dir, or an external symlink target)
+    counts as git-backed."""
+    stop = {Path(PATHS.claude_dir).resolve()}
+    stop |= set(Path(PATHS.claude_dir).resolve().parents)
     for cand in [d, *d.parents]:
-        if (cand / ".git").exists():
+        if cand in stop:
+            return None
+        if is_git_repo(cand):
             return cand
     return None
 

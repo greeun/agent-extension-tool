@@ -381,3 +381,39 @@ def test_cli_update_apply_decline_aborts(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a: "n")
     rc, out = _run_cli(["update", "--apply"])
     assert rc == 1 and "Aborted" in out and calls["n"] == 0     # declined → no apply
+
+
+def test_git_updater_ignores_ambient_config_repo(tmp_path, monkeypatch):
+    """A plain skill under a git-tracked ~/.claude must NOT adopt that ambient repo."""
+    import subprocess, axt
+    from axt.core import SkillInfo
+    claude = tmp_path / "dotclaude"
+    claude.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=claude, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "c"], cwd=claude, check=True)
+    skill = claude / "skills" / "foo"
+    skill.mkdir(parents=True)                      # plain dir, no own .git
+    monkeypatch.setattr("axt.PATHS", axt.Paths(claude_dir=claude, skills=claude / "skills"))
+    monkeypatch.setattr("axt.update.list_all_skills",
+                        lambda **k: [SkillInfo(name="foo", path=str(skill), is_symlink=False, source="user")])
+    st = {x.name: x for x in axt.update.check_all_updates(types=["skill"])}["foo"]
+    assert st.tier == 2 and "manual" in st.note    # ambient ~/.claude repo NOT adopted
+
+
+def test_git_updater_still_updates_dedicated_repo(tmp_path, monkeypatch):
+    """A skill whose own dir is a git repo (below the config dir) is still tier-1."""
+    import subprocess, axt
+    from axt.core import SkillInfo
+    claude = tmp_path / "dotclaude"
+    (claude / "skills").mkdir(parents=True)
+    repo = claude / "skills" / "bar"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "c"], cwd=repo, check=True)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(claude_dir=claude, skills=claude / "skills"))
+    monkeypatch.setattr("axt.update.list_all_skills",
+                        lambda **k: [SkillInfo(name="bar", path=str(repo), is_symlink=False, source="user")])
+    st = {x.name: x for x in axt.update.check_all_updates(types=["skill"])}["bar"]
+    assert st.tier == 1                            # dedicated repo below config dir → updatable
