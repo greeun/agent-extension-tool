@@ -146,6 +146,19 @@ def test_materialize_dir_overwrites_existing_dest(tmp_path):
     assert not (dest / "stale.txt").exists()        # old content replaced
 
 
+def test_materialize_dir_preserves_dest_when_copy_fails(tmp_path):
+    """A copy failure (missing src) must leave an existing dest fully intact."""
+    import pytest
+    import axt
+    dest = tmp_path / "cache" / "plugin" / "1.0.0"
+    dest.mkdir(parents=True)
+    (dest / "orig.txt").write_text("orig")
+    missing_src = tmp_path / "does-not-exist"     # copytree raises
+    with pytest.raises(Exception):
+        axt.update._materialize_dir(missing_src, dest)
+    assert (dest / "orig.txt").read_text() == "orig"   # invariant: dest untouched
+
+
 def test_plugin_check_flags_version_bump(tmp_path, monkeypatch):
     km, mk_loc = _make_marketplace_with_plugin(tmp_path, version="0.2.0")
     ip = tmp_path / "installed_plugins.json"
