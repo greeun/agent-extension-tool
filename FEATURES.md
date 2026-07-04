@@ -81,7 +81,7 @@ TUI 대시보드 실행.
 ### 1.8b `axt update` (1)
 플러그인/마켓플레이스/git-backed 스킬·명령·에이전트/MCP(리포트)/Claude Code 바이너리 업데이트 확인 및 적용.
 - 인자: `[type]` (기본 `all`; `plugin` / `marketplace` / `skill` / `command` / `agent` / `mcp` / `claude-code`), `[name]` (선택, 특정 항목 지정)
-- 옵션: `--apply` (기본은 dry-run 리포트), `--yes`/`-y` (확인 프롬프트 생략), `--json`, `--no-sync` (plugin apply 시 마켓플레이스 pre-sync 생략)
+- 옵션: `--apply` (기본은 dry-run 리포트), `--yes`/`-y` (확인 프롬프트 생략), `--json` (확인 프롬프트도 생략 — non-interactive), `--no-sync` (plugin apply 시 마켓플레이스 pre-sync 생략)
 - 동작: 기본(옵션 없음) = Updatable / Up to date / Manual / Delegated 티어별 그룹 리포트 + 요약 라인. `--apply`는 Tier-1(플러그인·마켓플레이스·git-backed 스킬/명령/에이전트)만 일괄 적용하고, Claude Code 바이너리는 `axt update claude-code --apply`로 명시적으로 타깃팅했을 때만 `claude update`에 위임
 - 티어: Tier 1(자동 적용) 플러그인/마켓플레이스/git-backed 스킬·명령·에이전트, Tier 2(리포트 전용) MCP 서버(`pinned @x.y.z` / `floating (@latest)` / `unpinned`) 및 non-git 독립 항목, Tier 3(위임) Claude Code 바이너리
 
@@ -162,12 +162,12 @@ U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 �
   - **Hooks**: Event→Type→Source
   - **Market**: Name→Source→Updated
 - **키 문법(통일 규칙)**: `Space` = project 스코프 토글, `g` = global 스코프 토글, `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열
-- **Plugins**: `Space` project 토글, `g` global 토글, `x` uninstall (확인 모달). Status 컬럼 G/P = ● enabled / ○ disabled / · unset
+- **Plugins**: `Space` project 토글, `g` global 토글, `x` uninstall (확인 모달), `U` update selected (check + apply). Status 컬럼 G/P = ● enabled / ○ disabled / · unset
 - **MCP**: `Space` 토글 (현재 프로젝트 `disabledMcpServers`; global 스코프 없음 — `g`는 안내 메시지)
 - **Hooks**: `Space` 토글 (설정 파일 내 `hooks`↔`disabledHooks` 이동, plugin 훅은 읽기 전용), `p` preview (dry-run)
-- **Skills**: `a` link (path 입력), `x` unlink (확인 모달)
+- **Skills**: `a` link (path 입력), `x` unlink (확인 모달), `U` update selected (check + apply)
 - **Market**: `a` add (2-step source+name 입력), `S` sync (대문자 — `s`는 정렬로 이동), `x` remove (확인)
-- **Commands** / **Agents**: `e` 소스 파일을 `$EDITOR`로 열기
+- **Commands** / **Agents**: `e` 소스 파일을 `$EDITOR`로 열기, `U` update selected (check + apply)
 - **모든 서브탭 (Vault / Skills / Commands / Agents / MCP / Hooks / Plugins / Market)**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
 
 ### 2.7 Context 탭 (2개 서브탭)
