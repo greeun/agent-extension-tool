@@ -2526,13 +2526,15 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
 
     elif sub == "mcp":
         cols = [
-            TableColumn("name", "Server", max(18, w - 64)),
+            TableColumn("name", "Server", max(18, w - 69)),
+            TableColumn("on", "On", 3),
             TableColumn("scope", "Scope", 13),
             TableColumn("transport", "Transport", 10),
             TableColumn("detail", "Detail", 30),
         ]
         rows = [{
-            "name": s.name + (" [off]" if s.disabled else ""),
+            "name": s.name,
+            "on": "○" if s.disabled else "●",
             "scope": s.scope,
             "transport": s.transport,
             "detail": (s.url or " ".join([s.command, *s.args_list]).strip())[:60],
@@ -2541,13 +2543,15 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     elif sub == "hooks":
         cols = [
             TableColumn("event", "Event", 22),
+            TableColumn("on", "On", 3),
             TableColumn("ver", "Ver", 8),
             TableColumn("type", "Type", 10),
             TableColumn("source", "Source", 10),
-            TableColumn("detail", "Detail", max(20, w - 78)),
+            TableColumn("detail", "Detail", max(20, w - 83)),
         ]
         rows = [{
-            "event": h.event + (" [off]" if h.disabled else ""),
+            "event": h.event,
+            "on": "○" if h.disabled else "●",
             "ver": h.version or "─",
             "type": h.type,
             "source": h.source,

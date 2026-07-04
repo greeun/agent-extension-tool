@@ -4798,6 +4798,26 @@ def test_render_extensions_mcp_subtab_with_data(tmp_path, monkeypatch):
     assert "node" in flat
 
 
+def test_render_extensions_mcp_subtab_on_column_shows_state(tmp_path, monkeypatch):
+    """Enabled state renders in its own On column (●/○), not inlined into the
+    server name as a ' [off]' suffix."""
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "mcp"
+    s.ext_cache["mcp"] = [
+        axt.McpServerInfo(name="live", plugin_id="", command="node",
+                          args=(), env=()),
+        axt.McpServerInfo(name="parked", plugin_id="", command="node",
+                          args=(), env=(), disabled=True),
+    ]
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "●" in flat            # enabled glyph
+    assert "○" in flat            # disabled glyph
+    assert "[off]" not in flat    # state no longer inlined into the name
+
+
 def test_render_extensions_hooks_subtab_with_data(tmp_path, monkeypatch):
     _isolate_ext_paths(tmp_path, monkeypatch)
     s = axt.TuiState()
@@ -4810,6 +4830,27 @@ def test_render_extensions_hooks_subtab_with_data(tmp_path, monkeypatch):
     axt.render_extensions_tab(scr, s, 0, 20, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "PreToolUse" in flat
+
+
+def test_render_extensions_hooks_subtab_on_column_shows_state(tmp_path, monkeypatch):
+    """Hook enabled state renders in its own On column (●/○), not inlined into
+    the event name as a ' [off]' suffix."""
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "hooks"
+    s.ext_cache["hooks"] = [
+        axt.HookInfo(event="PreToolUse", matcher="*", source="user",
+                     source_path="/s.json", type="command", command="echo hi"),
+        axt.HookInfo(event="PostToolUse", matcher="*", source="user",
+                     source_path="/s.json", type="command", command="echo bye",
+                     disabled=True),
+    ]
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "●" in flat            # enabled glyph
+    assert "○" in flat            # disabled glyph
+    assert "[off]" not in flat    # state no longer inlined into the event name
 
 
 def test_render_extensions_market_subtab_with_data(tmp_path, monkeypatch):
