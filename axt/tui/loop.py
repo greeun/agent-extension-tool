@@ -138,6 +138,28 @@ Globals
 """
 
 
+def _extensions_shortcuts(state: TuiState) -> str:
+    """Status-bar line for non-vault Extensions sub-tabs. While the `/`
+    prompt is open it shows the live query; with a query applied it shows a
+    `search:'q'` chip so the filtered view is never mistaken for full data."""
+    sub = state.ext_sub_tab
+    if state.ext_searching:
+        return f"/{state.ext_search.get(sub, '')}█  Enter:apply  Esc:cancel"
+    parts = ["1-3:tab", "[/]:sub", "j/k:nav"]
+    q = state.ext_search.get(sub, "")
+    if q:
+        parts.append(f"search:{q!r}(Esc:clear)")
+    sort_label = subtab_sort_label(state, sub)
+    if sort_label:
+        parts.append(f"s:sort({sort_label})")
+    parts.append("/:search")
+    actions = subtab_shortcuts(sub)
+    if actions:
+        parts.append(actions)
+    parts += ["o:term", "r:refresh", "?:help", "q:quit"]
+    return "  ".join(parts)
+
+
 def _render_frame(stdscr, state: TuiState) -> None:
     # Auto-clear the status message after STATUS_TIMEOUT_S so the shortcut
     # hint line becomes visible again. The polling tick in `_tui_loop`
@@ -188,16 +210,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
                 "Enter:apply  c:filter  s:sort  /:search  i:import  f:scan  F:scan+mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
-        sub = state.ext_sub_tab
-        actions = subtab_shortcuts(sub)
-        parts = ["1-3:tab", "[/]:sub", "j/k:nav"]
-        sort_label = subtab_sort_label(state, sub)
-        if sort_label:
-            parts.append(f"s:sort({sort_label})")
-        if actions:
-            parts.append(actions)
-        parts += ["o:term", "r:refresh", "?:help", "q:quit"]
-        shortcuts = "  ".join(parts)
+        shortcuts = _extensions_shortcuts(state)
     elif tab_key == "context":
         shortcuts = "1-3:tab  [/]:sub  j/k:nav  PgUp/PgDn:scroll  e:edit  Enter:preview  r:refresh  ?:help  q:quit"
     else:

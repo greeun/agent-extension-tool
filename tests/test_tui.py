@@ -6912,6 +6912,19 @@ def test_ext_search_is_per_subtab():
     assert len(axt._subtab_view(state, "mcp")) == 1  # other sub-tab unfiltered
 
 
+def test_extensions_shortcuts_show_search_state():
+    from axt.tui.loop import _extensions_shortcuts
+    state = axt.TuiState()
+    state.ext_sub_tab = "plugins"
+    base = _extensions_shortcuts(state)
+    assert "/:search" in base and "q:quit" in base
+    state.ext_searching = True
+    state.ext_search["plugins"] = "alp"
+    assert _extensions_shortcuts(state).startswith("/alp")
+    state.ext_searching = False
+    assert "search:'alp'" in _extensions_shortcuts(state)
+
+
 def test_subtab_shortcuts_generated_from_keymap():
     assert axt.subtab_shortcuts("plugins") == "Space:project  g:global  x:uninstall  Tab:detail"
     assert axt.subtab_shortcuts("commands") == "e:edit  Tab:detail"
