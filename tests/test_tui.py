@@ -6926,8 +6926,8 @@ def test_extensions_shortcuts_show_search_state():
 
 
 def test_subtab_shortcuts_generated_from_keymap():
-    assert axt.subtab_shortcuts("plugins") == "Space:project  g:global  x:uninstall  Tab:detail"
-    assert axt.subtab_shortcuts("commands") == "e:edit  Tab:detail"
+    assert axt.subtab_shortcuts("plugins") == "Space:project  g:global  x:uninstall  U:update  Tab:detail"
+    assert axt.subtab_shortcuts("commands") == "e:edit  U:update  Tab:detail"
     assert axt.subtab_shortcuts("mcp") == "Space:toggle  Tab:detail"
     assert axt.subtab_shortcuts("vault") == ""  # vault owns its own status line
 
@@ -6939,3 +6939,36 @@ def test_help_text_includes_every_keymap_help_line():
         for b in bindings:
             if b.help:
                 assert b.help in HELP_TEXT, f"{sub}: {b.help!r} missing from HELP_TEXT"
+
+
+# ─── Extensions "U" = update selected (Task 8) ───────────────────────────────
+
+
+def test_update_target_for_maps_types():
+    from axt.tui.tabs import _update_target_for
+    from axt.core import PluginInfo, SkillInfo
+    p = PluginInfo(id="foo@mk", name="foo", marketplace="mk", version="1",
+                   install_path="", scope="user", installed_at="", last_updated="")
+    assert _update_target_for("plugins", p) == ("plugin", "foo@mk")
+    s = SkillInfo(name="s", path="/p", is_symlink=False, source="user")
+    assert _update_target_for("skills", s) == ("skill", "s")
+    assert _update_target_for("mcp", object()) is None      # report-only, no U action
+    assert _update_target_for("hooks", object()) is None
+
+
+def test_act_update_applies_updatable_selected(monkeypatch):
+    import axt
+    from axt.core import PluginInfo
+    plugin = PluginInfo(id="foo@mk", name="foo", marketplace="mk", version="1",
+                        install_path="", scope="user", installed_at="", last_updated="")
+    monkeypatch.setattr("axt.tui.tabs._selected_item", lambda state, sub: plugin)
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates",
+        lambda types=None: [axt.update.UpdateStatus("plugin", "foo@mk", 1, "1", "2", True)])
+    applied = {}
+    monkeypatch.setattr("axt.tui.tabs.apply_updates",
+        lambda targets: (applied.setdefault("t", targets),
+            [axt.update.UpdateResult("plugin", "foo@mk", "1", "2", True, "reinstall")])[1])
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    msg = axt.tui.tabs._act_update(None, None, "plugins", ord("U"))
+    assert applied["t"] == [("plugin", "foo@mk")]
+    assert "Updated foo@mk" in msg and "1 → 2" in msg

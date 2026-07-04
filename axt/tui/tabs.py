@@ -54,6 +54,9 @@ from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
     _type_to_dir,
     _unified_to_claude,
 )
+# Update orchestration — kept as module-level names (not wildcard-imported)
+# so tests can monkeypatch axt.tui.tabs.check_all_updates / apply_updates.
+from axt.update import check_all_updates, apply_updates  # noqa: F401
 
 
 # ── Section 13: TUI — Tabs (initial: Vault + stubs for the rest) ─────────────
@@ -2947,6 +2950,41 @@ def _act_edit_source(state: TuiState, stdscr: Any, sub: str, key: int) -> Option
     return f"Opened {item.source_path}" if ok else "Editor failed"
 
 
+_SUB_TO_UPDATE_TYPE = {"plugins": "plugin", "skills": "skill", "commands": "command", "agents": "agent"}
+
+
+def _update_target_for(sub: str, item: Any) -> Optional[tuple[str, str]]:
+    """(item_type, name) for the update registry, or None if not updatable here.
+    Plugins key on `id` (name@marketplace); skills/commands/agents on `name`."""
+    itype = _SUB_TO_UPDATE_TYPE.get(sub)
+    if itype is None or item is None:
+        return None
+    name = getattr(item, "id", None) or getattr(item, "name", None)
+    return (itype, name) if name else None
+
+
+def _act_update(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    item = _selected_item(state, sub)
+    target = _update_target_for(sub, item)
+    if target is None:
+        return None
+    itype, name = target
+    try:
+        statuses = [s for s in check_all_updates(types=[itype]) if s.name == name]
+    except Exception as exc:  # noqa: BLE001 — surface as status, never crash the TUI
+        return f"Update check failed: {exc}"
+    st = statuses[0] if statuses else None
+    if st is None:
+        return f"{name}: no update info"
+    if st.tier != 1 or not st.updatable:
+        return f"{name}: {st.error or st.note or 'up to date'}"
+    res = apply_updates([(itype, name)])[0]
+    _refresh_ext(state, sub)
+    if res.error:
+        return f"Update failed: {res.error}"
+    return f"Updated {name}: {res.before} → {res.after}" if res.updated else f"{name} up to date"
+
+
 # ── Sub-tab keymap: single source of truth for dispatch + hints + help ───────
 # Each binding: key codes → handler, plus the status-bar hint fragment and the
 # `?`-help line it advertises ("" = hidden). `needs_stdscr` bindings are
@@ -2977,6 +3015,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("x"),), "x:uninstall",
                       "x=uninstall (confirm)",
                       True, _act_plugin_uninstall),
+        SubtabBinding((ord("U"),), "U:update", "U=update selected (check + apply)", True, _act_update),
     ),
     "mcp": (
         SubtabBinding((ord(" "),), "Space:toggle",
@@ -2991,6 +3030,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("x"),), "x:unlink",
                       "x=unlink (confirm)",
                       True, _act_skill_unlink),
+        SubtabBinding((ord("U"),), "U:update", "U=update selected (check + apply)", True, _act_update),
     ),
     "market": (
         SubtabBinding((ord("a"),), "a:add",
@@ -3016,11 +3056,13 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("e"),), "e:edit",
                       "e=open source file in $EDITOR",
                       True, _act_edit_source),
+        SubtabBinding((ord("U"),), "U:update", "U=update selected (check + apply)", True, _act_update),
     ),
     "agents": (
         SubtabBinding((ord("e"),), "e:edit",
                       "e=open source file in $EDITOR",
                       True, _act_edit_source),
+        SubtabBinding((ord("U"),), "U:update", "U=update selected (check + apply)", True, _act_update),
     ),
 }
 
