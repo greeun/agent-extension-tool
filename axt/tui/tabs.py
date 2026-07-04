@@ -2716,15 +2716,17 @@ def _act_mcp_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Optiona
     server = _selected_item(state, "mcp")
     if server is None:
         return None
-    want_disabled = key == ord("d")
-    if server.disabled == want_disabled:
-        return f"MCP {server.name} already {'disabled' if want_disabled else 'enabled'}"
+    want_disabled = not server.disabled
     try:
         set_mcp_disabled(server.name, disabled=want_disabled)
     except OSError as exc:
-        return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
+        return f"Toggle failed: {exc}"
     _refresh_ext(state, "mcp")
     return f"{'Disabled' if want_disabled else 'Enabled'} MCP {server.name} (project)"
+
+
+def _act_mcp_scope_note(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    return "MCP servers toggle per project only — use Space"
 
 
 def _act_skill_link(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
@@ -2822,19 +2824,21 @@ def _act_hook_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Option
     hook = _selected_item(state, "hooks")
     if hook is None:
         return None
-    want_disabled = key == ord("d")
-    if hook.disabled == want_disabled:
-        return f"Hook already {'disabled' if want_disabled else 'enabled'}"
     if hook.source == "plugin":
         return "Plugin hooks are read-only (manage them in the plugin)"
+    want_disabled = not hook.disabled
     try:
         moved = set_hook_disabled(hook.source_path, hook, disabled=want_disabled)
     except OSError as exc:
-        return f"{'Disable' if want_disabled else 'Enable'} failed: {exc}"
+        return f"Toggle failed: {exc}"
     if not moved:
         return "Hook not found in its settings file"
     _refresh_ext(state, "hooks")
     return f"{'Disabled' if want_disabled else 'Enabled'} hook {hook.event} ({hook.source})"
+
+
+def _act_hook_scope_note(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    return "Hooks toggle inside their own settings file — use Space"
 
 
 def _act_hook_preview(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
@@ -2900,9 +2904,10 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
                       True, _act_plugin_uninstall),
     ),
     "mcp": (
-        SubtabBinding((ord("e"), ord("d")), "e:enable  d:disable",
-                      "e=enable  d=disable (this project's disabledMcpServers)",
+        SubtabBinding((ord(" "),), "Space:toggle",
+                      "Space=toggle enabled (this project's disabledMcpServers)",
                       False, _act_mcp_toggle),
+        SubtabBinding((ord("g"),), "", "", False, _act_mcp_scope_note),
     ),
     "skills": (
         SubtabBinding((ord("l"),), "l:link",
@@ -2924,9 +2929,10 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
                       True, _act_market_remove),
     ),
     "hooks": (
-        SubtabBinding((ord("e"), ord("d")), "e:enable  d:disable",
-                      "e=enable  d=disable (moves the rule within its settings file)",
+        SubtabBinding((ord(" "),), "Space:toggle",
+                      "Space=toggle enabled (moves the rule within its settings file)",
                       False, _act_hook_toggle),
+        SubtabBinding((ord("g"),), "", "", False, _act_hook_scope_note),
         SubtabBinding((ord("p"),), "p:preview",
                       "p=preview hook execution (scrollable modal)",
                       True, _act_hook_preview),

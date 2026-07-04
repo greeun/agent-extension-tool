@@ -1722,27 +1722,25 @@ def _ext_idx() -> int:
 
 
 def test_status_bar_shows_mcp_toggle_shortcuts(monkeypatch):
-    """MCP sub-tab status bar advertises e:enable / d:disable."""
+    """MCP sub-tab status bar advertises the Space toggle."""
     scr = _make_stdscr(rows=30, cols=200)
     state = axt.TuiState()
     state.tab_idx = _ext_idx()
     state.ext_sub_tab = "mcp"
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "e:enable" in flat
-    assert "d:disable" in flat
+    assert "Space:toggle" in flat
 
 
 def test_status_bar_shows_hooks_toggle_shortcuts(monkeypatch):
-    """Hooks sub-tab status bar advertises e:enable / d:disable / p:preview."""
+    """Hooks sub-tab status bar advertises Space toggle / p:preview."""
     scr = _make_stdscr(rows=30, cols=200)
     state = axt.TuiState()
     state.tab_idx = _ext_idx()
     state.ext_sub_tab = "hooks"
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "e:enable" in flat
-    assert "d:disable" in flat
+    assert "Space:toggle" in flat
     assert "p:preview" in flat
 
 
@@ -2207,6 +2205,64 @@ def test_plugin_toggle_failure_reports(tmp_path, monkeypatch):
     monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled", boom)
     msg = axt._handle_subtab_action(state, "plugins", ord(" "))
     assert "Toggle failed" in (msg or "")
+
+
+def _mcp_state(disabled):
+    from types import SimpleNamespace
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [SimpleNamespace(
+        name="srv", scope="user", transport="stdio", disabled=disabled)]
+    state.ext_selected["mcp"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    return state
+
+
+def test_mcp_space_flips_disabled_state(monkeypatch):
+    calls = []
+    monkeypatch.setattr("axt.tui.tabs.set_mcp_disabled",
+                        lambda name, disabled: calls.append((name, disabled)))
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    msg = axt._handle_subtab_action(_mcp_state(disabled=False), "mcp", ord(" "))
+    assert calls == [("srv", True)] and "Disabled" in msg
+    calls.clear()
+    msg = axt._handle_subtab_action(_mcp_state(disabled=True), "mcp", ord(" "))
+    assert calls == [("srv", False)] and "Enabled" in msg
+
+
+def test_mcp_g_explains_project_only_scope():
+    msg = axt._handle_subtab_action(_mcp_state(disabled=False), "mcp", ord("g"))
+    assert msg == "MCP servers toggle per project only — use Space"
+
+
+def test_hook_g_explains_settings_scope():
+    from types import SimpleNamespace
+    state = axt.TuiState()
+    state.ext_sub_tab = "hooks"
+    state.ext_cache["hooks"] = [SimpleNamespace(
+        event="PreToolUse", type="command", source="user",
+        source_path="/tmp/settings.json", disabled=False)]
+    state.ext_selected["hooks"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(state, "hooks", ord("g"))
+    assert msg == "Hooks toggle inside their own settings file — use Space"
+
+
+def test_hook_space_flips_disabled_state(monkeypatch):
+    from types import SimpleNamespace
+    calls = []
+    monkeypatch.setattr("axt.tui.tabs.set_hook_disabled",
+                        lambda path, hook, disabled: calls.append(disabled) or True)
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    state = axt.TuiState()
+    state.ext_sub_tab = "hooks"
+    state.ext_cache["hooks"] = [SimpleNamespace(
+        event="PreToolUse", type="command", source="user",
+        source_path="/tmp/settings.json", disabled=False)]
+    state.ext_selected["hooks"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(state, "hooks", ord(" "))
+    assert calls == [True] and "Disabled" in msg
 
 
 def test_subtab_action_without_stdscr_is_noop():
@@ -6799,7 +6855,7 @@ def test_subtab_keymap_covers_all_non_vault_subtabs():
 def test_subtab_shortcuts_generated_from_keymap():
     assert axt.subtab_shortcuts("plugins") == "Space:project  g:global  x:uninstall  Tab:detail"
     assert axt.subtab_shortcuts("commands") == "e:edit  Tab:detail"
-    assert axt.subtab_shortcuts("mcp") == "e:enable  d:disable  Tab:detail"
+    assert axt.subtab_shortcuts("mcp") == "Space:toggle  Tab:detail"
     assert axt.subtab_shortcuts("vault") == ""  # vault owns its own status line
 
 
