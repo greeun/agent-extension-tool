@@ -1,4 +1,7 @@
 import json
+import subprocess
+from pathlib import Path
+
 import axt
 from axt.update import (
     UpdateStatus, UpdateResult, Updater,
@@ -173,3 +176,28 @@ def test_plugin_check_flags_version_bump(tmp_path, monkeypatch):
     out = axt.update.check_all_updates(types=["plugin"])
     s = [x for x in out if x.name == "foo@mk"][0]
     assert s.current == "0.1.0" and s.available == "0.2.0" and s.updatable is True
+
+
+def _git_init(d: Path):
+    d.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "init"], cwd=d, check=True)
+
+
+def test_skill_updater_tiers_git_vs_nongit(tmp_path, monkeypatch):
+    from axt.core import SkillInfo
+    gitdir = tmp_path / "gitskill"
+    _git_init(gitdir)
+    plain = tmp_path / "plainskill"
+    plain.mkdir()
+    items = [
+        SkillInfo(name="gitskill", path=str(gitdir), is_symlink=False, source="user"),
+        SkillInfo(name="plainskill", path=str(plain), is_symlink=False, source="user"),
+        SkillInfo(name="pluginskill", path="/x", is_symlink=False, source="plugin", plugin="p"),
+    ]
+    monkeypatch.setattr("axt.update.list_all_skills", lambda **k: items)
+    out = {s.name: s for s in axt.update.check_all_updates(types=["skill"])}
+    assert "pluginskill" not in out                     # plugin-provided excluded
+    assert out["plainskill"].tier == 2 and "manual" in out["plainskill"].note
+    assert out["gitskill"].tier == 1                     # inside a git repo

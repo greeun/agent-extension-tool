@@ -16,6 +16,7 @@ from axt.core import (
     read_json, list_installed_plugins, find_plugin_source_dir,
     _read_plugin_manifest, _parse_plugin_id, is_git_repo, read_sha_file, _git,
     update_installed_plugin,
+    list_all_skills, list_commands, list_all_agents,
 )
 import shutil
 import tempfile
@@ -201,9 +202,108 @@ def _plugin_apply(name: str, no_sync: bool = False) -> UpdateResult:
 plugin_updater = Updater("plugin", 1, _plugin_check_all, _plugin_apply)
 
 
+# ── standalone skill/command/agent updaters — git-backed dir, else manual ──
+
+def _resolve_real_dir(path_str: str) -> Path:
+    p = Path(path_str)
+    try:
+        rp = p.resolve()
+    except OSError:
+        rp = p
+    return rp if rp.is_dir() else rp.parent
+
+
+def _find_git_root(d: Path) -> Optional[Path]:
+    for cand in [d, *d.parents]:
+        if (cand / ".git").exists():
+            return cand
+    return None
+
+
+def _git_dir_status(item_type: str, name: str, real_dir: Path) -> UpdateStatus:
+    root = _find_git_root(real_dir)
+    if root is None:
+        return UpdateStatus(item_type, name, 2, "local", "local", False, note="manual (non-git)")
+    code, out, err = _git(["git", "-C", str(root), "rev-parse", "--short", "HEAD"])
+    if code != 0:
+        return UpdateStatus(item_type, name, 1, "?", "?", False, error=err.strip())
+    current = out.strip()
+    code, _, err = _git(["git", "-C", str(root), "fetch", "--quiet"])
+    if code != 0:
+        return UpdateStatus(item_type, name, 1, current, "?", False, error=err.strip() or "fetch failed")
+    code, out, err = _git(["git", "-C", str(root), "rev-parse", "--short", "@{u}"])
+    if code != 0:
+        return UpdateStatus(item_type, name, 1, current, "?", False, note="no upstream")
+    remote = out.strip()
+    return UpdateStatus(item_type, name, 1, current, remote, current != remote,
+                        note=("up to date" if current == remote else ""))
+
+
+def _git_dir_apply(item_type: str, name: str, real_dir: Path) -> UpdateResult:
+    root = _find_git_root(real_dir)
+    if root is None:
+        return UpdateResult(item_type, name, "local", "local", False, "skipped", error="non-git")
+    code, out, _ = _git(["git", "-C", str(root), "rev-parse", "--short", "HEAD"])
+    before = out.strip() if code == 0 else "?"
+    code, _, err = _git(["git", "-C", str(root), "pull", "--ff-only"])
+    if code != 0:
+        return UpdateResult(item_type, name, before, before, False, "error", error=err.strip())
+    code, out, _ = _git(["git", "-C", str(root), "rev-parse", "--short", "HEAD"])
+    after = out.strip() if code == 0 else "?"
+    return UpdateResult(item_type, name, before, after, before != after, "git pull")
+
+
+def _standalone(items, get_path):
+    return [(it.name, get_path(it)) for it in items if not it.plugin and it.source == "user"]
+
+
+def _skill_check_all() -> list[UpdateStatus]:
+    return [_git_dir_status("skill", n, _resolve_real_dir(p))
+            for n, p in _standalone(list_all_skills(), lambda s: s.path)]
+
+
+def _skill_apply(name: str, no_sync: bool = False) -> UpdateResult:
+    for n, p in _standalone(list_all_skills(), lambda s: s.path):
+        if n == name:
+            return _git_dir_apply("skill", name, _resolve_real_dir(p))
+    return UpdateResult("skill", name, "?", "?", False, "skipped", error="not found")
+
+
+def _command_check_all() -> list[UpdateStatus]:
+    return [_git_dir_status("command", n, _resolve_real_dir(p))
+            for n, p in _standalone(list_commands(), lambda c: c.source_path)]
+
+
+def _command_apply(name: str, no_sync: bool = False) -> UpdateResult:
+    for n, p in _standalone(list_commands(), lambda c: c.source_path):
+        if n == name:
+            return _git_dir_apply("command", name, _resolve_real_dir(p))
+    return UpdateResult("command", name, "?", "?", False, "skipped", error="not found")
+
+
+def _agent_check_all() -> list[UpdateStatus]:
+    return [_git_dir_status("agent", n, _resolve_real_dir(p))
+            for n, p in _standalone(list_all_agents(), lambda a: a.source_path)]
+
+
+def _agent_apply(name: str, no_sync: bool = False) -> UpdateResult:
+    for n, p in _standalone(list_all_agents(), lambda a: a.source_path):
+        if n == name:
+            return _git_dir_apply("agent", name, _resolve_real_dir(p))
+    return UpdateResult("agent", name, "?", "?", False, "skipped", error="not found")
+
+
+skill_updater = Updater("skill", 1, _skill_check_all, _skill_apply)
+command_updater = Updater("command", 1, _command_check_all, _command_apply)
+agent_updater = Updater("agent", 1, _agent_check_all, _agent_apply)
+
+
 # ── registry + orchestration ────────────────────────────────────────────────
 
-UPDATERS: list[Updater] = [marketplace_updater, plugin_updater]
+UPDATERS: list[Updater] = [
+    marketplace_updater, plugin_updater,
+    skill_updater, command_updater, agent_updater,
+]
 
 
 def _updater_by_type() -> dict[str, Updater]:
