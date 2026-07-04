@@ -2910,11 +2910,11 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("g"),), "", "", False, _act_mcp_scope_note),
     ),
     "skills": (
-        SubtabBinding((ord("l"),), "l:link",
-                      "l=link new path (input)",
+        SubtabBinding((ord("a"),), "a:link",
+                      "a=link new path (input)",
                       True, _act_skill_link),
-        SubtabBinding((ord("u"),), "u:unlink",
-                      "u=unlink (confirm)",
+        SubtabBinding((ord("x"),), "x:unlink",
+                      "x=unlink (confirm)",
                       True, _act_skill_unlink),
     ),
     "market": (

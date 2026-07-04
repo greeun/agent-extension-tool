@@ -2269,7 +2269,7 @@ def test_subtab_action_without_stdscr_is_noop():
     state = axt.TuiState()
     state.ext_sub_tab = "skills"
     state.stdscr_callbacks = None
-    assert axt._handle_subtab_action(state, "skills", ord("l")) is None
+    assert axt._handle_subtab_action(state, "skills", ord("a")) is None
 
 
 # ─── Project Enter preview & `e` editor (smoke) ──────────────────────────────
@@ -4358,7 +4358,7 @@ def test_subtab_action_skill_link(tmp_path, monkeypatch):
     s = axt.TuiState()
     s.ext_sub_tab = "skills"
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "skills", ord("l"))
+    msg = axt._handle_subtab_action(s, "skills", ord("a"))
     assert msg is not None and "Linked" in msg
 
 
@@ -4371,7 +4371,7 @@ def test_subtab_action_skill_link_cancelled(monkeypatch):
     s = axt.TuiState()
     s.ext_sub_tab = "skills"
     s.stdscr_callbacks = {"stdscr": object()}
-    assert axt._handle_subtab_action(s, "skills", ord("l")) is None
+    assert axt._handle_subtab_action(s, "skills", ord("a")) is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks unsupported on Windows")
@@ -4383,7 +4383,7 @@ def test_subtab_action_skill_unlink_non_symlink(monkeypatch):
     ]
     s.ext_selected["skills"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "skills", ord("u"))
+    msg = axt._handle_subtab_action(s, "skills", ord("x"))
     assert msg == "Selected skill is not a symlink (cannot unlink)"
 
 
@@ -4406,7 +4406,7 @@ def test_subtab_action_skill_unlink_confirmed(tmp_path, monkeypatch):
     ]
     s.ext_selected["skills"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "skills", ord("u"))
+    msg = axt._handle_subtab_action(s, "skills", ord("x"))
     assert msg is not None and "Unlinked" in msg
     assert not link.exists()
 
@@ -5364,7 +5364,7 @@ def test_subtab_action_skill_link_unsupported(monkeypatch):
     s = axt.TuiState()
     s.ext_sub_tab = "skills"
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "skills", ord("l"))
+    msg = axt._handle_subtab_action(s, "skills", ord("a"))
     assert msg == "Symlinks unsupported on this platform"
 
 
@@ -5995,7 +5995,7 @@ def test_subtab_action_skill_link_failure(monkeypatch):
     s = axt.TuiState()
     s.ext_sub_tab = "skills"
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "skills", ord("l"))
+    msg = axt._handle_subtab_action(s, "skills", ord("a"))
     assert msg is not None and "Link failed" in msg
 
 
@@ -6007,7 +6007,7 @@ def test_subtab_action_skill_unlink_none_selected(monkeypatch):
     s.ext_cache["skills"] = []
     s.ext_selected["skills"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    assert axt._handle_subtab_action(s, "skills", ord("u")) is None
+    assert axt._handle_subtab_action(s, "skills", ord("x")) is None
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks unsupported on Windows")
@@ -6025,7 +6025,7 @@ def test_subtab_action_skill_unlink_failure(monkeypatch):
     ]
     s.ext_selected["skills"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "skills", ord("u"))
+    msg = axt._handle_subtab_action(s, "skills", ord("x"))
     assert msg is not None and "Unlink failed" in msg
 
 
@@ -6044,7 +6044,7 @@ def test_subtab_action_skill_unlink_cancelled(monkeypatch):
     ]
     s.ext_selected["skills"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "skills", ord("u"))
+    msg = axt._handle_subtab_action(s, "skills", ord("x"))
     assert msg == "Cancelled"
     assert unlinked == []  # confirm declined → no unlink attempted
 
