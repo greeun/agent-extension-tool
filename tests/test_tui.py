@@ -6880,3 +6880,12 @@ def test_subtab_shortcuts_generated_from_keymap():
     assert axt.subtab_shortcuts("commands") == "e:edit  Tab:detail"
     assert axt.subtab_shortcuts("mcp") == "e:enable  d:disable  Tab:detail"
     assert axt.subtab_shortcuts("vault") == ""  # vault owns its own status line
+
+
+def test_help_text_includes_every_keymap_help_line():
+    from axt.tui.loop import HELP_TEXT
+    assert axt.subtab_help_block()  # non-empty
+    for sub, bindings in axt.SUBTAB_KEYMAP.items():
+        for b in bindings:
+            if b.help:
+                assert b.help in HELP_TEXT, f"{sub}: {b.help!r} missing from HELP_TEXT"

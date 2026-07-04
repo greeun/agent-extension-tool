@@ -49,7 +49,7 @@ from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
 # ── Section 14: TUI — Main loop ──────────────────────────────────────────────
 
 
-HELP_TEXT = """\
+HELP_TEXT = f"""\
 axt TUI — keyboard reference
 
 Main tabs (resource axis)
@@ -99,17 +99,9 @@ Extensions sub-tab actions
                   MCP      Name→Scope→Transport
                   Hooks    Event→Type→Source
                   Market   Name→Source→Updated
-  Plugins:      e=enable (global)  d=disable (global)
-                E=enable (project) D=disable (project)
-                x=uninstall (confirm)
-                Status column shows G/P: ● enabled  ○ disabled  · unset
-  Skills:       l=link new path (input)  u=unlink (confirm)
-  MCP:          e=enable  d=disable (this project's disabledMcpServers)
-  Marketplace:  a=add (source+name input)  S=sync (selected)  x=remove (confirm)
-  Commands/Agents: e=open source file in $EDITOR
-  Hooks:        e=enable  d=disable (moves the rule within its settings file)
-                p=preview hook execution (scrollable modal)
-                [off] = parked; plugin-sourced hooks are read-only
+{subtab_help_block()}
+  Notes:        Plugins status column G/P: ● enabled  ○ disabled  · unset
+                Hooks [off] = parked; plugin-sourced hooks are read-only
   All sub-tabs: a detail panel sits below the list. Tab focuses it,
                 j/k (or PgUp/PgDn) scroll it, Esc or Tab blurs back to the list.
 
@@ -133,7 +125,7 @@ linked vs enabled (activation mechanism)
 
 Vault column meanings
   Vault   ✓        Item lives in ~/.axt/vault/
-          glob*    Item only exists in ~/.claude/{type}s/ (use `i` to import)
+          glob*    Item only exists in ~/.claude/{{type}}s/ (use `i` to import)
   Proj    ● / ○    linked/enabled in this project (* = pending toggle)
   Glob    ● / ○    linked/enabled globally
   Used    N proj   Project count; auto-scanned on launch, `f` to refresh

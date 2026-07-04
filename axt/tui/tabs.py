@@ -2951,6 +2951,31 @@ def subtab_shortcuts(sub: str) -> str:
     return "  ".join(parts)
 
 
+_SUBTAB_HELP_LABELS: tuple[tuple[str, str], ...] = (
+    ("plugins", "Plugins"),
+    ("skills", "Skills"),
+    ("mcp", "MCP"),
+    ("market", "Marketplace"),
+    ("hooks", "Hooks"),
+    ("commands", "Commands"),
+    ("agents", "Agents"),
+)
+
+
+def subtab_help_block() -> str:
+    """Per-sub-tab key lines of the `?` help, generated from SUBTAB_KEYMAP.
+    Continuation lines align under the first help entry (14-cell label)."""
+    lines = []
+    for sub, label in _SUBTAB_HELP_LABELS:
+        helps = [b.help for b in SUBTAB_KEYMAP.get(sub, ()) if b.help]
+        if not helps:
+            continue
+        prefix = f"  {label + ':':<14}"
+        lines.append(prefix + helps[0])
+        lines.extend(" " * len(prefix) + h for h in helps[1:])
+    return "\n".join(lines)
+
+
 def _handle_subtab_action(state: TuiState, sub: str, key: int) -> Optional[str]:
     """Table-driven sub-tab actions (see SUBTAB_KEYMAP). Returns status message.
 
