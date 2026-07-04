@@ -2147,8 +2147,9 @@ def test_vault_list_esc_pending_takes_priority_over_search():
 # ─── Subtab actions (Plugin enable / disable / Skill / Marketplace / Hook) ───
 
 
-def test_plugin_enable_disable_action(tmp_path, monkeypatch):
+def _plugin_toggle_state(tmp_path, monkeypatch):
     import json
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("axt.PATHS", axt.Paths(
         installed_plugins=tmp_path / "ip.json",
         settings=tmp_path / "settings.json",
@@ -2162,15 +2163,50 @@ def test_plugin_enable_disable_action(tmp_path, monkeypatch):
     state.ext_sub_tab = "plugins"
     state.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
     state.ext_selected["plugins"] = 0
-    # Without stdscr context, modal-bound actions are no-ops; e/d don't need it.
     state.stdscr_callbacks = {"stdscr": None}
-    msg = axt._handle_subtab_action(state, "plugins", ord("e"))
+    return state
+
+
+def test_plugin_space_toggles_project_scope(tmp_path, monkeypatch):
+    state = _plugin_toggle_state(tmp_path, monkeypatch)
+    proj_settings = tmp_path / ".claude" / "settings.json"
+    # Unset counts as enabled → the first Space disables, in project settings.
+    msg = axt._handle_subtab_action(state, "plugins", ord(" "))
+    assert "Disabled" in (msg or "") and "(project)" in msg
+    assert axt.read_enabled_plugins(proj_settings)["p@m"] is False
+    state.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    msg = axt._handle_subtab_action(state, "plugins", ord(" "))
+    assert "Enabled" in (msg or "")
+    assert axt.read_enabled_plugins(proj_settings)["p@m"] is True
+
+
+def test_plugin_g_toggles_global_scope(tmp_path, monkeypatch):
+    state = _plugin_toggle_state(tmp_path, monkeypatch)
+    msg = axt._handle_subtab_action(state, "plugins", ord("g"))
+    assert "Disabled" in (msg or "") and "(global)" in msg
+    assert axt.read_enabled_plugins(tmp_path / "settings.json")["p@m"] is False
+    state.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
+    msg = axt._handle_subtab_action(state, "plugins", ord("g"))
     assert "Enabled" in (msg or "")
     assert axt.read_enabled_plugins(tmp_path / "settings.json")["p@m"] is True
-    state.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
-    msg = axt._handle_subtab_action(state, "plugins", ord("d"))
-    assert "Disabled" in (msg or "")
-    assert axt.read_enabled_plugins(tmp_path / "settings.json")["p@m"] is False
+
+
+def test_plugin_project_toggle_starts_from_global_value(tmp_path, monkeypatch):
+    """Project unset + global False → effective disabled → Space enables (project)."""
+    state = _plugin_toggle_state(tmp_path, monkeypatch)
+    axt.set_plugin_enabled(tmp_path / "settings.json", "p@m", False)
+    msg = axt._handle_subtab_action(state, "plugins", ord(" "))
+    assert "Enabled" in (msg or "") and "(project)" in msg
+    assert axt.read_enabled_plugins(tmp_path / ".claude" / "settings.json")["p@m"] is True
+
+
+def test_plugin_toggle_failure_reports(tmp_path, monkeypatch):
+    state = _plugin_toggle_state(tmp_path, monkeypatch)
+    def boom(path, pid, enabled):
+        raise OSError("disk full")
+    monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled", boom)
+    msg = axt._handle_subtab_action(state, "plugins", ord(" "))
+    assert "Toggle failed" in (msg or "")
 
 
 def test_subtab_action_without_stdscr_is_noop():
@@ -4196,32 +4232,6 @@ def test_selected_item_returns_row():
 # ─── _handle_subtab_action: plugin E/D project, uninstall ─────────────────────
 
 
-def test_subtab_action_plugin_project_enable_disable(tmp_path, monkeypatch):
-    import json
-    proj = tmp_path / "proj"
-    (proj / ".claude").mkdir(parents=True)
-    monkeypatch.setattr("axt.PATHS", axt.Paths(
-        installed_plugins=tmp_path / "ip.json",
-        settings=tmp_path / "settings.json",
-    ))
-    monkeypatch.chdir(proj)
-    (tmp_path / "ip.json").write_text(json.dumps({
-        "version": 2,
-        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
-                             "installedAt": "", "lastUpdated": ""}]},
-    }))
-    s = axt.TuiState()
-    s.ext_sub_tab = "plugins"
-    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
-    s.ext_selected["plugins"] = 0
-    s.stdscr_callbacks = {"stdscr": None}
-    msg = axt._handle_subtab_action(s, "plugins", ord("E"))
-    assert "Enabled" in (msg or "") and "project" in (msg or "")
-    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
-    msg = axt._handle_subtab_action(s, "plugins", ord("D"))
-    assert "Disabled" in (msg or "") and "project" in (msg or "")
-
-
 def test_subtab_action_plugin_uninstall_confirmed(tmp_path, monkeypatch):
     import json
     install_path = tmp_path / "myplugin"
@@ -4273,7 +4283,7 @@ def test_subtab_action_plugin_none_selected_returns_none():
     s.ext_sub_tab = "plugins"
     s.ext_cache["plugins"] = []
     s.stdscr_callbacks = {"stdscr": object()}
-    assert axt._handle_subtab_action(s, "plugins", ord("e")) is None
+    assert axt._handle_subtab_action(s, "plugins", ord(" ")) is None
 
 
 # ─── _handle_subtab_action: skills link/unlink ───────────────────────────────
@@ -5276,26 +5286,6 @@ def test_render_usage_tab_clamps_negative_scroll(tmp_path, monkeypatch):
 # ─── _handle_subtab_action: error-return branches ────────────────────────────
 
 
-def test_subtab_action_plugin_enable_failure(tmp_path, monkeypatch):
-    import json
-    monkeypatch.setattr("axt.PATHS", axt.Paths(
-        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "settings.json"))
-    (tmp_path / "ip.json").write_text(json.dumps({
-        "version": 2,
-        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
-                             "installedAt": "", "lastUpdated": ""}]},
-    }))
-    monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled",
-                        lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")))
-    s = axt.TuiState()
-    s.ext_sub_tab = "plugins"
-    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
-    s.ext_selected["plugins"] = 0
-    s.stdscr_callbacks = {"stdscr": None}
-    msg = axt._handle_subtab_action(s, "plugins", ord("e"))
-    assert msg is not None and "Enable failed" in msg
-
-
 def test_subtab_action_market_sync_failure(monkeypatch):
     monkeypatch.setattr("axt.tui.tabs.sync_marketplace",
                         lambda km, name: (_ for _ in ()).throw(RuntimeError("network")))
@@ -5911,75 +5901,6 @@ def test_handle_extensions_r_refresh_vault_resets_items():
     assert msg == "Refreshed"
     assert s.vault_items == []
     assert s.refresh_token == 0
-
-
-def test_subtab_action_plugin_disable_global_failure(tmp_path, monkeypatch):
-    """`d` disable (global) raising OSError → 'Disable failed' (lines 1959-1960)."""
-    import json
-    monkeypatch.setattr("axt.PATHS", axt.Paths(
-        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "settings.json"))
-    (tmp_path / "ip.json").write_text(json.dumps({
-        "version": 2,
-        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
-                             "installedAt": "", "lastUpdated": ""}]},
-    }))
-    monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled",
-                        lambda *a, **kw: (_ for _ in ()).throw(OSError("x")))
-    s = axt.TuiState()
-    s.ext_sub_tab = "plugins"
-    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
-    s.ext_selected["plugins"] = 0
-    s.stdscr_callbacks = {"stdscr": None}
-    msg = axt._handle_subtab_action(s, "plugins", ord("d"))
-    assert msg is not None and "Disable failed" in msg
-
-
-def test_subtab_action_plugin_project_enable_failure(tmp_path, monkeypatch):
-    """`E` enable (project) raising OSError → 'Enable failed' (lines 1967-1968)."""
-    import json
-    proj = tmp_path / "proj"
-    (proj / ".claude").mkdir(parents=True)
-    monkeypatch.chdir(proj)
-    monkeypatch.setattr("axt.PATHS", axt.Paths(
-        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "settings.json"))
-    (tmp_path / "ip.json").write_text(json.dumps({
-        "version": 2,
-        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
-                             "installedAt": "", "lastUpdated": ""}]},
-    }))
-    monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled",
-                        lambda *a, **kw: (_ for _ in ()).throw(OSError("x")))
-    s = axt.TuiState()
-    s.ext_sub_tab = "plugins"
-    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
-    s.ext_selected["plugins"] = 0
-    s.stdscr_callbacks = {"stdscr": None}
-    msg = axt._handle_subtab_action(s, "plugins", ord("E"))
-    assert msg is not None and "Enable failed" in msg
-
-
-def test_subtab_action_plugin_project_disable_failure(tmp_path, monkeypatch):
-    """`D` disable (project) raising OSError → 'Disable failed' (lines 1975-1976)."""
-    import json
-    proj = tmp_path / "proj"
-    (proj / ".claude").mkdir(parents=True)
-    monkeypatch.chdir(proj)
-    monkeypatch.setattr("axt.PATHS", axt.Paths(
-        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "settings.json"))
-    (tmp_path / "ip.json").write_text(json.dumps({
-        "version": 2,
-        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
-                             "installedAt": "", "lastUpdated": ""}]},
-    }))
-    monkeypatch.setattr("axt.tui.tabs.set_plugin_enabled",
-                        lambda *a, **kw: (_ for _ in ()).throw(OSError("x")))
-    s = axt.TuiState()
-    s.ext_sub_tab = "plugins"
-    s.ext_cache["plugins"] = axt.list_installed_plugins(tmp_path / "ip.json")
-    s.ext_selected["plugins"] = 0
-    s.stdscr_callbacks = {"stdscr": None}
-    msg = axt._handle_subtab_action(s, "plugins", ord("D"))
-    assert msg is not None and "Disable failed" in msg
 
 
 def test_subtab_action_plugin_uninstall_failure(tmp_path, monkeypatch):
@@ -6876,7 +6797,7 @@ def test_subtab_keymap_covers_all_non_vault_subtabs():
 
 
 def test_subtab_shortcuts_generated_from_keymap():
-    assert axt.subtab_shortcuts("plugins") == "e/d:on/off(G)  E/D:on/off(P)  x:uninstall  Tab:detail"
+    assert axt.subtab_shortcuts("plugins") == "Space:project  g:global  x:uninstall  Tab:detail"
     assert axt.subtab_shortcuts("commands") == "e:edit  Tab:detail"
     assert axt.subtab_shortcuts("mcp") == "e:enable  d:disable  Tab:detail"
     assert axt.subtab_shortcuts("vault") == ""  # vault owns its own status line

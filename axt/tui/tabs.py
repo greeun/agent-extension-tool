@@ -2657,15 +2657,6 @@ def _open_terminal_for_dir(state: TuiState, directory: Optional[str]) -> Optiona
     return info if ok else f"Terminal open failed: {info}"
 
 
-# Plugins sub-tab enable/disable: key → (enable?, settings scope).
-_PLUGIN_TOGGLES = {
-    ord("e"): (True, "global"),
-    ord("d"): (False, "global"),
-    ord("E"): (True, "project"),
-    ord("D"): (False, "project"),
-}
-
-
 # ── Sub-tab action handlers ──────────────────────────────────────────────────
 # Uniform signature (state, stdscr, sub, key) → status message. Wired through
 # SUBTAB_KEYMAP below; never called directly by the input loop.
@@ -2679,17 +2670,29 @@ def _act_open_terminal(state: TuiState, stdscr: Any, sub: str, key: int) -> Opti
 
 
 def _act_plugin_toggle(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    """Space/g: flip the plugin's enabled flag in project/global settings.
+
+    An unset flag counts as enabled (installed plugins run by default), so
+    the first toggle of an unset plugin disables it. The project toggle flips
+    the *effective* value (project falls back to global), so Space always
+    visibly changes state."""
     plugin = _selected_item(state, "plugins")
     if plugin is None:
         return None
-    want_enabled, scope = _PLUGIN_TOGGLES[key]
+    scope = "global" if key == ord("g") else "project"
     path = PATHS.settings if scope == "global" else project_settings_path()
+    gv = read_enabled_plugins(PATHS.settings).get(plugin.id)
+    pv = read_enabled_plugins(project_settings_path()).get(plugin.id)
+    if scope == "global":
+        current = gv if gv is not None else True
+    else:
+        current = pv if pv is not None else (gv if gv is not None else True)
     try:
-        set_plugin_enabled(path, plugin.id, want_enabled)
+        set_plugin_enabled(path, plugin.id, not current)
     except OSError as exc:
-        return f"{'Enable' if want_enabled else 'Disable'} failed: {exc}"
+        return f"Toggle failed: {exc}"
     _refresh_ext(state, "plugins")
-    return f"{'Enabled' if want_enabled else 'Disabled'} {plugin.id} ({scope})"
+    return f"{'Disabled' if current else 'Enabled'} {plugin.id} ({scope})"
 
 
 def _act_plugin_uninstall(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
@@ -2886,11 +2889,11 @@ _SUBTAB_COMMON: tuple[SubtabBinding, ...] = (
 
 SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
     "plugins": (
-        SubtabBinding((ord("e"), ord("d")), "e/d:on/off(G)",
-                      "e=enable (global)  d=disable (global)",
+        SubtabBinding((ord(" "),), "Space:project",
+                      "Space=toggle enabled (project settings)",
                       False, _act_plugin_toggle),
-        SubtabBinding((ord("E"), ord("D")), "E/D:on/off(P)",
-                      "E=enable (project)  D=disable (project)",
+        SubtabBinding((ord("g"),), "g:global",
+                      "g=toggle enabled (global settings)",
                       False, _act_plugin_toggle),
         SubtabBinding((ord("x"),), "x:uninstall",
                       "x=uninstall (confirm)",
