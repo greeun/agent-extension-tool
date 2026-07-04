@@ -5,7 +5,7 @@
 > **v1.0.0: Claude-only.** 이전 multi-platform (v0.2.x) 지원은 제거되었다. 사용량 / 비용 / 플랜 / 컨텍스트 분석은 모두 Claude 한정.
 
 집계 결과:
-- **CLI 명령**: 11개 그룹 × 총 40개 서브명령 (`tui` 포함)
+- **CLI 명령**: 12개 그룹 × 총 41개 서브명령 (`tui` 포함)
 - **TUI 탭**: 3개 메인(Extensions / Context / Usage) + Extensions 8개 서브탭 + Context 2개 서브탭
 - **Usage 플랫폼**: Claude 단일 → `UnifiedUsageEntry` 어댑터 → 모델별 pricing
 
@@ -77,6 +77,13 @@ TUI 대시보드 실행.
 | `list` | — | 독립형 스킬 표 |
 | `link <path>` | 경로 + `-n/--name` | 디렉터리 symlink (Windows 미지원) |
 | `unlink <name>` | 이름 | symlink 제거 |
+
+### 1.8b `axt update` (1)
+플러그인/마켓플레이스/git-backed 스킬·명령·에이전트/MCP(리포트)/Claude Code 바이너리 업데이트 확인 및 적용.
+- 인자: `[type]` (기본 `all`; `plugin` / `marketplace` / `skill` / `command` / `agent` / `mcp` / `claude-code`), `[name]` (선택, 특정 항목 지정)
+- 옵션: `--apply` (기본은 dry-run 리포트), `--yes`/`-y` (확인 프롬프트 생략), `--json`, `--no-sync` (plugin apply 시 마켓플레이스 pre-sync 생략)
+- 동작: 기본(옵션 없음) = Updatable / Up to date / Manual / Delegated 티어별 그룹 리포트 + 요약 라인. `--apply`는 Tier-1(플러그인·마켓플레이스·git-backed 스킬/명령/에이전트)만 일괄 적용하고, Claude Code 바이너리는 `axt update claude-code --apply`로 명시적으로 타깃팅했을 때만 `claude update`에 위임
+- 티어: Tier 1(자동 적용) 플러그인/마켓플레이스/git-backed 스킬·명령·에이전트, Tier 2(리포트 전용) MCP 서버(`pinned @x.y.z` / `floating (@latest)` / `unpinned`) 및 non-git 독립 항목, Tier 3(위임) Claude Code 바이너리
 
 ### 1.9 `axt usage` (5)
 공통 옵션: `--since YYYY-MM-DD`, `--until YYYY-MM-DD`, `--model <name>`, `--project <name>`, `--breakdown`, `--timezone <tz>`, `--locale <loc>`, `--json`, `--csv`, `--export <path>`.

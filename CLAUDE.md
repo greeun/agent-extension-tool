@@ -98,6 +98,7 @@ legacy-ts/              → Frozen TypeScript+Ink implementation (v0.1.x, no new
 | `axt project` | Project context init/add/remove/sync/status |
 | `axt context` | Context source analysis (flags: --detail / --json / --category / --model) |
 | `axt vault` | Vault list / migrate / add / install / link-global / unlink-global |
+| `axt update` | Check/apply updates across plugins, marketplaces, git-backed skills/commands/agents, MCP (report-only), and the Claude Code binary |
 
 Full subcommand inventory: see `FEATURES.md`.
 
