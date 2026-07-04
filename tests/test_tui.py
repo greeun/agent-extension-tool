@@ -6852,6 +6852,66 @@ def test_subtab_keymap_covers_all_non_vault_subtabs():
     assert set(axt.SUBTAB_KEYMAP) == subs
 
 
+# ─── Extensions `/` search (non-vault sub-tabs) ──────────────────────────────
+
+
+def _search_plugins_state():
+    from types import SimpleNamespace
+    state = axt.TuiState()
+    state.ext_sub_tab = "plugins"
+    state.ext_cache["plugins"] = [
+        SimpleNamespace(name="alpha", id="alpha@m", version="1", marketplace="m"),
+        SimpleNamespace(name="beta", id="beta@m", version="1", marketplace="m"),
+    ]
+    return state
+
+
+def test_ext_slash_search_filters_subtab_view():
+    state = _search_plugins_state()
+    msg = axt.handle_extensions_input(state, ord("/"))
+    assert state.ext_searching is True and "type to filter" in msg
+    for ch in "alp":
+        axt.handle_extensions_input(state, ord(ch))
+    # Reserved nav keys are captured as text while typing (mirrors vault).
+    axt.handle_extensions_input(state, ord("h"))
+    axt.handle_extensions_input(state, 127)  # backspace → "alp"
+    axt.handle_extensions_input(state, 10)   # Enter applies
+    assert state.ext_searching is False
+    assert [p.name for p in axt._subtab_view(state, "plugins")] == ["alpha"]
+
+
+def test_ext_search_esc_while_typing_cancels():
+    state = _search_plugins_state()
+    axt.handle_extensions_input(state, ord("/"))
+    axt.handle_extensions_input(state, ord("a"))
+    msg = axt.handle_extensions_input(state, 27)
+    assert msg == "Search cleared"
+    assert state.ext_searching is False
+    assert state.ext_search.get("plugins", "") == ""
+    assert len(axt._subtab_view(state, "plugins")) == 2
+
+
+def test_ext_search_applied_esc_clears_before_climb():
+    state = _search_plugins_state()
+    axt.handle_extensions_input(state, ord("/"))
+    axt.handle_extensions_input(state, ord("b"))
+    axt.handle_extensions_input(state, 10)
+    assert [p.name for p in axt._subtab_view(state, "plugins")] == ["beta"]
+    msg = axt.handle_extensions_input(state, 27)
+    assert msg == "Search cleared"
+    assert len(axt._subtab_view(state, "plugins")) == 2
+
+
+def test_ext_search_is_per_subtab():
+    state = _search_plugins_state()
+    state.ext_search["plugins"] = "alp"
+    assert [p.name for p in axt._subtab_view(state, "plugins")] == ["alpha"]
+    from types import SimpleNamespace
+    state.ext_cache["mcp"] = [SimpleNamespace(name="srv", scope="user",
+                                              transport="stdio", disabled=False)]
+    assert len(axt._subtab_view(state, "mcp")) == 1  # other sub-tab unfiltered
+
+
 def test_subtab_shortcuts_generated_from_keymap():
     assert axt.subtab_shortcuts("plugins") == "Space:project  g:global  x:uninstall  Tab:detail"
     assert axt.subtab_shortcuts("commands") == "e:edit  Tab:detail"

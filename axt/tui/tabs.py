@@ -105,6 +105,8 @@ class TuiState:
     ext_sort: dict[str, str] = field(default_factory=dict)
     ext_detail_focused: bool = False  # Tab → focus the bottom detail panel (plugins/mcp/hooks)
     ext_detail_scroll: int = 0
+    ext_search: dict[str, str] = field(default_factory=dict)  # applied `/` query per sub-tab
+    ext_searching: bool = False  # True while typing in a non-vault `/` prompt
 
     # Usage data caches (None = not loaded yet).
     usage_entries: Optional[list] = None
@@ -774,6 +776,31 @@ def _handle_vault_search_keys(state: TuiState, key: int) -> Optional[str]:
     if 32 <= key < 127:  # printable ASCII
         state.vault_search += chr(key)
         state.vault_selected = 0
+        return None
+    return None
+
+
+def _handle_ext_search_keys(state: TuiState, key: int) -> Optional[str]:
+    """Non-vault `/`-search input mode (mirrors _handle_vault_search_keys):
+    Esc clears, Enter applies, Bksp deletes, printable ASCII appends."""
+    sub = state.ext_sub_tab
+    if key == KEY_ESC:
+        state.ext_searching = False
+        state.ext_search.pop(sub, None)
+        state.ext_selected[sub] = 0
+        return "Search cleared"
+    if is_enter(key):
+        state.ext_searching = False
+        state.ext_selected[sub] = 0
+        q = state.ext_search.get(sub, "")
+        return f"Searching {q!r}" if q else None
+    if key in (curses.KEY_BACKSPACE, KEY_BACKSPACE, 8):
+        state.ext_search[sub] = state.ext_search.get(sub, "")[:-1]
+        state.ext_selected[sub] = 0
+        return None
+    if 32 <= key < 127:  # printable ASCII
+        state.ext_search[sub] = state.ext_search.get(sub, "") + chr(key)
+        state.ext_selected[sub] = 0
         return None
     return None
 
@@ -2187,10 +2214,32 @@ def _subtab_sorted(state: TuiState, sub: str, data: list) -> list:
         return data
 
 
+# Attributes probed (in order) to build a searchable haystack per item. Covers
+# every non-vault sub-tab's item shape: plugins (name/id/marketplace), skills
+# (name/source), commands/agents (name/source), mcp (name/scope/transport),
+# hooks (event/type/source), market (name).
+_SEARCH_ATTRS = ("name", "id", "event", "type", "source",
+                 "marketplace", "scope", "transport")
+
+
+def _subtab_search_haystack(item: Any) -> str:
+    parts = []
+    for attr in _SEARCH_ATTRS:
+        v = getattr(item, attr, None)
+        if isinstance(v, str) and v:
+            parts.append(v)
+    return " ".join(parts).lower()
+
+
 def _subtab_view(state: TuiState, sub: str) -> list:
-    """The displayed (sorted) item list for `sub` — the single ordering shared
-    by render and the input handlers so selection indices stay aligned."""
-    return _subtab_sorted(state, sub, state.ext_cache.get(sub, []))
+    """The displayed (sorted, search-filtered) item list for `sub` — the single
+    ordering shared by render and the input handlers so selection indices stay
+    aligned."""
+    data = _subtab_sorted(state, sub, state.ext_cache.get(sub, []))
+    q = state.ext_search.get(sub, "").lower()
+    if q:
+        data = [item for item in data if q in _subtab_search_haystack(item)]
+    return data
 
 
 def _mark_sorted_column(state: TuiState, sub: str, cols: list) -> list:
@@ -2514,6 +2563,11 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
     if state.ext_sub_tab == "vault" and state.vault_searching:
         return handle_vault_input(state, key)
 
+    # Non-vault `/`-search mode swallows every printable key too (mirrors
+    # vault), so reserved letters (r, s, j, k, [, ]) go into the query.
+    if state.ext_sub_tab != "vault" and state.ext_searching:
+        return _handle_ext_search_keys(state, key)
+
     if key == ord("["):
         _blur_ext_detail(state)
         _cycle_sub_tab(state, "extensions", -1)
@@ -2533,6 +2587,16 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
     sub = state.ext_sub_tab
     if sub == "vault":
         return handle_vault_input(state, key)
+
+    # `/` starts search-input mode (mirrors Vault). The applied query filters
+    # _subtab_view; Esc clears it (see below). Blurring the detail panel keeps
+    # the filtered list visible while typing.
+    if key == ord("/"):
+        _blur_ext_detail(state)
+        state.ext_searching = True
+        state.ext_search[sub] = ""
+        state.ext_selected[sub] = 0
+        return "/: type to filter, Enter to apply, Esc to cancel"
 
     # `s` cycles the active sub-tab's sort (mirrors Vault). Handled here, ahead
     # of detail-focus and list nav, so it works regardless of focus. Sub-tabs
@@ -2570,8 +2634,18 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
             return None
         return _handle_subtab_action(state, sub, key)
 
-    # Simple list navigation for the other sub-tabs.
-    data = state.ext_cache.get(sub, [])
+    # First Esc on a search-filtered list clears the filter; the next Esc
+    # climbs a focus layer (loop.py routes it here via the climb exception
+    # while a query is active).
+    if key == KEY_ESC and state.ext_search.get(sub):
+        state.ext_search.pop(sub, None)
+        state.ext_selected[sub] = 0
+        return "Search cleared"
+
+    # Simple list navigation for the other sub-tabs. Clamp against the
+    # displayed (sorted + search-filtered) view so the selection index stays
+    # aligned with the row _selected_item / the renderer resolve.
+    data = _subtab_view(state, sub)
     n = len(data)
     sel = state.ext_selected.get(sub, 0)
     if key in (ord("j"), curses.KEY_DOWN):
