@@ -201,3 +201,54 @@ def test_skill_updater_tiers_git_vs_nongit(tmp_path, monkeypatch):
     assert "pluginskill" not in out                     # plugin-provided excluded
     assert out["plainskill"].tier == 2 and "manual" in out["plainskill"].note
     assert out["gitskill"].tier == 1                     # inside a git repo
+
+
+def test_git_updater_apply_pulls_new_commit(tmp_path, monkeypatch):
+    """check reports updatable + apply fast-forwards to the remote's new commit."""
+    from axt.core import SkillInfo
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=remote, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "c1"], cwd=remote, check=True)
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "c2"], cwd=remote, check=True)
+    items = [SkillInfo(name="s", path=str(clone), is_symlink=False, source="user")]
+    monkeypatch.setattr("axt.update.list_all_skills", lambda **k: items)
+
+    st = {x.name: x for x in axt.update.check_all_updates(types=["skill"])}["s"]
+    assert st.tier == 1 and st.updatable is True and st.current != st.available
+
+    res = axt.update.apply_updates([("skill", "s")])[0]
+    assert res.updated is True and res.action == "git pull" and res.before != res.after
+
+
+def test_git_updater_absorbs_fetch_failure(tmp_path, monkeypatch):
+    """A git repo with no remote: check returns an error status, never raises."""
+    from axt.core import SkillInfo
+    repo = tmp_path / "noremote"
+    _git_init(repo)
+    items = [SkillInfo(name="s", path=str(repo), is_symlink=False, source="user")]
+    monkeypatch.setattr("axt.update.list_all_skills", lambda **k: items)
+
+    st = {x.name: x for x in axt.update.check_all_updates(types=["skill"])}["s"]
+    assert st.tier == 1 and st.updatable is False
+    assert st.error or st.note      # fetch/no-upstream captured, not raised
+
+
+def test_command_and_agent_updaters_resolve_source_path(tmp_path, monkeypatch):
+    """command/agent adapters resolve .source_path's parent dir → git-backed = tier 1."""
+    from axt.core import CommandInfo, AgentInfo
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    cmd_md = repo / "cmd.md"; cmd_md.write_text("x")
+    agt_md = repo / "agt.md"; agt_md.write_text("x")
+    monkeypatch.setattr("axt.update.list_commands",
+                        lambda **k: [CommandInfo(name="c", source="user", source_path=str(cmd_md), description="", content="")])
+    monkeypatch.setattr("axt.update.list_all_agents",
+                        lambda **k: [AgentInfo(name="a", source="user", source_path=str(agt_md), description="")])
+    cmd = {x.name: x for x in axt.update.check_all_updates(types=["command"])}["c"]
+    agt = {x.name: x for x in axt.update.check_all_updates(types=["agent"])}["a"]
+    assert cmd.tier == 1 and agt.tier == 1     # both inside a git repo
