@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -335,11 +336,61 @@ def _mcp_check_all() -> list[UpdateStatus]:
 mcp_updater = Updater("mcp", 2, _mcp_check_all, None)
 
 
+# ── Claude Code binary updater (tier 3) — delegate to claude update ─────────
+
+def _claude_version() -> Optional[str]:
+    """Query `claude --version` for the installed Claude Code version.
+    Returns None if claude is not found on PATH or if the command fails."""
+    try:
+        proc = subprocess.run(["claude", "--version"], capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return None
+    if proc.returncode != 0:
+        return None
+    # output like "2.1.100 (Claude Code)" → take the first token
+    return proc.stdout.strip().split()[0] if proc.stdout.strip() else None
+
+
+def _run_claude_update() -> tuple[int, str, str]:
+    """Run `claude update` and return (exit_code, stdout, stderr).
+    If claude is not found on PATH, return (127, "", error_message)."""
+    try:
+        proc = subprocess.run(["claude", "update"], capture_output=True, text=True, check=False)
+    except FileNotFoundError as e:
+        return 127, "", str(e)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _claude_check_all() -> list[UpdateStatus]:
+    """Check the current Claude Code binary version."""
+    v = _claude_version()
+    if v is None:
+        return [UpdateStatus("claude-code", "claude-code", 3, "?", "?", False,
+                             error="claude not found on PATH")]
+    return [UpdateStatus("claude-code", "claude-code", 3, v, "?", False,
+                         note="updates via `claude update`")]
+
+
+def _claude_apply(name: str, no_sync: bool = False) -> UpdateResult:
+    """Apply a Claude Code binary update via `claude update`."""
+    before = _claude_version() or "?"
+    code, _out, err = _run_claude_update()
+    if code != 0:
+        return UpdateResult("claude-code", "claude-code", before, before, False, "error",
+                            error=err.strip() or f"claude update exit {code}")
+    after = _claude_version() or "?"
+    return UpdateResult("claude-code", "claude-code", before, after, before != after, "claude update")
+
+
+claude_code_updater = Updater("claude-code", 3, _claude_check_all, _claude_apply)
+
+
 # ── registry + orchestration ────────────────────────────────────────────────
 
 UPDATERS: list[Updater] = [
     marketplace_updater, plugin_updater,
     skill_updater, command_updater, agent_updater, mcp_updater,
+    claude_code_updater,
 ]
 
 

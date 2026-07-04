@@ -288,3 +288,18 @@ def test_mcp_pin_note_edge_cases():
     assert _mcp_pin_note(("@modelcontextprotocol/server-filesystem@1.2.3",)) == "pinned @1.2.3"
     # concrete pin wins over floating regardless of order
     assert _mcp_pin_note(("a@latest", "b@1.2.3")) == "pinned @1.2.3"
+
+
+def test_claude_code_check_and_apply(monkeypatch):
+    calls = {"version": iter(["2.1.100", "2.1.100", "2.2.0"])}  # apply reads before, then after
+
+    def fake_version():
+        return next(calls["version"])
+
+    monkeypatch.setattr("axt.update._claude_version", fake_version)
+    out = axt.update.check_all_updates(types=["claude-code"])
+    assert out[0].item_type == "claude-code" and out[0].current == "2.1.100" and out[0].tier == 3
+
+    monkeypatch.setattr("axt.update._run_claude_update", lambda: (0, "updated", ""))
+    res = axt.update.apply_updates([("claude-code", "claude-code")])[0]
+    assert res.before == "2.1.100" and res.after == "2.2.0" and res.updated is True
