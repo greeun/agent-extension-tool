@@ -561,12 +561,27 @@ def _wrap_to_cells(text: str, max_cells: int) -> list[str]:
     return out if out else [""]
 
 
-def render_status_bar(stdscr, y: int, w: int, shortcuts: str, status: str = "") -> None:
-    """Bottom shortcuts line."""
-    text = shortcuts
-    if status:
-        text = f"{status}  │  {shortcuts}" if len(status) + 3 + len(shortcuts) < w else status
-    safe_addnstr(stdscr, y, 0, fit_cells(text, w - 1), w - 1, CP_DIM())
+def render_status_bar(stdscr, y: int, w: int, shortcuts: str, status: str = "",
+                      status_attr: Optional[int] = None) -> None:
+    """Bottom shortcuts line.
+
+    ``status_attr`` colors the status-message segment only (green for a
+    completed action, red for a failure); the shortcut hints stay dim.
+    """
+    if not status:
+        safe_addnstr(stdscr, y, 0, fit_cells(shortcuts, w - 1), w - 1, CP_DIM())
+        return
+    attr = CP_DIM() if status_attr is None else status_attr
+    if len(status) + 3 + len(shortcuts) < w:
+        # Status segment unpadded (fit_cells pads to full width, which would
+        # leave no room for the shortcut tail drawn right after it).
+        safe_addnstr(stdscr, y, 0, status, w - 1, attr)
+        x = cell_width(status)
+        tail_w = w - 1 - x
+        if tail_w > 0:
+            safe_addnstr(stdscr, y, x, fit_cells(f"  │  {shortcuts}", tail_w), tail_w, CP_DIM())
+    else:
+        safe_addnstr(stdscr, y, 0, fit_cells(status, w - 1), w - 1, attr)
 
 
 def confirm_modal(stdscr, message: str, *, title: str = "Confirm") -> bool:

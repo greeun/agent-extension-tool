@@ -45,6 +45,7 @@ from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
     _active_plugins,
     _add_to_index,
     _date_in_tz,
+    _encode_project_dir_name,
     _iso_now,
     _project_name_from_path,
     _safe_listdir,
@@ -70,6 +71,9 @@ class TuiState:
     focused_layer: str = "mainTab"  # "mainTab" | "subTab" | "content"
     refresh_token: int = 0          # bump to force data reload
     status: str = ""
+    # Render kind for `status` — "info" (dim), "ok" (green), "error" (red).
+    # Set by set_status(); the status bar colors the message text with it.
+    status_kind: str = "info"
     # Monotonic timestamp when `status` was last set. The main loop clears
     # `status` after STATUS_TIMEOUT_S so the shortcut hints come back.
     status_set_at: Optional[float] = None
@@ -84,6 +88,7 @@ class TuiState:
     vault_searching: bool = False    # True while user is typing in the `/` prompt
     vault_pending_project: set[str] = field(default_factory=set)   # item names toggled but not applied
     vault_pending_global: set[str] = field(default_factory=set)
+    vault_marked: set[str] = field(default_factory=set)  # item names marked for bulk unlink-from-all (Space)
     vault_scan_mode: str = "default"  # "default" (profile + symlinks) | "full" (+ plugin settings)
     vault_usage_index: dict[str, Any] = field(default_factory=dict)  # type:name → ExtensionUsage
     vault_detail_focused: bool = False  # Enter → focus detail panel, Esc → blur back
@@ -171,15 +176,46 @@ _VAULT_SORT_MARK = {
 # Seconds after which `state.status` auto-clears so shortcut hints reappear.
 STATUS_TIMEOUT_S: float = 5.0
 
+# Failure markers, checked before the ok-prefixes so "Sync failed: …" lands
+# on "error" even though "sync" is also an ok-prefix.
+_STATUS_ERROR_TOKENS = (
+    "failed", "error", "not found", "unsupported", "cannot", "read-only",
+)
+# Leading words of state-change confirmations (link/toggle/apply/import/…).
+_STATUS_OK_PREFIXES = (
+    "linked", "unlinked", "enabled", "disabled", "applied", "imported",
+    "migrated", "synced", "sync:", "added", "removed", "uninstalled",
+    "refreshed", "opened", "saved", "theme:", "search cleared", "discarded",
+)
 
-def set_status(state: TuiState, msg: str) -> None:
+
+def classify_status(msg: str) -> str:
+    """Map a status message to its render kind: "error" | "ok" | "info".
+
+    Handlers return plain strings, so the kind is derived from the text:
+    failure markers → "error" (red), action confirmations → "ok" (green),
+    everything else (hints, prompts, progress) → "info" (dim, as before).
+    """
+    low = msg.strip().lower()
+    if any(tok in low for tok in _STATUS_ERROR_TOKENS):
+        return "error"
+    if low.startswith(_STATUS_OK_PREFIXES):
+        return "ok"
+    return "info"
+
+
+def set_status(state: TuiState, msg: str, kind: Optional[str] = None) -> None:
     """Set the bottom-bar status message and start its auto-clear timer.
 
     Pass ``""`` to clear immediately. The main loop polls and clears the
     status after :data:`STATUS_TIMEOUT_S` seconds so the shortcut hints
     become visible again on narrow terminals.
+
+    ``kind`` picks the status-bar color ("info" | "ok" | "error"); when
+    omitted it is derived from the message via :func:`classify_status`.
     """
     state.status = msg
+    state.status_kind = (kind or classify_status(msg)) if msg else "info"
     state.status_set_at = time.monotonic() if msg else None
 
 
@@ -458,7 +494,7 @@ def _vault_apply_pending(state: TuiState) -> str:
 def _vault_unlink_from_all(state: TuiState, item: VaultItem) -> str:
     """Unlink `item` from EVERY project that references it in the scan index.
 
-    The heavier sibling of the Space toggle, which only touches the current
+    The heavier sibling of the `p` toggle, which only touches the current
     project. Project list comes from `state.vault_usage_index` (populated by
     `f`). When a stdscr is available a confirm modal lists the affected
     projects; headless callers (tests) skip straight to applying. Each project
@@ -492,6 +528,62 @@ def _vault_unlink_from_all(state: TuiState, item: VaultItem) -> str:
         _invalidate_context(state)
     _vault_load(state)
     return f"Unlinked {item.name!r} from {unlinked} project(s)" + (
+        f", {errors} errors" if errors else ""
+    )
+
+
+def _vault_unlink_marked(state: TuiState) -> str:
+    """Bulk sibling of `_vault_unlink_from_all`: unlink EVERY marked item from
+    every project that references it in the scan index.
+
+    Marks come from `state.vault_marked` (toggled with Space) and are resolved
+    against the full `vault_items` list, so a mark survives filter/search
+    changes. Plugins and never-used items contribute nothing. When a stdscr is
+    available a confirm modal lists each item and its project count; headless
+    callers (tests) apply directly. The scan cache and context estimate are
+    re-persisted once for the whole batch, and marks are cleared on success.
+    """
+    items_by_name = {i.name: i for i in state.vault_items}
+    targets: list[tuple[VaultItem, list[ProjectRef]]] = []
+    for name in sorted(state.vault_marked):
+        item = items_by_name.get(name)
+        if not item or item.type == "plugin":
+            continue
+        projects = get_projects(state.vault_usage_index, item.type, item.name)
+        if projects:
+            targets.append((item, projects))
+    if not targets:
+        return "No marked item is used by any project (press `f` to scan)"
+    total_projects = sum(len(p) for _, p in targets)
+    cb = state.stdscr_callbacks
+    stdscr = cb.get("stdscr") if cb else None
+    if stdscr is not None:
+        shown = "\n".join(
+            f"  - {it.type}:{it.name} ({len(ps)} project(s))" for it, ps in targets[:12]
+        )
+        more = f"\n  … and {len(targets) - 12} more" if len(targets) > 12 else ""
+        msg = (
+            f"Unlink {len(targets)} marked item(s) from {total_projects} "
+            f"project link(s)?\n{shown}{more}"
+        )
+        if not confirm_modal(stdscr, msg, title="Confirm unlink-marked"):
+            return "Cancelled"
+    unlinked = 0
+    errors = 0
+    for item, projects in targets:
+        for p in projects:
+            try:
+                unlink_from_project(Path(p.path), item)
+                _usage_index_drop(state.vault_usage_index, item.type, item.name, p.path)
+                unlinked += 1
+            except (OSError, ValueError):
+                errors += 1
+    if unlinked:
+        _save_scan_cache(state.vault_usage_index, state.vault_scan_mode)
+        _invalidate_context(state)
+    state.vault_marked.clear()
+    _vault_load(state)
+    return f"Unlinked {len(targets)} item(s) from {unlinked} project link(s)" + (
         f", {errors} errors" if errors else ""
     )
 
@@ -666,9 +758,11 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         TableColumn("used", _lbl("used", "Used"), used_w),
     ]
     rows: list[dict[str, str]] = []
+    # The leftmost ■/□ prefix = Space selection (bulk-unlink marks). Project
+    # link state lives in the Proj column (●/○ + pending *), not here.
     checked: set[int] = set()
     for i, item in enumerate(filtered):
-        if item.is_linked or item.name in state.vault_pending_project:
+        if item.name in state.vault_marked:
             checked.add(i)
         proj_cell, glob_cell = _vault_pending_indicator(state, item)
         used_count = (
@@ -859,7 +953,7 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         # Open a new terminal at the item's storage path (file → parent dir).
         p = Path(current.path)
         return _open_terminal_for_dir(state, str(p if p.is_dir() else p.parent))
-    elif key == ord(" ") and current and current.type != "plugin":
+    elif key == ord("p") and current and current.type != "plugin":
         # Toggle pending project link for the selected item.
         if current.name in state.vault_pending_project:
             state.vault_pending_project.discard(current.name)
@@ -872,9 +966,21 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         else:
             state.vault_pending_global.add(current.name)
         return None
+    elif key == ord(" ") and current and current.type != "plugin":
+        # Space = select: toggle the focused item's bulk-unlink mark. Marks
+        # accumulate across filter/search changes and are consumed by `U`.
+        if current.name in state.vault_marked:
+            state.vault_marked.discard(current.name)
+            return f"Unmarked {current.name!r} ({len(state.vault_marked)} marked)"
+        state.vault_marked.add(current.name)
+        return f"Marked {current.name!r} for unlink ({len(state.vault_marked)} marked)"
+    elif key == ord("U") and state.vault_marked:
+        # Marks present → bulk unlink every marked item from all its projects.
+        # Mirrors Enter's apply-pending-else-focus split: `U` prefers the batch.
+        return _vault_unlink_marked(state)
     elif key == ord("U") and current and current.type != "plugin":
-        # Unlink the selected item from every project that uses it (per the
-        # last scan). Confirms via modal; updates symlinks, profiles, index.
+        # No marks → unlink the selected item from every project that uses it
+        # (per the last scan). Confirms via modal; updates symlinks, profiles, index.
         return _vault_unlink_from_all(state, current)
     elif is_enter(key) and (state.vault_pending_project or state.vault_pending_global):
         # Ask before committing pending toggles to disk. When no stdscr is
@@ -910,10 +1016,14 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         state.vault_detail_focused = True
         state.vault_detail_scroll = 0
         return "Detail focused — j/k to scroll, Esc to blur"
-    elif key == KEY_ESC and (state.vault_pending_project or state.vault_pending_global):
+    elif key == KEY_ESC and (
+        state.vault_pending_project or state.vault_pending_global or state.vault_marked
+    ):
         state.vault_pending_project.clear()
         state.vault_pending_global.clear()
-        return "Discarded pending changes"
+        had_marks = bool(state.vault_marked)
+        state.vault_marked.clear()
+        return "Cleared marks" if had_marks else "Discarded pending changes"
     elif key == KEY_ESC and state.vault_search:
         # First Esc on the filtered list clears the search filter. A second
         # Esc (with no filter left) climbs up to the sub-tab — handled by
@@ -1816,12 +1926,11 @@ class ProjectContextItem:
 def load_project_context(cwd: os.PathLike[str] | str) -> list[ProjectContextItem]:
     """Mirror src/core/project-context.ts. Returns CLAUDE.md / settings.json /
     memory files relevant to the given project directory."""
-    cwd_str = str(cwd)
     home = HOME
     claude_dir = home / ".claude"
-    project_settings_dir_name = cwd_str.replace("/", "-")
-    # Re-add leading dash per TS quirk: `.replace(/^-/, "-")` is a no-op,
-    # so we don't need to strip; just pass through.
+    # Encode the project path the way Claude Code names its projects dir:
+    # `/` and `.` both collapse to `-`, leading dash preserved.
+    project_settings_dir_name = _encode_project_dir_name(cwd)
     project_settings_dir = claude_dir / "projects" / project_settings_dir_name
 
     candidates = [

@@ -829,6 +829,91 @@ def test_handle_vault_input_unlink_from_all_no_projects():
     assert "not used by any project" in msg
 
 
+def test_handle_vault_input_mark_toggle():
+    """Space toggles the focused item's bulk-unlink mark; plugins are ignored."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="alpha", type="skill", path="", description=""),
+        axt.VaultItem(name="plug", type="plugin", path="", description=""),
+    ]
+    s.vault_selected = 0
+    axt.handle_vault_input(s, ord(" "))
+    assert s.vault_marked == {"alpha"}
+    axt.handle_vault_input(s, ord(" "))
+    assert s.vault_marked == set()
+    # Plugins cannot be unlinked via symlink → marking them is a no-op.
+    s.vault_selected = 1
+    axt.handle_vault_input(s, ord(" "))
+    assert s.vault_marked == set()
+
+
+def test_handle_vault_input_unlink_marked_bulk(tmp_path, monkeypatch):
+    """With marks present, `U` unlinks EVERY marked item from all its projects
+    and clears the marks; the single-item path is not taken."""
+    vault = tmp_path / "vault"
+    for name in ("skill-a", "skill-b"):
+        (vault / "skills" / name).mkdir(parents=True)
+        (vault / "skills" / name / "SKILL.md").write_text(f"---\nname: {name}\n---\n")
+    items = {i.name: i for i in axt.list_vault_items(vault)}
+    skill_a, skill_b = items["skill-a"], items["skill-b"]
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    axt.link_to_project(proj, skill_a)
+    axt.link_to_project(proj, skill_b)
+    assert (proj / ".claude" / "skills" / "skill-a").is_symlink()
+    assert (proj / ".claude" / "skills" / "skill-b").is_symlink()
+
+    s = axt.TuiState()
+    s.vault_items = [skill_a, skill_b]
+    s.vault_usage_index = {
+        "skill:skill-a": axt.ExtensionUsage(
+            type="skill", name="skill-a",
+            projects=[axt.ProjectRef(path=str(proj), name="proj")],
+        ),
+        "skill:skill-b": axt.ExtensionUsage(
+            type="skill", name="skill-b",
+            projects=[axt.ProjectRef(path=str(proj), name="proj")],
+        ),
+    }
+    s.vault_marked = {"skill-a", "skill-b"}
+    monkeypatch.setattr("axt.tui.tabs._save_scan_cache", lambda *a, **k: None)
+
+    msg = axt.handle_vault_input(s, ord("U"))
+
+    assert "2 item" in msg
+    assert not (proj / ".claude" / "skills" / "skill-a").exists()
+    assert not (proj / ".claude" / "skills" / "skill-b").exists()
+    assert axt.read_profile(proj).skills == ()
+    assert "skill:skill-a" not in s.vault_usage_index
+    assert "skill:skill-b" not in s.vault_usage_index
+    assert s.vault_marked == set()
+
+
+def test_handle_vault_input_unlink_marked_none_used():
+    """Marks that reference never-used items → no-op hint, marks preserved."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="alpha", type="skill", path="", description="")
+    ]
+    s.vault_marked = {"alpha"}
+    msg = axt.handle_vault_input(s, ord("U"))
+    assert "No marked item" in msg
+    assert s.vault_marked == {"alpha"}
+
+
+def test_handle_vault_input_esc_clears_marks():
+    """First Esc with marks present clears them (before touching search/detail)."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="alpha", type="skill", path="", description="")
+    ]
+    s.vault_marked = {"alpha"}
+    msg = axt.handle_vault_input(s, 27)  # Esc
+    assert s.vault_marked == set()
+    assert "Cleared marks" in msg
+
+
 # ─── launch_tui graceful failure ─────────────────────────────────────────────
 
 
@@ -892,6 +977,38 @@ def test_render_vault_includes_row_number_column(tmp_path, monkeypatch):
     # More lenient: just check that the data row contains both "1" and "alpha".
     rows_with_alpha = [c for c in scr.calls if len(c) >= 3 and isinstance(c[2], str) and "alpha" in c[2]]
     assert rows_with_alpha, "alpha row should be drawn"
+
+
+def test_render_vault_checkbox_reflects_space_marks(tmp_path, monkeypatch):
+    """The leftmost ■/□ prefix mirrors the Space selection (vault_marked) —
+    NOT project-link state, which stays in the Proj column. No Mk column."""
+    vault = tmp_path / "vault"
+    for name in ("alpha", "beta"):
+        (vault / "skills" / name).mkdir(parents=True)
+        (vault / "skills" / name / "SKILL.md").write_text("---\ndescription: a\n---")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(vault=vault, installed_plugins=tmp_path / "ip.json",
+                                                claude_dir=tmp_path / "claude"))
+    monkeypatch.chdir(tmp_path)
+    items = {i.name: i for i in axt.list_vault_items(vault)}
+    axt.link_to_project(tmp_path, items["alpha"])  # linked but NOT selected
+
+    state = axt.TuiState()
+    state.vault_marked = {"beta"}  # selected but NOT linked
+    scr = _make_stdscr(rows=20, cols=140)
+    axt.render_vault_tab(scr, state, 0, 18, 140)
+
+    def _prefix(name: str) -> str:
+        ys = [c[0] for c in scr.calls
+              if len(c) >= 3 and isinstance(c[2], str) and name in c[2]]
+        assert ys, f"{name} row should be drawn"
+        y = min(ys)
+        return next(c[2] for c in scr.calls
+                    if c[0] == y and c[1] == 0 and isinstance(c[2], str))
+
+    assert "□" in _prefix("alpha")   # linked ≠ selected → empty box
+    assert "■" in _prefix("beta")    # Space-marked → filled box
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Mk" not in flat          # the old rightmost mark column is gone
 
 
 def test_render_extensions_plugins_subtab_shows_row_number_in_prefix(tmp_path, monkeypatch):
@@ -1161,13 +1278,13 @@ def test_vault_search_backspace_deletes():
     assert state.vault_search == "ab"
 
 
-def test_vault_space_toggles_project_pending():
+def test_vault_p_toggles_project_pending():
     state = axt.TuiState()
     state.vault_items = [axt.VaultItem(name="alpha", type="skill", path="", description="", is_linked=False)]
-    axt.handle_vault_input(state, ord(" "))
+    axt.handle_vault_input(state, ord("p"))
     assert "alpha" in state.vault_pending_project
     # Toggling again removes it.
-    axt.handle_vault_input(state, ord(" "))
+    axt.handle_vault_input(state, ord("p"))
     assert "alpha" not in state.vault_pending_project
 
 
@@ -1187,11 +1304,11 @@ def test_vault_esc_discards_pending():
     assert state.vault_pending_project == set()
 
 
-def test_vault_space_ignored_for_plugins():
-    """Plugins use enabledPlugins, not symlinks — Space must not enqueue."""
+def test_vault_p_ignored_for_plugins():
+    """Plugins use enabledPlugins, not symlinks — p must not enqueue."""
     state = axt.TuiState()
     state.vault_items = [axt.VaultItem(name="plug", type="plugin", path="", description="")]
-    axt.handle_vault_input(state, ord(" "))
+    axt.handle_vault_input(state, ord("p"))
     assert "plug" not in state.vault_pending_project
 
 
@@ -1630,6 +1747,34 @@ def test_set_status_records_timestamp_and_clears():
     axt.set_status(state, "")
     assert state.status == ""
     assert state.status_set_at is None
+
+
+def test_classify_status_kinds():
+    """Action confirmations → ok, failures → error, hints/progress → info."""
+    assert axt.classify_status("Linked my-skill") == "ok"
+    assert axt.classify_status("Enabled plugin-x (global)") == "ok"
+    assert axt.classify_status("Theme: dark") == "ok"
+    assert axt.classify_status("Link failed: boom") == "error"
+    assert axt.classify_status("Sync failed: nope") == "error"  # error beats "sync" prefix
+    assert axt.classify_status("Hook not found in its settings file") == "error"
+    assert axt.classify_status("Symlinks unsupported on this platform") == "error"
+    assert axt.classify_status("Loading Claude usage…") == "info"
+    assert axt.classify_status("/: type to filter, Enter to apply, Esc to cancel") == "info"
+    assert axt.classify_status("Cancelled") == "info"
+
+
+def test_set_status_sets_kind_and_resets_on_clear():
+    """set_status() derives status_kind from the message; "" resets to info."""
+    state = axt.TuiState()
+    assert state.status_kind == "info"
+    axt.set_status(state, "Unlinked my-skill")
+    assert state.status_kind == "ok"
+    axt.set_status(state, "Toggle failed: err")
+    assert state.status_kind == "error"
+    axt.set_status(state, "Detail focused", kind="ok")  # explicit override wins
+    assert state.status_kind == "ok"
+    axt.set_status(state, "")
+    assert state.status_kind == "info"
 
 
 # ─── linked vs enabled distinction ───────────────────────────────────────────
@@ -3531,6 +3676,16 @@ def test_render_status_bar_long_status_drops_shortcuts():
     assert "r:refresh" not in flat
 
 
+def test_render_status_bar_status_attr_colors_status_only():
+    """status_attr is applied to the status segment; shortcuts stay CP_DIM."""
+    scr = _make_stdscr()
+    axt.render_status_bar(scr, 0, 120, "q:quit", status="Linked x", status_attr=12345)
+    status_calls = [c for c in scr.calls if len(c) >= 5 and c[2] == "Linked x"]
+    assert status_calls and status_calls[0][4] == 12345
+    tail_calls = [c for c in scr.calls if len(c) >= 5 and "q:quit" in c[2]]
+    assert tail_calls and tail_calls[0][4] == axt.CP_DIM()
+
+
 # ─── confirm_modal interactive paths ─────────────────────────────────────────
 
 
@@ -3808,7 +3963,8 @@ def test_render_frame_extensions_vault_shortcuts(tmp_path, monkeypatch):
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "c:filter" in flat
-    assert "Space:project" in flat
+    assert "Space:mark" in flat
+    assert "p:project" in flat
 
 
 def test_render_frame_vault_search_shortcuts(tmp_path, monkeypatch):

@@ -135,13 +135,14 @@ TUI 대시보드 실행.
 ```
 j/k ↓/↑     이동             g           global 토글
 PgUp/PgDn   페이지           c           필터(all/skill/command/agent/plugin)
-Space       project 토글     s           정렬 순환(Name→Type→Proj→Glob→Used→Added→Updated), 활성 컬럼 헤더 ▲/▼
+p           project 토글     s           정렬 순환(Name→Type→Proj→Glob→Used→Added→Updated), 활성 컬럼 헤더 ▲/▼
 Enter       적용 또는 detail i           import to vault (global-only)
 Esc         폐기/뒤로        f           프로젝트 재스캔(실행 시 백그라운드 자동, Used 갱신)
 /           검색             F           scan mode toggle (default/full) + 재스캔 (f의 확장)
 Tab         리스트↔detail포커스 m         migrate (글로벌→vault)
 o           터미널 열기       S           sync project
-U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 모달)
+Space       포커스 항목 선택/해제 — 일괄 unlink 마킹 (좌측 체크박스 ■/□, 필터/검색 넘어 유지)
+U           모든 프로젝트에서 unlink: 선택된 항목 있으면 일괄, 없으면 포커스 항목 (스캔 인덱스 기준, 확인 모달)
 ```
 
 ### 2.6 키바인딩 (서브탭별 고유)
@@ -154,7 +155,7 @@ U           모든 프로젝트에서 unlink (스캔 인덱스 기준, 확인 �
   - **MCP**: Name→Scope→Transport
   - **Hooks**: Event→Type→Source
   - **Market**: Name→Source→Updated
-- **키 문법(통일 규칙)**: `Space` = project 스코프 토글, `g` = global 스코프 토글, `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열
+- **키 문법(통일 규칙)**: `Space` = project 스코프 토글, `g` = global 스코프 토글, `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열. 단 Vault 탭은 다중 선택이 있어 `Space` = 포커스 항목 선택, `p` = project 토글 (2.5 참조)
 - **Plugins**: `Space` project 토글, `g` global 토글, `x` uninstall (확인 모달). Status 컬럼 G/P = ● enabled / ○ disabled / · unset
 - **MCP**: `Space` 토글 (현재 프로젝트 `disabledMcpServers`; global 스코프 없음 — `g`는 안내 메시지)
 - **Hooks**: `Space` 토글 (설정 파일 내 `hooks`↔`disabledHooks` 이동, plugin 훅은 읽기 전용), `p` preview (dry-run)

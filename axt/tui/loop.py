@@ -69,11 +69,12 @@ Navigation
   PgUp / PgDn   Page up / page down
 
 Vault
-  Space         Toggle PROJECT link for selected item (pending)
+  Space         Select/deselect focused item for bulk unlink (left checkbox ■/□)
+  p             Toggle PROJECT link for selected item (pending)
   g             Toggle GLOBAL link for selected item (pending)
-  U             Unlink selected item from ALL projects that use it (confirm)
+  U             Unlink from ALL projects: selected items if any, else focused (confirm)
   Enter         Apply pending toggles (confirm y/N) OR focus detail panel
-  Esc           Discard pending → clear search → blur detail panel (in that order)
+  Esc           Discard pending / clear marks → clear search → blur detail panel
   Tab           Toggle list ↔ detail panel focus
   /             Search input (type → Enter to apply, Esc to clear)
   c             Cycle filter (all/skill/command/agent/plugin)
@@ -167,6 +168,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
     if state.status and state.status_set_at is not None:
         if time.monotonic() - state.status_set_at >= STATUS_TIMEOUT_S:
             state.status = ""
+            state.status_kind = "info"
             state.status_set_at = None
 
     h, w = stdscr.getmaxyx()
@@ -203,10 +205,15 @@ def _render_frame(stdscr, state: TuiState) -> None:
         if state.vault_searching:
             shortcuts = "/: typing search…  Enter:apply  Esc:cancel"
         elif state.vault_pending_project or state.vault_pending_global:
-            shortcuts = "Enter:apply pending (confirm)  Esc:discard  Space:project  g:global  j/k:nav"
+            shortcuts = "Enter:apply pending (confirm)  Esc:discard  p:project  g:global  j/k:nav"
+        elif state.vault_marked:
+            shortcuts = (
+                f"{len(state.vault_marked)} marked  U:unlink-all marked (confirm)  "
+                "Space:mark/unmark  Esc:clear marks  j/k:nav"
+            )
         else:
             shortcuts = (
-                "1-3:tab  [/]:sub  j/k:nav  Space:project  g:global  U:unlink-all  "
+                "1-3:tab  [/]:sub  j/k:nav  Space:mark  p:project  g:global  U:unlink-all  "
                 "Enter:apply  c:filter  s:sort  /:search  i:import  f:scan  F:scan+mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
@@ -215,7 +222,13 @@ def _render_frame(stdscr, state: TuiState) -> None:
         shortcuts = "1-3:tab  [/]:sub  j/k:nav  PgUp/PgDn:scroll  e:edit  Enter:preview  r:refresh  ?:help  q:quit"
     else:
         shortcuts = "1-3:tab  j/k:nav  r:refresh  ?:help  q:quit"
-    render_status_bar(stdscr, h - 1, w, shortcuts, state.status)
+    # Color the status message by its kind so action results stand out:
+    # green = state change applied, red = failure, dim = hints/progress.
+    status_attr = {
+        "ok": CP_OK() | curses.A_BOLD,
+        "error": CP_ERR() | curses.A_BOLD,
+    }.get(state.status_kind)
+    render_status_bar(stdscr, h - 1, w, shortcuts, state.status, status_attr=status_attr)
 
     stdscr.refresh()
 
