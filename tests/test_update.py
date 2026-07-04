@@ -339,3 +339,45 @@ def test_cli_update_apply_gated_by_yes(monkeypatch):
     rc, out = _run_cli(["update", "--apply", "--yes"])
     assert rc == 0
     assert applied["t"] == [("marketplace", "m1")]     # bulk targets tier-1 updatable
+
+
+def test_cli_update_claude_code_explicit_apply(monkeypatch):
+    import axt
+    monkeypatch.setattr("axt.cli.check_all_updates",
+        lambda types=None: [axt.update.UpdateStatus("claude-code", "claude-code", 3, "2.1.0", "?", False,
+                                                     note="updates via claude update")])
+    called = {}
+    monkeypatch.setattr("axt.cli.apply_updates",
+        lambda targets, no_sync=False: (called.setdefault("t", targets),
+            [axt.update.UpdateResult("claude-code", "claude-code", "2.1.0", "2.2.0", True, "claude update")])[1])
+    rc, out = _run_cli(["update", "claude-code", "--apply", "--yes"])
+    assert rc == 0
+    assert called["t"] == [("claude-code", "claude-code")]     # explicit tier-3 applies
+
+
+def test_cli_update_bulk_apply_excludes_tier3(monkeypatch):
+    import axt
+    monkeypatch.setattr("axt.cli.check_all_updates",
+        lambda types=None: [
+            axt.update.UpdateStatus("marketplace", "m1", 1, "a", "b", True),
+            axt.update.UpdateStatus("claude-code", "claude-code", 3, "2.1.0", "?", False),
+        ])
+    called = {}
+    monkeypatch.setattr("axt.cli.apply_updates",
+        lambda targets, no_sync=False: (called.setdefault("t", targets),
+            [axt.update.UpdateResult("marketplace", "m1", "a", "b", True, "git pull")])[1])
+    rc, out = _run_cli(["update", "--apply", "--yes"])
+    assert rc == 0
+    assert called["t"] == [("marketplace", "m1")]              # tier-3 NOT auto-applied in bulk
+
+
+def test_cli_update_apply_decline_aborts(monkeypatch):
+    import axt
+    monkeypatch.setattr("axt.cli.check_all_updates",
+        lambda types=None: [axt.update.UpdateStatus("marketplace", "m1", 1, "a", "b", True)])
+    calls = {"n": 0}
+    monkeypatch.setattr("axt.cli.apply_updates",
+        lambda targets, no_sync=False: (calls.__setitem__("n", calls["n"] + 1), [])[1])
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    rc, out = _run_cli(["update", "--apply"])
+    assert rc == 1 and "Aborted" in out and calls["n"] == 0     # declined → no apply

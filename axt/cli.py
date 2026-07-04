@@ -967,10 +967,18 @@ def cli_update(args) -> int:
         _print_update_report(statuses)
         return 0
 
-    # --apply
+    # --apply. "Explicit" = a named item OR a specific type was chosen
+    # (not the default "all"). Bulk (all types) never auto-runs the Tier-3
+    # `claude update`; an explicit type/name may.
     if args.name:
         targets = [(s.item_type, s.name) for s in statuses]
+    elif args.type != "all":
+        # explicit type, e.g. `axt update claude-code --apply`: apply this
+        # type's updatable tier-1 items plus tier-3 (delegated; its `updatable`
+        # flag is always False).
+        targets = [(s.item_type, s.name) for s in statuses if s.updatable or s.tier == 3]
     else:
+        # bulk over all types: tier-1 updatable only.
         targets = [(s.item_type, s.name) for s in statuses if s.tier == 1 and s.updatable]
     if not targets:
         if not args.json:
