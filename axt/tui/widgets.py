@@ -653,10 +653,60 @@ def text_input_modal(stdscr, prompt: str, *, title: str = "Input", initial: str 
         stdscr.refresh()
 
 
+def _modal_search_prompt(win, y: int, width: int) -> Optional[str]:
+    """Read a search term at the modal footer line `y`.
+
+    Shows a live `/term` prompt. Returns the typed string on Enter (may be
+    empty → caller clears the search) or None on Esc (cancel, keep prior
+    search). Backspace edits; only printable ASCII is accepted.
+    """
+    buf = ""
+    while True:
+        safe_addnstr(win, y, 2, " " * width, width, CP_DIM())
+        safe_addnstr(win, y, 2, fit_cells("/" + buf, width), width, CP_TITLE())
+        win.refresh()
+        k = win.getch()
+        if is_enter(k):
+            return buf
+        if k == KEY_ESC:
+            return None
+        if k in (curses.KEY_BACKSPACE, KEY_BACKSPACE, 8):
+            buf = buf[:-1]
+        elif 32 <= k < 127:
+            buf += chr(k)
+
+
+def _addstr_search_hl(win, y: int, x: int, text: str, max_w: int,
+                      query: str, *, current: bool) -> None:
+    """Draw `text` fitted to `max_w` cells, highlighting case-insensitive
+    occurrences of `query`. The current-match line uses a reverse attr; other
+    matches use the mark color. Segments are placed by East-Asian cell width."""
+    fitted = fit_cells(text, max_w)
+    low = fitted.lower()
+    hl = CP_SEL() if current else CP_MARK()
+    col, i = x, 0
+    while i < len(fitted):
+        j = low.find(query, i)
+        if j == -1:
+            safe_addnstr(win, y, col, fitted[i:], max_w, 0)
+            return
+        if j > i:
+            seg = fitted[i:j]
+            safe_addnstr(win, y, col, seg, max_w, 0)
+            col += cell_width(seg)
+        mseg = fitted[j:j + len(query)]
+        safe_addnstr(win, y, col, mseg, max_w, hl)
+        col += cell_width(mseg)
+        i = j + len(query)
+
+
 def preview_modal(stdscr, content: str, *, title: str = "Preview") -> None:
     """Scrollable full-screen overlay for long content (file body, hook output).
 
-    j/k or arrows scroll; PgUp/PgDn page; g/G jump top/bottom; q/Esc/Enter exit.
+    j/k or arrows scroll; PgUp/PgDn page; g/G jump top/bottom; q/Enter exit.
+    / opens a case-insensitive search; n/N jump to the next/previous match;
+    matches are highlighted and the footer shows [match i/N]. While a search is
+    active Esc clears it first, then a second Esc closes the modal.
     """
     h, w = stdscr.getmaxyx()
     box_w = min(w - 4, 120)
@@ -677,6 +727,21 @@ def preview_modal(stdscr, content: str, *, title: str = "Preview") -> None:
         raw_lines.extend(wrapped or [""])
     scroll = 0
     max_scroll = max(0, len(raw_lines) - inner_h)
+
+    query = ""              # active (already-applied) search term, lowercased
+    matches: list[int] = []  # indices into raw_lines containing `query`
+    midx = -1               # current position within `matches` (-1 = none)
+
+    def apply_search(term: str, anchor: int) -> None:
+        """Set `query` to `term` and select the first match at/after `anchor`."""
+        nonlocal query, matches, midx
+        query = term
+        matches = [i for i, ln in enumerate(raw_lines) if term and term in ln.lower()]
+        if not matches:
+            midx = -1
+            return
+        midx = next((j for j, i in enumerate(matches) if i >= anchor), 0)
+
     try:
         while True:
             win.erase()
@@ -684,17 +749,41 @@ def preview_modal(stdscr, content: str, *, title: str = "Preview") -> None:
             safe_addnstr(win, 0, max(2, (box_w - cell_width(title) - 2) // 2),
                          f" {title} ", box_w - 4, CP_TITLE())
             visible = raw_lines[scroll:scroll + inner_h]
+            cur_line = matches[midx] if 0 <= midx < len(matches) else -1
             for i, ln in enumerate(visible):
                 lineno = scroll + i + 1
                 safe_addnstr(win, 2 + i, 2, fit_cells(f"{lineno:4d}", 4), 4, CP_DIM())
-                safe_addnstr(win, 2 + i, 7, fit_cells(ln, inner_w - 5), inner_w - 5, 0)
+                if query and query in ln.lower():
+                    _addstr_search_hl(win, 2 + i, 7, ln, inner_w - 5, query,
+                                      current=(scroll + i == cur_line))
+                else:
+                    safe_addnstr(win, 2 + i, 7, fit_cells(ln, inner_w - 5), inner_w - 5, 0)
             indicator = f"[{scroll + 1}-{scroll + len(visible)}/{len(raw_lines)}]"
-            footer = " j/k ↑↓  PgUp/PgDn  g/G  q/Enter:close "
+            if query:
+                tag = f"[match {midx + 1}/{len(matches)}]" if matches else "[no match]"
+                indicator = f"{tag}  {indicator}"
+            footer = " /:search  n/N:match  j/k ↑↓  PgUp/PgDn  g/G  q/Enter:close "
             safe_addnstr(win, box_h - 2, 2, fit_cells(footer, box_w - 4), box_w - 4, CP_DIM())
             safe_addnstr(win, box_h - 2, max(2, box_w - cell_width(indicator) - 3), indicator, len(indicator), CP_DIM())
             win.refresh()
             k = win.getch()
-            if k in (ord("q"), ord("Q"), KEY_ESC) or is_enter(k):
+            if k == ord("/"):
+                term = _modal_search_prompt(win, box_h - 2, box_w - 4)
+                if term is not None:
+                    apply_search(term.lower(), scroll)
+                    if matches:
+                        scroll = min(max_scroll, matches[midx])
+                continue
+            if k in (ord("n"), ord("N")) and matches:
+                midx = (midx + (1 if k == ord("n") else -1)) % len(matches)
+                scroll = min(max_scroll, matches[midx])
+                continue
+            if k in (ord("q"), ord("Q")) or is_enter(k):
+                return
+            if k == KEY_ESC:
+                if query:  # first Esc clears the search, keeping the modal open
+                    query, matches, midx = "", [], -1
+                    continue
                 return
             if k in (ord("j"), curses.KEY_DOWN):
                 scroll = min(max_scroll, scroll + 1)

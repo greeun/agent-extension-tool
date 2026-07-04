@@ -3498,6 +3498,100 @@ def test_preview_modal_newwin_failure_is_silent(monkeypatch):
     axt.preview_modal(scr, "anything")
 
 
+# ─── preview_modal search ────────────────────────────────────────────────────
+
+
+def _ord_seq(s: str) -> list:
+    return [ord(c) for c in s]
+
+
+def test_preview_modal_search_jumps_and_highlights(monkeypatch):
+    scr = _make_stdscr()
+    # NEEDLE sits far below the fold so a plain first frame can't show it.
+    lines = [f"row {i}" for i in range(60)] + ["a NEEDLE here"] + [f"row {i}" for i in range(60)]
+    content = "\n".join(lines)
+    # `/` opens the prompt, "needle" is typed, Enter runs it, `q` closes.
+    keys = [ord("/")] + _ord_seq("needle") + [10, ord("q")]
+    win, _calls = _make_modal_win(keys)
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, content, title="Search")
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "NEEDLE" in flat          # scrolled into view
+    assert "[match 1/1]" in flat
+
+
+def test_preview_modal_search_backspace_edits_term(monkeypatch):
+    scr = _make_stdscr()
+    content = "\n".join([f"row {i}" for i in range(30)] + ["a NEEDLE here"])
+    # Type "needlex", backspace removes the x, then Enter → matches "needle".
+    keys = [ord("/")] + _ord_seq("needlex") + [127] + [10, ord("q")]
+    win, _calls = _make_modal_win(keys)
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, content, title="Search")
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "[match 1/1]" in flat
+
+
+def test_preview_modal_search_n_cycles_matches(monkeypatch):
+    scr = _make_stdscr()
+    # Three lines carry the term; `n` advances the current-match counter.
+    lines = ["mark one", "filler", "mark two", "filler", "mark three"]
+    content = "\n".join(lines)
+    keys = [ord("/")] + _ord_seq("mark") + [10, ord("n"), ord("n"), ord("q")]
+    win, _calls = _make_modal_win(keys)
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, content, title="Search")
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "[match 3/3]" in flat      # advanced from 1/3 → 2/3 → 3/3
+
+
+def test_preview_modal_search_N_wraps_backward(monkeypatch):
+    scr = _make_stdscr()
+    content = "\n".join(["mark one", "filler", "mark two", "filler", "mark three"])
+    # `N` from the first match wraps to the last.
+    keys = [ord("/")] + _ord_seq("mark") + [10, ord("N"), ord("q")]
+    win, _calls = _make_modal_win(keys)
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, content, title="Search")
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "[match 3/3]" in flat
+
+
+def test_preview_modal_search_no_match_indicator(monkeypatch):
+    scr = _make_stdscr()
+    content = "\n".join(f"row {i}" for i in range(20))
+    keys = [ord("/")] + _ord_seq("zzzz") + [10, ord("q")]
+    win, _calls = _make_modal_win(keys)
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, content, title="Search")
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "[no match]" in flat
+
+
+def test_preview_modal_search_esc_cancels_input(monkeypatch):
+    scr = _make_stdscr()
+    content = "\n".join(f"row {i}" for i in range(20))
+    # Esc (27) aborts the prompt, leaving no active search; second Esc closes.
+    keys = [ord("/")] + _ord_seq("row") + [27, 27]
+    win, _calls = _make_modal_win(keys)
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, content, title="Search")
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "[match" not in flat
+    assert "[no match]" not in flat
+
+
+def test_preview_modal_search_esc_clears_then_closes(monkeypatch):
+    scr = _make_stdscr()
+    content = "\n".join([f"row {i}" for i in range(30)] + ["a NEEDLE here"])
+    # Run a search, first Esc clears it (modal stays), second Esc closes.
+    # Exactly enough keys: exhausting them before return would raise StopIteration.
+    keys = [ord("/")] + _ord_seq("needle") + [10, 27, 27]
+    win, _calls = _make_modal_win(keys)
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, content, title="Search")  # must not raise
+
+
 # ─── open_in_editor success path ─────────────────────────────────────────────
 
 

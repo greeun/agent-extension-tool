@@ -139,7 +139,7 @@ Vault column meanings
   Used    N proj   Project count; auto-scanned on launch, `f` to refresh
 
 Globals
-  ?             Show this help
+  ?             Show this help (in the modal: / to search, n/N next/prev match)
   t             Toggle light / dark theme (saved to config)
   q / Q         Quit
   Esc           Quit only at the main-tab layer; otherwise climbs one layer up
