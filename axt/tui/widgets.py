@@ -692,10 +692,11 @@ def _modal_search_prompt(win, y: int, width: int) -> Optional[str]:
 
 
 def _addstr_search_hl(win, y: int, x: int, text: str, max_w: int,
-                      query: str, *, current: bool) -> None:
+                      query: str, *, current: bool, base: int = 0) -> None:
     """Draw `text` fitted to `max_w` cells, highlighting case-insensitive
     occurrences of `query`. The current-match line uses a reverse attr; other
-    matches use the mark color. Segments are placed by East-Asian cell width."""
+    matches use the mark color. Non-match segments use `base` (e.g. a section
+    heading attr). Segments are placed by East-Asian cell width."""
     fitted = fit_cells(text, max_w)
     low = fitted.lower()
     hl = CP_SEL() if current else CP_MARK()
@@ -703,11 +704,11 @@ def _addstr_search_hl(win, y: int, x: int, text: str, max_w: int,
     while i < len(fitted):
         j = low.find(query, i)
         if j == -1:
-            safe_addnstr(win, y, col, fitted[i:], max_w, 0)
+            safe_addnstr(win, y, col, fitted[i:], max_w, base)
             return
         if j > i:
             seg = fitted[i:j]
-            safe_addnstr(win, y, col, seg, max_w, 0)
+            safe_addnstr(win, y, col, seg, max_w, base)
             col += cell_width(seg)
         mseg = fitted[j:j + len(query)]
         safe_addnstr(win, y, col, mseg, max_w, hl)
@@ -715,13 +716,18 @@ def _addstr_search_hl(win, y: int, x: int, text: str, max_w: int,
         i = j + len(query)
 
 
-def preview_modal(stdscr, content: str, *, title: str = "Preview") -> None:
+def preview_modal(stdscr, content: str, *, title: str = "Preview",
+                  heading_prefix: Optional[str] = None) -> None:
     """Scrollable full-screen overlay for long content (file body, hook output).
 
     j/k or arrows scroll; PgUp/PgDn page; g/G jump top/bottom; q/Enter exit.
     / opens a case-insensitive search; n/N jump to the next/previous match;
     matches are highlighted and the footer shows [match i/N]. While a search is
     active Esc clears it first, then a second Esc closes the modal.
+
+    Lines starting with ``heading_prefix`` render bold-cyan as section
+    headings — for callers that concatenate several documents into one preview
+    (e.g. Context Sources, hook stdout/stderr) so each section stands out.
     """
     h, w = stdscr.getmaxyx()
     box_w = min(w - 4, 120)
@@ -735,11 +741,16 @@ def preview_modal(stdscr, content: str, *, title: str = "Preview") -> None:
     win.keypad(True)
     inner_w = box_w - 4
     inner_h = box_h - 4  # title row + bottom hint row + 2 border lines
-    # Pre-wrap.
+    # Pre-wrap. Heading flags stay parallel to raw_lines so wrapped
+    # continuation segments of a heading keep the heading attr.
     raw_lines: list[str] = []
+    raw_heads: list[bool] = []
     for src_line in content.splitlines():
+        is_head = bool(heading_prefix) and src_line.startswith(heading_prefix)
         wrapped = _wrap_to_cells(src_line, inner_w - 5)  # leave room for line numbers
-        raw_lines.extend(wrapped or [""])
+        for seg in (wrapped or [""]):
+            raw_lines.append(seg)
+            raw_heads.append(is_head)
     scroll = 0
     max_scroll = max(0, len(raw_lines) - inner_h)
 
@@ -768,11 +779,12 @@ def preview_modal(stdscr, content: str, *, title: str = "Preview") -> None:
             for i, ln in enumerate(visible):
                 lineno = scroll + i + 1
                 safe_addnstr(win, 2 + i, 2, fit_cells(f"{lineno:4d}", 4), 4, CP_DIM())
+                base = (CP_CYAN() | curses.A_BOLD) if raw_heads[scroll + i] else 0
                 if query and query in ln.lower():
                     _addstr_search_hl(win, 2 + i, 7, ln, inner_w - 5, query,
-                                      current=(scroll + i == cur_line))
+                                      current=(scroll + i == cur_line), base=base)
                 else:
-                    safe_addnstr(win, 2 + i, 7, fit_cells(ln, inner_w - 5), inner_w - 5, 0)
+                    safe_addnstr(win, 2 + i, 7, fit_cells(ln, inner_w - 5), inner_w - 5, base)
             indicator = f"[{scroll + 1}-{scroll + len(visible)}/{len(raw_lines)}]"
             if query:
                 tag = f"[match {midx + 1}/{len(matches)}]" if matches else "[no match]"

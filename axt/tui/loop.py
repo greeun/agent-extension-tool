@@ -131,7 +131,7 @@ Context
   [ / ]         Cycle sub-tabs from the body (Sources ↔ Project)
   j / k         Move selection within the active sub-tab
   PgUp / PgDn   Scroll the shared bottom detail panel
-  Enter         Sources: category source list preview
+  Enter         Sources: preview the category's sources with actual content
                 Project: preview the focused file's content
   e             Sources: open first source file in $EDITOR
                 Project: open the focused file in $EDITOR

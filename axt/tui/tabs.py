@@ -1947,15 +1947,23 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
         srcs = [s for s in state.context_analysis.sources
                 if s.category == row.category
                 and getattr(s, "scope", "global") == row.scope]
-        lines = [f"{rows[state.context_selected].label} — {rows[state.context_selected].items} item(s)", ""]
+        srcs.sort(key=lambda s: s.estimated_tokens, reverse=True)
+        lines = [f"{row.label} — {row.items} item(s), {format_tokens(row.tokens)} tok", ""]
         for s in srcs[:50]:
             hint = f"  ({s.hint})" if s.hint else ""
-            lines.append(f"• {s.name}{hint}")
+            lines.append(f"━━ {s.name} — {format_tokens(s.estimated_tokens)} tok  {s.percentage:.1f}%{hint}")
             if s.path:
-                lines.append(f"    {s.path}")
-            lines.append(f"    {format_tokens(s.estimated_tokens)} tok  {s.percentage:.1f}%")
+                lines.append(f"   {s.path}")
+            if s.content:
+                lines.append("")
+                lines.extend(s.content.splitlines())
+            else:
+                lines.append("   (content unavailable — estimated size only)")
             lines.append("")
-        preview_modal(state.stdscr_callbacks["stdscr"], "\n".join(lines), title=rows[state.context_selected].label)
+        if len(srcs) > 50:
+            lines.append(f"… {len(srcs) - 50} more source(s) not shown")
+        preview_modal(state.stdscr_callbacks["stdscr"], "\n".join(lines),
+                      title=row.label, heading_prefix="━━")
     return None
 
 
@@ -3461,7 +3469,8 @@ def _act_hook_preview(state: TuiState, stdscr: Any, sub: str, key: int) -> Optio
         lines += ["", "── stdout ──", result.output]
     if result.error:
         lines += ["", "── stderr ──", result.error]
-    preview_modal(stdscr, "\n".join(lines), title=f"Hook preview: {hook.event}")
+    preview_modal(stdscr, "\n".join(lines),
+                  title=f"Hook preview: {hook.event}", heading_prefix="──")
     return None
 
 

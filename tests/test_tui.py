@@ -3112,6 +3112,36 @@ def test_project_enter_calls_preview(monkeypatch):
     assert called and called[0][1] == "hello"
 
 
+def test_context_sources_enter_previews_actual_content(monkeypatch):
+    """Sources sub-tab Enter modal includes each source's real content, not
+    just name/path/token metadata; content-less sources get a fallback note."""
+    called = []
+    monkeypatch.setattr("axt.preview_modal",
+                        lambda stdscr, content, title="Preview", **kw: called.append((title, content, kw)))
+    with_content = axt.ContextSource(
+        name="CLAUDE.md (user)", category="claude-md", path="/h/.claude/CLAUDE.md",
+        chars=40, estimated_tokens=100, percentage=1.0, actionable=True,
+        content="# rules\nalways answer in Korean")
+    without_content = axt.ContextSource(
+        name="System prompt", category="claude-md", path="",
+        chars=0, estimated_tokens=50, percentage=0.5, actionable=False)
+    state = axt.TuiState()
+    state.context_analysis = axt.ContextAnalysis(
+        total_tokens=150, context_window_size=200_000, used_percent=0.1,
+        model="claude-sonnet", sources=[with_content, without_content],
+        cost_impact=_make_empty_context_analysis().cost_impact)
+    state.context_selected = 0
+    state.stdscr_callbacks = {"stdscr": object()}
+    axt.handle_context_input(state, 10)
+    assert called
+    _, body, kw = called[0]
+    assert "always answer in Korean" in body
+    assert "/h/.claude/CLAUDE.md" in body
+    assert "content unavailable" in body  # System prompt has no content
+    # Per-source headers are marked so the modal colors them as headings.
+    assert kw.get("heading_prefix") == "━━"
+
+
 def test_project_e_calls_editor(monkeypatch):
     called = []
     monkeypatch.setattr("axt.open_in_editor", lambda stdscr, path: called.append(path) or True)
@@ -4469,6 +4499,35 @@ def test_preview_modal_scrolls_then_quits(monkeypatch):
     assert "row 0" in flat
 
 
+def test_preview_modal_heading_prefix_colors_headings(monkeypatch):
+    """Lines starting with heading_prefix render with the bold heading attr;
+    body lines keep the plain attr — the per-source separation is visible."""
+    scr = _make_stdscr()
+    win, calls = _make_modal_win([ord("q")])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, "━━ section one\nplain body", title="T",
+                      heading_prefix="━━")
+    def attr_of(text):
+        for c in calls:
+            if len(c) >= 5 and isinstance(c[2], str) and text in c[2]:
+                return c[4]
+        raise AssertionError(f"{text!r} not drawn")
+    assert attr_of("section one") & curses.A_BOLD
+    assert not attr_of("plain body") & curses.A_BOLD
+
+
+def test_preview_modal_without_heading_prefix_is_plain(monkeypatch):
+    """Default preview (no heading_prefix) never bolds content lines, even
+    ones that happen to start with box-drawing characters."""
+    scr = _make_stdscr()
+    win, calls = _make_modal_win([ord("q")])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, "━━ looks like a heading", title="T")
+    hits = [c for c in calls
+            if len(c) >= 5 and isinstance(c[2], str) and "looks like a heading" in c[2]]
+    assert hits and not (hits[0][4] & curses.A_BOLD)
+
+
 def test_preview_modal_newwin_failure_is_silent(monkeypatch):
     scr = _make_stdscr()
     monkeypatch.setattr("curses.newwin",
@@ -5033,7 +5092,7 @@ def test_handle_context_input_refresh_clears_analysis():
 def test_handle_context_input_enter_opens_preview(monkeypatch):
     called = []
     monkeypatch.setattr("axt.preview_modal",
-                        lambda stdscr, content, title="Preview": called.append((title, content)))
+                        lambda stdscr, content, title="Preview", **kw: called.append((title, content)))
     s = axt.TuiState()
     s.context_analysis = _seed_context_analysis_with_sources()
     s.stdscr_callbacks = {"stdscr": object()}
@@ -5404,7 +5463,7 @@ def test_subtab_action_market_none_selected_returns_none():
 def test_subtab_action_hook_preview(monkeypatch):
     captured = []
     monkeypatch.setattr("axt.preview_modal",
-                        lambda stdscr, content, title="Preview": captured.append((title, content)))
+                        lambda stdscr, content, title="Preview", **kw: captured.append((title, content)))
     monkeypatch.setattr("axt.tui.tabs.preview_hook",
                         lambda hook: axt.HookPreviewResult(
                             type="command", summary="ran echo",
@@ -7110,7 +7169,7 @@ def test_subtab_action_hook_preview_includes_stderr(monkeypatch):
     (line 2097)."""
     captured = []
     monkeypatch.setattr("axt.preview_modal",
-                        lambda stdscr, content, title="Preview": captured.append(content))
+                        lambda stdscr, content, title="Preview", **kw: captured.append(content))
     monkeypatch.setattr("axt.tui.tabs.preview_hook",
                         lambda hook: axt.HookPreviewResult(
                             type="command", summary="ran", output="",
