@@ -1,10 +1,12 @@
 {
-  "_comment": "Per-million-token rates in USD for Claude models.",
+  "_comment": "Per-million-token rates in USD for Claude models. cacheWrite = input x 1.25 (5m TTL), cacheRead = input x 0.1.",
   "models": {
-    "claude-opus-4-8":   { "input": 15.00, "output": 75.00, "cacheWrite": 18.75, "cacheRead": 1.50, "contextWindow": 1000000 },
-    "claude-opus-4-7":   { "input": 15.00, "output": 75.00, "cacheWrite": 18.75, "cacheRead": 1.50, "contextWindow": 1000000 },
-    "claude-opus-4-6":   { "input": 15.00, "output": 75.00, "cacheWrite": 18.75, "cacheRead": 1.50, "contextWindow": 1000000 },
+    "claude-fable-5":    { "input": 10.00, "output": 50.00, "cacheWrite": 12.50, "cacheRead": 1.00, "contextWindow": 1000000 },
+    "claude-opus-4-8":   { "input":  5.00, "output": 25.00, "cacheWrite":  6.25, "cacheRead": 0.50, "contextWindow": 1000000 },
+    "claude-opus-4-7":   { "input":  5.00, "output": 25.00, "cacheWrite":  6.25, "cacheRead": 0.50, "contextWindow": 1000000 },
+    "claude-opus-4-6":   { "input":  5.00, "output": 25.00, "cacheWrite":  6.25, "cacheRead": 0.50, "contextWindow": 1000000 },
+    "claude-sonnet-5":   { "input":  3.00, "output": 15.00, "cacheWrite":  3.75, "cacheRead": 0.30, "contextWindow": 1000000 },
     "claude-sonnet-4-6": { "input":  3.00, "output": 15.00, "cacheWrite":  3.75, "cacheRead": 0.30, "contextWindow": 1000000 },
-    "claude-haiku-4-5":  { "input":  0.80, "output":  4.00, "cacheWrite":  1.00, "cacheRead": 0.08, "contextWindow":  200000 }
+    "claude-haiku-4-5":  { "input":  1.00, "output":  5.00, "cacheWrite":  1.25, "cacheRead": 0.10, "contextWindow":  200000 }
   }
 }

@@ -180,14 +180,14 @@ u           포커스 항목 콘텐츠 업데이트 (check+apply): 저장 디렉
 - **모든 서브탭 (Vault / Skills / Commands / Agents / MCP / Hooks / Plugins / Market)**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
 
 ### 2.7 Context 탭 (2개 서브탭)
-상단에 **Rate limits** 스트립(5h/7d 쿼터 바)이 두 서브탭 공통으로 고정 표시되고, 하단에 cost impact 라인이 항상 표시됨. 그 사이 본문이 서브탭으로 전환됨 (Extensions 탭과 동일한 subTab focus layer 사용).
+상단에 **Rate limits** 스트립(5h/7d 쿼터 바)이 두 서브탭 공통으로 고정 표시되고, 하단에 cost impact 라인(가정 `[assumes 30 turns × 5 sessions/day]` 명시)이 항상 표시됨. 그 사이 본문이 서브탭으로 전환됨 (Extensions 탭과 동일한 subTab focus layer 사용). `Enter`/`e`는 detail 패널과 동일하게 (category, scope) 단위로 필터됨.
 - **Sources** (기본) — 컨텍스트 윈도우 분석 (`categories → sources`). 전체폭 테이블 + 하단 공유 detail 패널.
 - **Project** — cwd 기준 프로젝트 컨텍스트 파일 목록 (CLAUDE.md / settings.json / memory 등). 전체폭 테이블 + 하단 공유 detail 패널.
 
 키: `← →`(서브탭 바에서) 또는 `[ / ]`(본문에서) 서브탭 전환, `j/k` 선택, `PgUp/PgDn` 하단 detail 스크롤, `Enter` (Sources: 카테고리 소스 모달 / Project: 파일 내용 미리보기), `e` (Sources: 첫 소스를 에디터로 / Project: 파일을 에디터로), `r` 새로고침.
 
 ### 2.8 Usage 탭
-Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarChart + Active Block + Insights(large-context %, parallel %, top model) + plan rate-limit(5h/7d) 라인. 키: `r` 새로고침. (v0.2.x의 platform/cursor 서브탭은 제거. 별도였던 Dashboard 탭은 이 탭의 상단(Plan/Budget 블록)으로 흡수됨.)
+Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) + 미등록 모델 경고(`pricing.json`에 없는 모델의 엔트리가 있으면 `⚠ N entries from unpriced models (…)` — 비용 합계에서 제외됨을 표시) + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarChart + Active Block + Insights(large-context %, parallel %, top model) + plan rate-limit(5h/7d) 라인. 키: `r` 새로고침. (v0.2.x의 platform/cursor 서브탭은 제거. 별도였던 Dashboard 탭은 이 탭의 상단(Plan/Budget 블록)으로 흡수됨.)
 
 ### 2.10 공통 위젯
 - **Table**: prefix 4셀(`▸/space + ■/□` 또는 `▸/space + 번호`), 마지막 컬럼 자동 확장, selected는 cyan+bold (inverse 회피)
@@ -311,18 +311,20 @@ Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarCh
 ### 4.3 모델별 가격 (per 1M tokens, USD) — `pricing.json`
 | Model | Input | Output | Cache Write | Cache Read | Context Window |
 |---|---|---|---|---|---|
-| claude-opus-4-8 / 4-7 / 4-6 | 15.00 | 75.00 | 18.75 | 1.50 | 1,000,000 |
-| claude-sonnet-4-6 | 3.00 | 15.00 | 3.75 | 0.30 | 1,000,000 |
-| claude-haiku-4-5 | 0.80 | 4.00 | 1.00 | 0.08 | 200,000 |
+| claude-fable-5 | 10.00 | 50.00 | 12.50 | 1.00 | 1,000,000 |
+| claude-opus-4-8 / 4-7 / 4-6 | 5.00 | 25.00 | 6.25 | 0.50 | 1,000,000 |
+| claude-sonnet-5 / 4-6 | 3.00 | 15.00 | 3.75 | 0.30 | 1,000,000 |
+| claude-haiku-4-5 | 1.00 | 5.00 | 1.25 | 0.10 | 200,000 |
 
 비용: `(input/1M)*Pin + (output/1M)*Pout + (cacheCreation/1M)*PcacheWrite + (cacheRead/1M)*PcacheRead`
+(cacheWrite = input × 1.25, cacheRead = input × 0.1. claude-sonnet-5는 2026-08-31까지 도입가 $2/$10이 적용되지만 표준가로 등록.)
 
-신규 모델 추가: `pricing.json`만 수정 (코드 변경 불필요).
+신규 모델 추가: `pricing.json`만 수정 (코드 변경 불필요). 테이블에 없는 모델의 엔트리는 비용 $0으로 집계되며, Usage 탭이 `find_unpriced_models`로 감지해 경고 라인을 표시.
 
 ### 4.4 컨텍스트 분석 카테고리
 1. **system-prompt** (4,200 tok fixed)
 2. **claude-md** — global/user/project + `.claude/CLAUDE.md` 등
-3. **settings** — 4곳 (global/project + local)
+3. **settings** — 4곳: global `~/.claude/settings*.json` + project `<proj>/.claude/settings*.json` (Claude Code가 실제로 읽는 경로)
 4. **memory** — `~/.claude/projects/{key}/memory/*.md` (200줄/25KB 제한)
 5. **skills** — `SKILL.md` frontmatter name+description
 6. **mcp-tools** — 활성 플러그인의 MCP 서버 (deferred 추정)
@@ -330,7 +332,7 @@ Plan 라벨 + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarCh
 8. **hooks** — SessionStart / UserPromptSubmit (200 tok/hook fixed)
 9. **commands** — `.claude/commands/*.md`
 10. **agents** — `.claude/agents/*.md`
-11. **git-status** (150 tok fixed) — `git status` 출력
+11. **git-status** — 실제 `git status` 출력에서 토큰 추정 (repo 없으면 0)
 12. **user-context** (280 tok fixed) — email, date, paths, platform, shell
 
 actionable 플래그로 사용자 조정 가능 여부 구분. hints: 90일 이상 미수정 memory, top-3 consumer skills 등.

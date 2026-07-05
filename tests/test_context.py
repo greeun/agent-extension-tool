@@ -486,9 +486,33 @@ def test_collect_context_memory_and_settings(tmp_path: Path, monkeypatch):
     # Seeded memory has non-trivial content → positive token estimate.
     assert all(s.estimated_tokens > 0 for s in memory_srcs)
 
-    # git-status fixed source carries the stubbed status text.
+    # git-status source carries the stubbed status text, and its token count
+    # is estimated from that text (not a fixed constant).
     git_srcs = by_cat["git-status"]
     assert "M file.py" in (git_srcs[0].content or "")
+    assert git_srcs[0].estimated_tokens == axt.estimate_tokens(git_srcs[0].content)
+
+
+def test_collect_context_project_settings_from_project_tree(tmp_path: Path, monkeypatch):
+    """Project settings are read from <proj>/.claude/settings*.json — the paths
+    Claude Code actually loads — not from ~/.claude/projects/<key>/."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    proj = tmp_path / "proj"
+    (proj / ".claude").mkdir(parents=True)
+    (proj / ".claude" / "settings.json").write_text('{"permissions": {}}')
+    (proj / ".claude" / "settings.local.json").write_text('{"env": {}}')
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json",
+    )
+    settings = {s.name: s for s in sources if s.category == "settings"}
+    assert "settings.json (project)" in settings
+    assert "settings.local.json (project)" in settings
+    assert settings["settings.json (project)"].scope == "project"
+    assert settings["settings.json (project)"].path == str(proj / ".claude" / "settings.json")
 
 
 def test_encode_project_dir_name_matches_claude_code_rule():
@@ -674,7 +698,7 @@ def test_add_context_hints_hooks_and_git_and_top_skill():
     ]
     axt.add_context_hints(sources)
     assert sources[0].hint == "~200 tok estimated output"
-    assert sources[1].hint == "150 tok (fixed)"
+    assert sources[1].hint == "150 tok (live estimate)"
     # BigSkill is among the top-3 token consumers.
     assert "top context consumer" in sources[2].hint
     # Generic command hint fires above 100 tok, stays None below.

@@ -16,17 +16,31 @@ import axt
 def test_get_model_pricing_exact_match():
     p = axt.get_model_pricing("claude-opus-4-7")
     assert p is not None
-    assert p.input == 15.0
-    assert p.output == 75.0
-    assert p.cache_write == 18.75
-    assert p.cache_read == 1.5
+    assert p.input == 5.0
+    assert p.output == 25.0
+    assert p.cache_write == 6.25
+    assert p.cache_read == 0.5
 
 
 def test_get_model_pricing_prefix_match():
     """`claude-opus-4-7-something` should resolve via `claude-opus-4-7`."""
     p = axt.get_model_pricing("claude-opus-4-7-r1")
     assert p is not None
-    assert p.input == 15.0
+    assert p.input == 5.0
+
+
+def test_get_model_pricing_claude_5_family():
+    """Current-generation models must be priced — a missing row silently
+    zeroes their cost in every aggregate."""
+    fable = axt.get_model_pricing("claude-fable-5")
+    assert fable is not None
+    assert fable.input == 10.0 and fable.output == 50.0
+    assert fable.context_window == 1_000_000
+    sonnet = axt.get_model_pricing("claude-sonnet-5")
+    assert sonnet is not None
+    assert sonnet.input == 3.0 and sonnet.output == 15.0
+    # Dated ids resolve via prefix match.
+    assert axt.get_model_pricing("claude-haiku-4-5-20251001") is not None
 
 
 def test_get_model_pricing_unknown_returns_none():
@@ -48,12 +62,31 @@ def test_calculate_cost_claude_opus():
                        cache_creation_tokens=1_000_000, cache_read_tokens=1_000_000),
         "claude-opus-4-7",
     )
-    # 15 + 75 + 18.75 + 1.5
-    assert cost == pytest.approx(110.25)
+    # 5 + 25 + 6.25 + 0.5
+    assert cost == pytest.approx(36.75)
 
 
 def test_calculate_cost_unknown_model_is_zero():
     assert axt.calculate_cost(axt.TokenUsage(input_tokens=1_000_000, output_tokens=0), "x") == 0.0
+
+
+def test_find_unpriced_models_counts_by_model():
+    def entry(model):
+        return axt.UnifiedUsageEntry(
+            platform="claude", model=model,
+            timestamp="2026-07-01T00:00:00Z", session_id="s", project_path="/p",
+            input_tokens=1, output_tokens=1,
+            cache_write_tokens=0, cache_read_tokens=0)
+
+    entries = [entry("claude-opus-4-8"), entry("mystery-model"),
+               entry("mystery-model"), entry("<synthetic>"), entry("unknown")]
+    out = axt.find_unpriced_models(entries)
+    # Priced and placeholder models are excluded; unpriced real ids counted.
+    assert out == {"mystery-model": 2}
+
+
+def test_find_unpriced_models_empty_when_all_priced():
+    assert axt.find_unpriced_models([]) == {}
 
 
 def test_calculate_cost_zero_usage():

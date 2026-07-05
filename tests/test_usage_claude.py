@@ -472,5 +472,5 @@ def test_compute_blocks_cost_sums_per_entry_across_models():
     ]
     blocks = axt.compute_blocks(entries, "UTC")
     assert len(blocks) == 1  # both fall in the 10:00–15:00 window
-    # opus input 15.00 + haiku input 0.80
-    assert blocks[0].cost == pytest.approx(15.80)
+    # opus input 5.00 + haiku input 1.00
+    assert blocks[0].cost == pytest.approx(6.00)

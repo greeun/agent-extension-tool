@@ -5699,8 +5699,8 @@ def test_usage_gauge_lines_no_rate_limits(tmp_path, monkeypatch):
     assert "Rate limits: snapshot missing or stale" in flat
 
 
-def test_render_usage_gauges_with_snapshot(tmp_path, monkeypatch):
-    """_render_usage_gauges draws Context + 5h + 7d rows and returns the count."""
+def test_usage_gauge_lines_with_snapshot(tmp_path, monkeypatch):
+    """_usage_gauge_lines builds Context + 5h + 7d rows."""
     import json
     snap = tmp_path / "snap.json"
     snap.write_text(json.dumps({
@@ -5718,25 +5718,33 @@ def test_render_usage_gauges_with_snapshot(tmp_path, monkeypatch):
             avg_turns_per_session=1, avg_sessions_per_day=1,
             per_session_cost=0.0, monthly_cost=0.0),
     )
-    scr = _make_stdscr(rows=30, cols=140)
-    rows = axt._render_usage_gauges(scr, state, 0, 140)
-    assert rows == 3  # context + 5h + 7d
-    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    lines = axt._usage_gauge_lines(state, 140)
+    assert len(lines) == 3  # context + 5h + 7d
+    flat = " ".join(t for (_x, t, _w, _a) in lines)
     assert "Context:" in flat
     assert "5h:" in flat
     assert "7d:" in flat
 
 
-def test_render_usage_gauges_no_snapshot(tmp_path, monkeypatch):
-    monkeypatch.setattr("axt.PATHS", axt.Paths(usage_snapshot=tmp_path / "none.json"))
+def test_usage_summary_flags_unpriced_models(tmp_path, monkeypatch):
+    """Entries from models without a pricing.json row render a warning line
+    instead of silently contributing $0 to the totals."""
+    now = __import__("datetime").datetime.now(
+        __import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    entry = axt.UnifiedUsageEntry(
+        platform="claude", model="mystery-model-9",
+        timestamp=now, session_id="s1", project_path="/p",
+        input_tokens=1000, output_tokens=100,
+        cache_write_tokens=0, cache_read_tokens=0)
     state = axt.TuiState()
     state.context_analysis = _make_empty_context_analysis()
-    scr = _make_stdscr(rows=30, cols=140)
-    rows = axt._render_usage_gauges(scr, state, 0, 140)
-    # Context window size is 200k > 0 → 1 row, then snapshot-missing → 1 more.
-    assert rows == 2
-    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "snapshot missing or stale" in flat
+    config = axt.AxtConfig()
+    lines = axt._usage_summary_lines(state, config, [entry], 140)
+    flat = " ".join(t for (_x, t, _w, _a) in lines)
+    assert "unpriced models" in flat
+    assert "mystery-model-9" in flat
+    # The API-equivalent caption always renders.
+    assert "not your subscription bill" in flat
 
 
 # ─── _daily_costs ─────────────────────────────────────────────────────────────

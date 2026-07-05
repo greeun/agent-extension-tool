@@ -1324,7 +1324,7 @@ def _kick_usage_reload(state: TuiState) -> None:
                 claude_projects_dir=PATHS.projects,
                 since=month_start,
             )
-            # Prime the context cache too — `_render_usage_gauges` reads
+            # Prime the context cache too — `_usage_gauge_lines` reads
             # `state.context_analysis` and we don't want a synchronous
             # filesystem scan blocking the first paint. Once `entries` are
             # loaded we know the live model, so also refresh a cache that was
@@ -1375,10 +1375,12 @@ def _gauge_attr(pct: float) -> int:
 
 def _usage_gauge_lines(state: TuiState, w: int) -> list[tuple[int, str, int, int]]:
     """Build the gauge rows (Context window, 5h, 7d) as line tuples
-    without drawing. Mirror of `_render_usage_gauges`.
+    without drawing.
 
     Returns ``[(x, text, max_w, attr), ...]``. Empty list if there's
-    nothing to show.
+    nothing to show. Reads ``state.context_analysis`` as-is — the usage
+    loader primes it in the background so the first paint never blocks
+    on a synchronous filesystem scan.
     """
     analysis = state.context_analysis
     rl = read_rate_limits(PATHS.usage_snapshot)
@@ -1415,57 +1417,6 @@ def _usage_gauge_lines(state: TuiState, w: int) -> list[tuple[int, str, int, int
             f"{'7d:':<{label_w}}{bar} {rl.seven_day:3d}%    reset in {_fmt_quota_eta(rl.seven_day_reset_at)}",
             w - 4), w - 4, _gauge_attr(pct)))
     return out
-
-
-def _render_usage_gauges(stdscr, state: TuiState, y: int, w: int) -> int:
-    """Three gauge bars on the usage tab: context window, 5h, 7d.
-
-    Returns the number of rows drawn so the caller can advance ``row``.
-    """
-    _ensure_context_loaded(state)
-    analysis = state.context_analysis
-    rl = read_rate_limits(PATHS.usage_snapshot)
-
-    bar_w = min(30, max(10, w - 40))
-    label_w = 10
-    rows_used = 0
-
-    if analysis is not None and analysis.context_window_size > 0:
-        pct = analysis.used_percent
-        filled = round(min(pct, 100) / 100 * bar_w)
-        bar = render_bar(filled, bar_w)
-        used_tok = format_tokens(analysis.total_tokens)
-        win_tok = format_tokens(analysis.context_window_size)
-        safe_addnstr(stdscr, y + rows_used, 2, fit_cells(
-            f"{'Context:':<{label_w}}{bar} {pct:5.1f}%  {used_tok}/{win_tok} tokens",
-            w - 4), w - 4, _gauge_attr(pct))
-        rows_used += 1
-
-    if rl is None:
-        safe_addnstr(stdscr, y + rows_used, 2,
-                     "Rate limits: snapshot missing or stale",
-                     w - 4, CP_DIM())
-        rows_used += 1
-        return rows_used
-
-    if rl.five_hour is not None:
-        pct = float(rl.five_hour)
-        filled = round(pct / 100 * bar_w)
-        bar = render_bar(filled, bar_w)
-        safe_addnstr(stdscr, y + rows_used, 2, fit_cells(
-            f"{'5h:':<{label_w}}{bar} {rl.five_hour:3d}%    reset in {_fmt_quota_eta(rl.five_hour_reset_at)}",
-            w - 4), w - 4, _gauge_attr(pct))
-        rows_used += 1
-    if rl.seven_day is not None:
-        pct = float(rl.seven_day)
-        filled = round(pct / 100 * bar_w)
-        bar = render_bar(filled, bar_w)
-        safe_addnstr(stdscr, y + rows_used, 2, fit_cells(
-            f"{'7d:':<{label_w}}{bar} {rl.seven_day:3d}%    reset in {_fmt_quota_eta(rl.seven_day_reset_at)}",
-            w - 4), w - 4, _gauge_attr(pct))
-        rows_used += 1
-
-    return rows_used
 
 
 def _usage_period_card(entries: list[UnifiedUsageEntry], label: str) -> list[str]:
@@ -1505,6 +1456,16 @@ def _usage_summary_lines(
         else "—"
     )
     lines.append((2, fit_cells(f"Plan: {plan_label}", w - 4), w - 4, CP_TITLE()))
+    lines.append((2, fit_cells(
+        "Costs are API-rate estimates, not your subscription bill.",
+        w - 4), w - 4, CP_DIM()))
+    unpriced = find_unpriced_models(entries)
+    if unpriced:
+        n = sum(unpriced.values())
+        names = ", ".join(sorted(unpriced))
+        lines.append((2, fit_cells(
+            f"⚠ {n} entries from unpriced models ({names}) — cost shown excludes them.",
+            w - 4), w - 4, CP_ERR()))
 
     if config.monthly_budget > 0:
         bar_w = min(40, max(10, w - 30))
@@ -1745,19 +1706,6 @@ def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
         safe_addnstr(stdscr, y, 2, "Rate limits: snapshot missing or stale", w - 4, CP_DIM())
         return 1
 
-    def fmt_eta(reset_at: Optional[datetime]) -> str:
-        if not reset_at:
-            return "—"
-        delta = reset_at - datetime.now(timezone.utc)
-        secs = int(delta.total_seconds())
-        if secs <= 0:
-            return "now"
-        if secs < 3600:
-            return f"{secs // 60}m"
-        if secs < 86400:
-            return f"{secs // 3600}h{(secs % 3600) // 60}m"
-        return f"{secs // 86400}d"
-
     def quota_attr(pct: int) -> int:
         return CP_ERR() if pct >= 90 else CP_OK() if pct < 60 else CP_INFO()
 
@@ -1766,11 +1714,11 @@ def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
     segments: list[tuple[str, int]] = []
     if rl.five_hour is not None:
         bar = render_bar(round((rl.five_hour / 100) * bar_w), bar_w)
-        segments.append((f"5h {bar} {rl.five_hour:3d}% ({fmt_eta(rl.five_hour_reset_at)})",
+        segments.append((f"5h {bar} {rl.five_hour:3d}% ({_fmt_quota_eta(rl.five_hour_reset_at)})",
                          quota_attr(rl.five_hour)))
     if rl.seven_day is not None:
         bar = render_bar(round((rl.seven_day / 100) * bar_w), bar_w)
-        segments.append((f"7d {bar} {rl.seven_day:3d}% ({fmt_eta(rl.seven_day_reset_at)})",
+        segments.append((f"7d {bar} {rl.seven_day:3d}% ({_fmt_quota_eta(rl.seven_day_reset_at)})",
                          quota_attr(rl.seven_day)))
 
     cursor = 2
@@ -1935,7 +1883,8 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
     safe_addnstr(stdscr, y0 + h - 2, 0, fit_cells(
         f"  cost: cache_write=${ci.cache_write_cost:.3f}  "
         f"read/turn=${ci.cache_read_cost_per_turn:.3f}  "
-        f"per_session(${ci.per_session_cost:.2f})  monthly(${ci.monthly_cost:.2f})",
+        f"per_session(${ci.per_session_cost:.2f})  monthly(${ci.monthly_cost:.2f})  "
+        f"[assumes {ci.avg_turns_per_session} turns × {ci.avg_sessions_per_day} sessions/day]",
         w - 1), w - 1, CP_DIM())
 
 
@@ -1979,15 +1928,21 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
         state.context_analysis = None
         return "Refreshed"
     elif key == ord("e") and state.context_analysis and state.stdscr_callbacks and 0 <= state.context_selected < n:
-        cat = rows[state.context_selected].category
-        first = next((s for s in state.context_analysis.sources if s.category == cat and s.path), None)
+        # Match the detail panel's (category, scope) filter — a "project" row
+        # must never open a global file (and vice versa).
+        row = rows[state.context_selected]
+        first = next((s for s in state.context_analysis.sources
+                      if s.category == row.category
+                      and getattr(s, "scope", "global") == row.scope and s.path), None)
         if first is None:
             return "No file to edit in this category"
         ok = open_in_editor(state.stdscr_callbacks["stdscr"], first.path)
         return f"Opened {first.path}" if ok else "Editor failed"
     elif is_enter(key) and state.context_analysis and state.stdscr_callbacks and 0 <= state.context_selected < n:
-        cat = rows[state.context_selected].category
-        srcs = [s for s in state.context_analysis.sources if s.category == cat]
+        row = rows[state.context_selected]
+        srcs = [s for s in state.context_analysis.sources
+                if s.category == row.category
+                and getattr(s, "scope", "global") == row.scope]
         lines = [f"{rows[state.context_selected].label} — {rows[state.context_selected].items} item(s)", ""]
         for s in srcs[:50]:
             hint = f"  ({s.hint})" if s.hint else ""
@@ -2022,15 +1977,19 @@ def load_project_context(cwd: os.PathLike[str] | str) -> list[ProjectContextItem
     project_settings_dir_name = _encode_project_dir_name(cwd)
     project_settings_dir = claude_dir / "projects" / project_settings_dir_name
 
+    # Project settings live in the project tree (<cwd>/.claude/settings*.json)
+    # — the same paths collect_context_sources reads; ~/.claude/projects/<key>/
+    # only holds transcripts and memory.
     candidates = [
         ("CLAUDE.md (global)", "global", home / "CLAUDE.md"),
         ("CLAUDE.md (user)", "user", claude_dir / "CLAUDE.md"),
         ("CLAUDE.md (project)", "project", Path(cwd) / "CLAUDE.md"),
         ("CLAUDE.md (project/.claude)", "project", Path(cwd) / ".claude" / "CLAUDE.md"),
+        ("CLAUDE.local.md (local)", "local", Path(cwd) / "CLAUDE.local.md"),
         ("settings.json (global)", "global", claude_dir / "settings.json"),
         ("settings.local.json (global)", "global", claude_dir / "settings.local.json"),
-        ("settings.json (project)", "project", project_settings_dir / "settings.json"),
-        ("settings.local.json (project)", "project", project_settings_dir / "settings.local.json"),
+        ("settings.json (project)", "project", Path(cwd) / ".claude" / "settings.json"),
+        ("settings.local.json (project)", "project", Path(cwd) / ".claude" / "settings.local.json"),
     ]
     items: list[ProjectContextItem] = []
     for name, source, path in candidates:

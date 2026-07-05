@@ -3453,6 +3453,20 @@ def calculate_cost(usage: TokenUsage, model_id: str) -> float:
     )
 
 
+def find_unpriced_models(entries: Sequence[Any]) -> dict[str, int]:
+    """Model id → entry count for usage entries whose model has no pricing.json
+    row. Such entries contribute $0 to every cost aggregate, so callers should
+    surface the gap instead of presenting a silently understated total."""
+    out: dict[str, int] = {}
+    for e in entries:
+        model = getattr(e, "model", "")
+        if not _is_real_model(model):
+            continue
+        if get_model_pricing(model) is None:
+            out[model] = out.get(model, 0) + 1
+    return out
+
+
 def convert_currency(amount: float, from_ccy: str, to_ccy: str, exchange_rate: float) -> float:
     """Convert between USD and KRW; passthrough otherwise."""
     if from_ccy == to_ccy:
@@ -4059,14 +4073,16 @@ def collect_context_sources(
         if content is not None:
             sources.append(_make_src(name, "claude-md", str(p), content, actionable=True, scope=scope))
 
-    # 3. settings (global + per-project encoded path)
+    # 3. settings. Project settings live in the project tree
+    # (<proj>/.claude/settings*.json) — that's what Claude Code actually
+    # reads; ~/.claude/projects/<key>/ only holds transcripts and memory.
     project_settings_key = _encode_project_dir_name(proj)
     project_settings_dir = home / ".claude" / "projects" / project_settings_key
     candidates_settings = [
         ("settings.json (global)", home / ".claude" / "settings.json", "global"),
         ("settings.local.json (global)", home / ".claude" / "settings.local.json", "global"),
-        ("settings.json (project)", project_settings_dir / "settings.json", "project"),
-        ("settings.local.json (project)", project_settings_dir / "settings.local.json", "project"),
+        ("settings.json (project)", proj / ".claude" / "settings.json", "project"),
+        ("settings.local.json (project)", proj / ".claude" / "settings.local.json", "project"),
     ]
     for name, p, scope in candidates_settings:
         content = _safe_read_text(p)
@@ -4179,10 +4195,15 @@ def collect_context_sources(
         scope_fn=lambda a: _scope_of_source(a.source),
     )
 
-    # 11. git-status (fixed 150 tokens)
+    # 11. git-status — estimated from the actual `git status` output so the
+    # token figure matches the preview content (0 when there's no repo).
     git = get_git_status(proj)
-    sources.append(_make_fixed("Git Status", "git-status", 150,
-                               git or "No git repository or git not available.", scope="project"))
+    if git:
+        sources.append(_make_src("Git Status", "git-status", "", git,
+                                 actionable=False, scope="project"))
+    else:
+        sources.append(_make_fixed("Git Status", "git-status", 0,
+                                   "No git repository or git not available.", scope="project"))
 
     # 12. user-context (fixed)
     sources.append(_make_fixed(
@@ -4209,8 +4230,10 @@ def add_context_hints(sources: list[ContextSource]) -> None:
         cat = s.category
         if cat == "system-prompt":
             s.hint = f"{s.estimated_tokens} tok (fixed, cannot reduce)"
-        elif cat in ("user-context", "git-status"):
+        elif cat == "user-context":
             s.hint = f"{s.estimated_tokens} tok (fixed)"
+        elif cat == "git-status":
+            s.hint = f"{s.estimated_tokens} tok (live estimate)"
         elif cat == "claude-md":
             if s.estimated_tokens > 500:
                 s.hint = f"{s.estimated_tokens} tok — review for unnecessary sections"
