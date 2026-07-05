@@ -45,6 +45,7 @@ from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
     _active_plugins,
     _add_to_index,
     _date_in_tz,
+    _days_ago_in_tz,
     _encode_project_dir_name,
     _iso_now,
     _project_name_from_path,
@@ -1318,8 +1319,9 @@ def _kick_usage_reload(state: TuiState) -> None:
     def _worker() -> None:
         try:
             config = load_config(AXT_CONFIG_PATH)
-            now = datetime.now(timezone.utc)
-            month_start = f"{now.year}-{now.month:02d}-01"
+            # "This month" in the user's configured timezone, not UTC — keeps
+            # the load window aligned with the tz used by the period cards.
+            month_start = _today_in_tz(config.timezone)[:8] + "01"
             entries = load_unified_usage(
                 claude_projects_dir=PATHS.projects,
                 since=month_start,
@@ -1491,7 +1493,9 @@ def _usage_summary_lines(
 
     tz = config.timezone
     today = _today_in_tz(tz)
-    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    # Same timezone as the per-entry dates below — a UTC cutoff here shifts
+    # the week boundary by a day for tz-ahead users (e.g. KST).
+    week_ago = _days_ago_in_tz(7, tz)
     today_entries = [e for e in entries if _date_in_tz(e.timestamp, tz) == today]
     week_entries = [e for e in entries if _date_in_tz(e.timestamp, tz) >= week_ago]
     month_entries = entries

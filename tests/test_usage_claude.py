@@ -151,6 +151,22 @@ def test_today_in_tz_invalid_timezone_falls_back_to_utc():
     assert axt._today_in_tz("Not/AZone") == expected
 
 
+def test_days_ago_in_tz_matches_today_in_tz_zone():
+    """The cutoff helper uses the same zone as `_today_in_tz`, so period
+    filters compare like-for-like dates (Week boundary fix)."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    expected = (datetime.now(ZoneInfo("Asia/Seoul")) - timedelta(days=7)).strftime("%Y-%m-%d")
+    assert axt._days_ago_in_tz(7, "Asia/Seoul") == expected
+    assert axt._days_ago_in_tz(0, "Asia/Seoul") == axt._today_in_tz("Asia/Seoul")
+
+
+def test_days_ago_in_tz_invalid_timezone_falls_back_to_utc():
+    from datetime import datetime, timedelta, timezone
+    expected = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
+    assert axt._days_ago_in_tz(3, "Not/AZone") == expected
+
+
 # ─── Aggregation ─────────────────────────────────────────────────────────────
 
 
@@ -194,28 +210,55 @@ def test_aggregate_by_session():
     assert sessions["s1"].last_timestamp == "2026-04-29T02:00:00Z"
 
 
-def test_compute_blocks_5h_utc_aligned():
-    # 12:30 UTC falls in the 10:00–15:00 window.
+def test_compute_blocks_anchored_to_first_entry_hour():
+    # Blocks anchor to actual activity: 12:30 opens a block at 12:00 (floored
+    # to the hour) running 5h — not a UTC-wall-clock 10:00–15:00 window.
     e = _entry("s", "2026-04-29T12:30:00Z", input=100)
     blocks = axt.compute_blocks([e], "UTC")
     assert len(blocks) == 1
     b = blocks[0]
-    assert b.start_time.startswith("2026-04-29T10:00:00")
-    assert b.end_time.startswith("2026-04-29T15:00:00")
+    assert b.start_time.startswith("2026-04-29T12:00:00")
+    assert b.end_time.startswith("2026-04-29T17:00:00")
     assert b.total_tokens == 100
     assert b.duration_hours == 5
 
 
 def test_compute_blocks_multiple_windows():
     entries = [
-        _entry("s", "2026-04-29T01:00:00Z", input=1),  # 00:00–05:00
-        _entry("s", "2026-04-29T06:00:00Z", input=2),  # 05:00–10:00
-        _entry("s", "2026-04-29T11:00:00Z", input=3),  # 10:00–15:00
+        _entry("s", "2026-04-29T01:00:00Z", input=1),  # opens 01:00–06:00
+        _entry("s", "2026-04-29T06:00:00Z", input=2),  # past end → 06:00–11:00
+        _entry("s", "2026-04-29T11:00:00Z", input=3),  # past end → 11:00–16:00
     ]
     blocks = axt.compute_blocks(entries, "UTC")
     assert len(blocks) == 3
     # Sorted by start time.
     assert blocks[0].start_time < blocks[1].start_time < blocks[2].start_time
+
+
+def test_compute_blocks_activity_spanning_old_utc_boundary_stays_in_one_block():
+    """Entries 30 minutes apart belong to one block even when a UTC-aligned
+    grid (00/05/10/15/20h) would have split them at 15:00."""
+    entries = [
+        _entry("s", "2026-04-29T14:40:00Z", input=1),
+        _entry("s", "2026-04-29T15:10:00Z", input=2),
+    ]
+    blocks = axt.compute_blocks(entries, "UTC")
+    assert len(blocks) == 1
+    assert blocks[0].start_time.startswith("2026-04-29T14:00:00")
+    assert blocks[0].total_tokens == 3
+
+
+def test_compute_blocks_new_block_anchors_to_its_own_hour():
+    """An entry past the previous block's end opens a block floored to its
+    own hour — not chained to the previous block's grid."""
+    entries = [
+        _entry("s", "2026-04-29T01:30:00Z", input=1),  # 01:00–06:00
+        _entry("s", "2026-04-29T07:45:00Z", input=2),  # → 07:00–12:00
+    ]
+    blocks = axt.compute_blocks(entries, "UTC")
+    assert len(blocks) == 2
+    assert blocks[1].start_time.startswith("2026-04-29T07:00:00")
+    assert blocks[1].end_time.startswith("2026-04-29T12:00:00")
 
 
 def test_compute_blocks_empty_input():
@@ -425,10 +468,7 @@ def test_compute_blocks_active_block_has_burn_rate():
     """An entry inside the current 5-hour window yields an active block with a
     positive burn rate (lines 2810-2811)."""
     from datetime import datetime, timedelta, timezone
-    # Anchor the entry inside the CURRENT 5h UTC block (blocks align to
-    # 00/05/10/15/20:00 UTC). `now - 10min` is flaky for 10 minutes after each
-    # boundary, when that timestamp falls into the *previous*, now-inactive
-    # window.
+    # A recent entry opens a block at its hour that is still running now.
     now = datetime.now(timezone.utc)
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     block_idx = int((now - midnight).total_seconds() // (5 * 3600))
@@ -471,6 +511,6 @@ def test_compute_blocks_cost_sums_per_entry_across_models():
         _entry("s", "2026-04-29T12:10:00Z", model="claude-haiku-4-5", input=1_000_000),
     ]
     blocks = axt.compute_blocks(entries, "UTC")
-    assert len(blocks) == 1  # both fall in the 10:00–15:00 window
+    assert len(blocks) == 1  # 10 minutes apart → same activity block
     # opus input 5.00 + haiku input 1.00
     assert blocks[0].cost == pytest.approx(6.00)

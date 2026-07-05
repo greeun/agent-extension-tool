@@ -35,6 +35,7 @@ from axt.core import *  # noqa: F401,F403
 from axt.core import (  # noqa: F401
     _active_plugins,
     _date_in_tz,
+    _days_ago_in_tz,
     _today_in_tz,
     _unified_to_claude,
     HOME,
@@ -362,8 +363,8 @@ def cli_hook_disable(args) -> int:
 
 def cli_plan_overview(args) -> int:
     config = load_config(AXT_CONFIG_PATH)
-    now = datetime.now()
-    month_start = f"{now.year}-{now.month:02d}-01"
+    # "This month" in the user's configured timezone (matches the TUI).
+    month_start = _today_in_tz(config.timezone)[:8] + "01"
     entries = load_unified_usage(
         claude_projects_dir=PATHS.projects,
         since=month_start,
@@ -384,7 +385,7 @@ def cli_plan_overview(args) -> int:
             ),
             e.model,
         )
-    elapsed, total_days = get_days_in_billing_period(plan_cfg.billing_cycle_start, now.replace(tzinfo=timezone.utc))
+    elapsed, total_days = get_days_in_billing_period(plan_cfg.billing_cycle_start, datetime.now(timezone.utc))
     usage = compute_plan_usage(plan_cfg, cost, elapsed, total_days)
     suffix = " · auto-detected" if detected else ""
     label = f"Claude ({plan_cfg.plan} — ${plan_cfg.monthly_cost}/mo{suffix})"
@@ -704,10 +705,10 @@ def cli_usage_today(args) -> int:
 def cli_usage_week(args) -> int:
     config = load_config(AXT_CONFIG_PATH)
     tz = args.timezone or config.timezone
-    now = datetime.now(timezone.utc)
     until = _today_in_tz(tz)
-    week_ago = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
-    since = week_ago.strftime("%Y-%m-%d")
+    # Same timezone as `until` and the per-day aggregation — a UTC cutoff
+    # shifts the boundary by a day for tz-ahead users.
+    since = _days_ago_in_tz(7, tz)
     entries = _load_usage_entries(args, since=since, until=until)
     daily = aggregate_daily(entries, tz)
     if args.json:

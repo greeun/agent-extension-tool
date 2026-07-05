@@ -3123,6 +3123,17 @@ def _today_in_tz(tz: str) -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _days_ago_in_tz(days: int, tz: str) -> str:
+    """The date (YYYY-MM-DD) `days` days before now in `tz` — the counterpart
+    of `_today_in_tz` so period cutoffs compare against `_date_in_tz` dates
+    in the same timezone. Falls back to UTC on errors."""
+    try:
+        from zoneinfo import ZoneInfo
+        return (datetime.now(ZoneInfo(tz)) - timedelta(days=days)).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001
+        return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
 def aggregate_daily(entries: list[ClaudeUsageEntry], timezone_name: str) -> list[DailyUsage]:
     buckets: dict[str, dict[str, Any]] = {}
     for e in entries:
@@ -3206,29 +3217,42 @@ BLOCK_MS = BLOCK_HOURS * 60 * 60 * 1000
 
 
 def compute_blocks(entries: list[ClaudeUsageEntry], timezone_name: str) -> list[BlockUsage]:
-    """5-hour UTC-aligned billing blocks. `timezone_name` is accepted for
-    API parity but not used (windows are always UTC-aligned)."""
+    """5-hour billing blocks anchored to actual activity.
+
+    Anthropic's 5h window opens with the first request after the previous
+    window lapses — it is NOT aligned to wall-clock boundaries. Mirror that
+    (ccusage-style): entries sort by timestamp; the first one opens a block
+    at its timestamp floored to the hour (UTC) running ``BLOCK_MS``; an entry
+    at or past the block's end opens the next block anchored the same way.
+    `timezone_name` is accepted for API parity but unused (anchoring is UTC).
+    """
     del timezone_name  # noqa: F841 — TS signature parity only
 
-    if not entries:
-        return []
-
-    window_map: dict[int, list[ClaudeUsageEntry]] = {}
+    stamped: list[tuple[int, ClaudeUsageEntry]] = []
     for e in entries:
         ts_ms = _ts_ms(e.timestamp)
-        if ts_ms is None:
-            continue
-        dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
-        day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_start_ms = int(day_start.timestamp() * 1000)
-        ms_since_midnight = ts_ms - day_start_ms
-        window_index = ms_since_midnight // BLOCK_MS
-        window_start = day_start_ms + window_index * BLOCK_MS
-        window_map.setdefault(window_start, []).append(e)
+        if ts_ms is not None:
+            stamped.append((ts_ms, e))
+    if not stamped:
+        return []
+    stamped.sort(key=lambda te: te[0])
+
+    hour_ms = 60 * 60 * 1000
+    groups: list[tuple[int, list[ClaudeUsageEntry]]] = []
+    block_start = -1
+    block_entries: list[ClaudeUsageEntry] = []
+    for ts_ms, e in stamped:
+        if block_start < 0 or ts_ms >= block_start + BLOCK_MS:
+            if block_entries:
+                groups.append((block_start, block_entries))
+            block_start = ts_ms - (ts_ms % hour_ms)  # floor to the hour
+            block_entries = []
+        block_entries.append(e)
+    groups.append((block_start, block_entries))
 
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     blocks: list[BlockUsage] = []
-    for window_start, window_entries in window_map.items():
+    for window_start, window_entries in groups:
         window_end = window_start + BLOCK_MS
         start_iso = datetime.fromtimestamp(window_start / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
         end_iso = datetime.fromtimestamp(window_end / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
@@ -4135,15 +4159,25 @@ def collect_context_sources(
     except OSError:
         pass
 
-    # 6. mcp-tools
-    _collect_listed(
-        sources,
-        lambda: list_mcp_servers(list_installed_plugins(installed_plugins_path)),
-        "mcp-tools",
-        text_fn=lambda s: f"- {s.name} ({s.plugin_id})",
-        path_fn=lambda s: "",
-        actionable=False,
-    )
+    # 6. mcp-tools — every locally registered server (plugin manifests, user
+    # ~/.claude.json, project entry, <proj>/.mcp.json, claude.ai connectors,
+    # built-ins), mirroring the Extensions MCP sub-tab. Disabled servers are
+    # skipped — they never load into a session.
+    try:
+        for srv in collect_mcp_servers(
+            list_installed_plugins(installed_plugins_path),
+            claude_config_path=home / ".claude.json",
+            project_dir=proj,
+        ):
+            if srv.disabled:
+                continue
+            origin = srv.plugin_id or srv.scope
+            sources.append(_make_src(
+                srv.name, "mcp-tools", "", f"- {srv.name} ({origin})",
+                actionable=False, scope=_scope_of_source(srv.scope),
+            ))
+    except OSError:
+        pass
 
     # 7. plugins
     try:

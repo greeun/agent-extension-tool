@@ -303,9 +303,8 @@ Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) 
 
 ### 4.2 5시간 빌링 블록 (Claude)
 - 윈도우 길이: 18,000,000ms (5h)
-- UTC 정렬: 00:00, 05:00, 10:00, 15:00, 20:00 UTC
-- 계산: `windowIndex = floor(msSinceMidnight / 18M)`
-- `isActive = now < windowEnd`
+- **활동 기준 anchoring** (ccusage 방식): 정렬된 엔트리 중 첫 엔트리의 시각을 시간 단위로 내림(floor to hour, UTC)한 지점에서 블록 시작. 블록 종료(시작+5h) 이후 첫 엔트리가 자기 시각 기준으로 새 블록을 엶 — UTC 벽시계(00/05/10…) 정렬 아님 (실제 Anthropic 5h 윈도우는 첫 요청 시각 기준)
+- `isActive = blockStart <= now < blockEnd`
 - burn rate: 활성 블록의 tokens / elapsed_min
 
 ### 4.3 모델별 가격 (per 1M tokens, USD) — `pricing.json`
@@ -327,7 +326,7 @@ Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) 
 3. **settings** — 4곳: global `~/.claude/settings*.json` + project `<proj>/.claude/settings*.json` (Claude Code가 실제로 읽는 경로)
 4. **memory** — `~/.claude/projects/{key}/memory/*.md` (200줄/25KB 제한)
 5. **skills** — `SKILL.md` frontmatter name+description
-6. **mcp-tools** — 활성 플러그인의 MCP 서버 (deferred 추정)
+6. **mcp-tools** — 모든 등록 소스의 MCP 서버 (plugin manifest + user `~/.claude.json` + project entry + `<proj>/.mcp.json` + claude.ai + built-in; disabled 서버 제외, deferred 추정)
 7. **plugins** — settings의 enabledPlugins (메타데이터)
 8. **hooks** — SessionStart / UserPromptSubmit (200 tok/hook fixed)
 9. **commands** — `.claude/commands/*.md`
@@ -372,7 +371,7 @@ actionable 플래그로 사용자 조정 가능 여부 구분. hints: 90일 이�
 2. **외부 명령**: git clone/pull/fetch/rev-parse, tar xzf, sh -c (hook preview), claude --version, git status — `subprocess.run` 사용. 실패 시 stderr 캡처.
 3. **JSONL**: 큰 파일은 라인 단위 lazy read. mtime cache 필수.
 4. **YAML frontmatter 파서**: robust 패턴으로 직접 구현. PyYAML 사용 안 함 (의존성 제로 원칙).
-5. **timezone**: usage 집계는 사용자 timezone option, Claude 5h 블록은 UTC.
+5. **timezone**: usage 집계와 기간 경계(Today/Week/Month 컷오프, 월 로드 시작일)는 사용자 timezone option, Claude 5h 블록 anchoring은 UTC.
 6. **HTTP (marketplace tarball)**: stdlib `urllib.request` + `tarfile` 사용.
 7. **curses CJK width**: `unicodedata.east_asian_width()`로 사전 계산, `addnstr`에 wide 셀 폭 명시.
 8. **profile lookup**: `~/.claude/projects/` 폴더명 인코딩(`/` 및 `.` → `-`) decode는 brute-force matching.

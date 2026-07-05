@@ -592,6 +592,46 @@ def test_collect_context_with_plugin_skills_mcp_commands_agents(tmp_path: Path, 
     assert any(s.name == "helper" for s in cats.get("agents", []))
 
 
+def test_collect_context_mcp_covers_all_registration_sources(tmp_path: Path, monkeypatch):
+    """mcp-tools collects user (~/.claude.json) and project (.mcp.json) servers
+    — not just plugin manifests — with registration scope mapped to context
+    scope; disabled servers never load into a session and are skipped."""
+    import json
+
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+
+    (home / ".claude.json").write_text(json.dumps({
+        "mcpServers": {"user-srv": {"command": "run-user"}},
+        "projects": {str(proj): {
+            "mcpServers": {"proj-srv": {"command": "run-proj"}},
+            "disabledMcpServers": ["dead-srv"],
+        }},
+    }))
+    (proj / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "file-srv": {"command": "run-file"},
+            "dead-srv": {"command": "run-dead"},
+        },
+    }))
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json",
+    )
+    mcp = {s.name: s for s in sources if s.category == "mcp-tools"}
+    assert "user-srv" in mcp and mcp["user-srv"].scope == "global"
+    assert "proj-srv" in mcp and mcp["proj-srv"].scope == "project"
+    assert "file-srv" in mcp and mcp["file-srv"].scope == "project"
+    # Disabled for this project → not part of the session context.
+    assert "dead-srv" not in mcp
+    # Built-ins are opt-in and not enabled here → also absent.
+    assert "computer-use" not in mcp
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need elevation")
 def test_collect_context_dedups_symlinked_skill(tmp_path: Path, monkeypatch):
     """A skill reachable twice — the real dir in ~/.agents/skills plus a
