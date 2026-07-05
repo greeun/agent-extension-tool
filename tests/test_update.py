@@ -178,6 +178,36 @@ def test_plugin_check_flags_version_bump(tmp_path, monkeypatch):
     assert s.current == "0.1.0" and s.available == "0.2.0" and s.updatable is True
 
 
+def test_plugin_check_missing_source_not_updatable(tmp_path, monkeypatch):
+    """A plugin whose source vanished from the marketplace (upstream
+    restructured into a non-plugin repo) must NOT show as updatable off the
+    marketplace's git movement — _plugin_apply would fail the same way. Surface
+    the source error instead of a false 'update available'. (lazyweb regression)"""
+    mk_loc = tmp_path / "marketplaces" / "mk"   # cloned tree with NO plugin.json anywhere
+    mk_loc.mkdir(parents=True)
+    (mk_loc / "SKILL.md").write_text("now a skill pack, no plugin here")
+    km = tmp_path / "known_marketplaces.json"
+    km.write_text(json.dumps({"mk": {
+        "source": {"source": "github", "repo": "o/r"},
+        "installLocation": str(mk_loc), "lastUpdated": "2026-01-01T00:00:00.000Z",
+    }}))
+    ip = tmp_path / "installed_plugins.json"
+    ip.write_text(json.dumps({"version": 2, "plugins": {"foo@mk": [{
+        "scope": "user", "installPath": "x", "version": "0.1.1",
+        "installedAt": "2026-01-01T00:00:00.000Z", "lastUpdated": "2026-01-01T00:00:00.000Z",
+        "gitCommitSha": "a" * 40,
+    }]}}))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(known_marketplaces=km, installed_plugins=ip))
+    # Marketplace git IS behind upstream (updatable), which used to leak into
+    # the plugin row as a false "update available".
+    monkeypatch.setattr("axt.update.get_marketplace_version",
+                        lambda p, n: axt.core.VersionInfo(current="aaaa", remote="bbbb", updatable=True))
+    s = [x for x in axt.update.check_all_updates(types=["plugin"]) if x.name == "foo@mk"][0]
+    assert s.updatable is False
+    assert s.error == "plugin source not found in marketplace"
+    assert s.available == "?"                # never the marketplace sha
+
+
 def _git_init(d: Path):
     d.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q"], cwd=d, check=True)
@@ -417,3 +447,66 @@ def test_git_updater_still_updates_dedicated_repo(tmp_path, monkeypatch):
                         lambda **k: [SkillInfo(name="bar", path=str(repo), is_symlink=False, source="user")])
     st = {x.name: x for x in axt.update.check_all_updates(types=["skill"])}["bar"]
     assert st.tier == 1                            # dedicated repo below config dir → updatable
+
+
+def test_check_and_apply_path_update_roundtrip(tmp_path):
+    """check_path_update/apply_path_update address an item by storage path
+    (the Vault tab's entry point) — no registry lookup, symlinks resolved."""
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=remote, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "c1"], cwd=remote, check=True)
+    clone = tmp_path / "vault" / "skills" / "myskill"
+    clone.parent.mkdir(parents=True)
+    subprocess.run(["git", "clone", "-q", str(remote), str(clone)], check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "c2"], cwd=remote, check=True)
+    link = tmp_path / "link-to-myskill"
+    link.symlink_to(clone)
+
+    st = axt.update.check_path_update("skill", "myskill", str(link))
+    assert st.tier == 1 and st.updatable is True
+
+    res = axt.update.apply_path_update("skill", "myskill", str(link))
+    assert res.updated is True and res.action == "git pull" and res.before != res.after
+
+    st2 = axt.update.check_path_update("skill", "myskill", str(clone))
+    assert st2.updatable is False and st2.note == "up to date"
+
+
+def test_check_path_update_non_git(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    st = axt.update.check_path_update("skill", "plain", str(plain))
+    assert st.tier == 2 and "manual" in st.note and st.updatable is False
+
+
+def test_update_status_cache_roundtrip(tmp_path, monkeypatch):
+    """save/load round-trips statuses + checkedAt via AXT_CONFIG_DIR/cache."""
+    monkeypatch.setattr("axt.update.AXT_CONFIG_DIR", tmp_path)
+    # Resolve the class at call time: test_package_mirror reloads axt.update
+    # mid-suite, so the module-top UpdateStatus import can be a stale identity
+    # that never compares equal to instances built inside the loader.
+    US = axt.update.UpdateStatus
+    sts = [
+        US("plugin", "foo@mk", 1, "1", "2", True),
+        US("skill", "s", 2, "local", "local", False, note="manual (non-git)"),
+    ]
+    axt.update.save_cached_update_statuses(sts, "2026-07-05T00:00:00.000Z")
+    loaded, checked_at = axt.update.load_cached_update_statuses()
+    assert loaded == sts
+    assert checked_at == "2026-07-05T00:00:00.000Z"
+    assert (tmp_path / "cache" / "update-status.json").exists()
+
+
+def test_update_status_cache_missing_or_corrupt(tmp_path, monkeypatch):
+    """Missing file and schema drift both degrade to ([], None), never raise."""
+    monkeypatch.setattr("axt.update.AXT_CONFIG_DIR", tmp_path)
+    assert axt.update.load_cached_update_statuses() == ([], None)
+    p = tmp_path / "cache" / "update-status.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('{"checkedAt": "x", "statuses": [{"bogus": 1}]}')
+    assert axt.update.load_cached_update_statuses() == ([], None)
+    p.write_text("not json at all")
+    assert axt.update.load_cached_update_statuses() == ([], None)

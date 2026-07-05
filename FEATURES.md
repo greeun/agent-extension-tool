@@ -129,24 +129,25 @@ TUI 대시보드 실행.
 포커스 가능한 본문이 없는 탭(Usage)은 mainTab에서 `↓`를 받아도 포커스가 그대로 mainTab에 머무름 — capability 기반 분기.
 
 ### 2.4 Extensions 탭 (8개 서브탭, `EXTENSION_SUB_TABS` 순서)
-모든 서브탭이 좌측 체크박스(■/□, Space 마크) + `#` 행 번호 + 이름 뒤의 공통 상태 블록 `Ver Vault Proj Glob`을 공유한다 (Vault 레이아웃과 동일).
+모든 서브탭이 좌측 체크박스(■/□, Space 마크) + `#` 행 번호 + 이름 뒤의 공통 상태 블록 `Ver Vault Proj Glob Upd`를 공유한다 (Vault 서브탭은 Upd 없이 기존 레이아웃).
 - Vault 셀: `✓` = 항목 실체가 `~/.axt/vault/`에 저장됨 / `─` = vault 미관리 (vault가 다루지 않는 타입 포함)
 - Proj/Glob 셀: `●` 활성 / `○` 비활성 / `·` unset(Plugins) / `─` 해당 없음. MCP만 예외 — Proj/Glob은 **등록 위치** 표시(읽기 전용)이고 활성 상태는 별도 On 컬럼이 담당 (등록≠활성, 아래 MCP 행 참조)
-- **Vault** (기본) — `# Name Ver Type Vault Proj Glob Used`
-- **Skills** — `# Skill Ver Vault Proj Glob Source Type Path`
-- **Commands** — `# Command Ver Vault Proj Glob Source Description`
-- **Agents** — `# Agent Ver Vault Proj Glob Source Description`
-- **MCP** — `# Server Ver Vault Proj Glob On Scope Transport Detail` (Ver는 plugin 소속 서버만. Proj `●` = project/`.mcp.json` 등록, Glob `●` = user(`~/.claude.json` 최상위) 등록, plugin/claude.ai/built-in은 둘 다 `─`. On = 현재 프로젝트 활성 상태 — MCP 활성화는 등록 스코프와 무관하게 항상 프로젝트 단위)
-- **Hooks** — `# Event Ver Vault Proj Glob Type Source Detail` (훅이 속한 설정 파일 스코프 쪽만 ●/○, 반대쪽 `─`)
-- **Plugins** — `# Plugin Ver Vault Proj Glob Marketplace`
-- **Market** — `# Marketplace Ver Vault Proj Glob Source Location Updated` (Proj `─`, Glob `●` — 전역 레지스트리)
+- Upd 셀 (Vault 서브탭 제외): `↑` 업데이트 가능(`u`로 적용) / `·` 확인됨·최신 / `!` 확인 실패 / `─` 업데이트 대상 아님(MCP·Hooks, plugin 소속, non-git manual 등) / `…` 첫 확인 진행 중. 확인은 **비동기**(백그라운드 스레드, `check_all_updates` 스윕)로 돌고 결과는 `<AXT_CONFIG_DIR>/cache/update-status.json`에 캐시(TTL 1시간, `write_json_atomic`). 비-vault 서브탭에서 `r` = 목록 새로고침 + 강제 재확인, `u` 적용·`S` sync 성공 시 해당 항목 마커 즉시 최신으로 갱신
+- **Vault** (기본) — `# Name Ver Type Proj Glob Used`. **vault 저장소 전용 목록**: `~/.axt/vault/`에 실체가 있는 항목만 표시 (모든 행이 vault 소속이므로 Vault 컬럼 없음). plugin은 vault 개념이 없어 Plugins 서브탭 전용. vault 밖에만 존재하는 항목은 Skills/Commands/Agents 서브탭에 나타나며 거기서 `i`로 import
+- **Skills** — `# Skill Ver Vault Proj Glob Upd Source Type Path`. 탐색 가능한 모든 위치(`~/.claude/skills`, `~/.agents[/skills]`, 프로젝트, plugin) + **어디에도 링크되지 않은 vault 항목**(Source=`vault`)까지 병합 표시
+- **Commands** — `# Command Ver Vault Proj Glob Upd Source Description`. Skills와 동일하게 링크되지 않은 vault 항목(Source=`vault`) 병합
+- **Agents** — `# Agent Ver Vault Proj Glob Upd Source Description`. Skills와 동일하게 링크되지 않은 vault 항목(Source=`vault`) 병합
+- **MCP** — `# Server Ver Vault Proj Glob Upd On Scope Transport Detail` (Ver는 plugin 소속 서버만. Proj `●` = project/`.mcp.json` 등록, Glob `●` = user(`~/.claude.json` 최상위) 등록, plugin/claude.ai/built-in은 둘 다 `─`. On = 현재 프로젝트 활성 상태 — MCP 활성화는 등록 스코프와 무관하게 항상 프로젝트 단위)
+- **Hooks** — `# Event Ver Vault Proj Glob Upd Type Source Detail` (훅이 속한 설정 파일 스코프 쪽만 ●/○, 반대쪽 `─`)
+- **Plugins** — `# Plugin Ver Vault Proj Glob Upd Marketplace`
+- **Market** — `# Marketplace Ver Vault Proj Glob Upd Source Location Updated` (Proj `─`, Glob `●` — 전역 레지스트리)
 
 ### 2.5 키바인딩 (Vault 전체)
 ```
 j/k ↓/↑     이동             g           global 토글 (pending; 마크 있으면 일괄)
-PgUp/PgDn   페이지           c           필터(all/skill/command/agent/plugin)
+PgUp/PgDn   페이지           c           필터(all/skill/command/agent)
 p           project 토글 (pending; 마크 있으면 일괄)   s   정렬 순환(Name→Type→Proj→Glob→Used→Added→Updated), 활성 컬럼 헤더 ▲/▼
-Enter       적용 또는 detail i           import to vault (global-only)
+Enter       적용 또는 detail
 Esc         폐기/뒤로        f           프로젝트 재스캔(실행 시 백그라운드 자동, Used 갱신)
 /           검색             F           scan mode toggle (default/full) + 재스캔 (f의 확장)
 Tab         리스트↔detail포커스 m         migrate (글로벌→vault)
@@ -154,6 +155,7 @@ o           터미널 열기       S           sync project
 Space       포커스 항목 선택/해제 — 일괄 액션 마킹 (좌측 체크박스 ■/□, 필터/검색 넘어 유지)
             마크가 있으면 p/g가 마크 전체의 pending 토글, U가 일괄 unlink로 동작
 U           모든 프로젝트에서 unlink: 선택된 항목 있으면 일괄, 없으면 포커스 항목 (스캔 인덱스 기준, 확인 모달)
+u           포커스 항목 콘텐츠 업데이트 (check+apply): 저장 디렉터리 git pull(심링크 추적)
 ```
 
 ### 2.6 키바인딩 (서브탭별 고유)
@@ -168,13 +170,13 @@ U           모든 프로젝트에서 unlink: 선택된 항목 있으면 일괄,
   - **MCP**: Name→Scope→Transport
   - **Hooks**: Event→Type→Source
   - **Market**: Name→Source→Updated
-- **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열, `U` = 선택 항목 업데이트(check+apply) — Vault 포함 모든 서브탭 동일
-- **Plugins**: `p`/`g` = project/global settings의 `enabledPlugins` 토글, `x` uninstall (확인 모달), `U` update selected (check + apply)
+- **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열, `i` = vault로 import(원본 이동 + 원위치 symlink; Skills/Commands/Agents), `u` = 선택 항목 업데이트(check+apply) — Vault 포함 모든 서브탭 동일 (Vault의 `U`는 unlink-all)
+- **Plugins**: `p`/`g` = project/global settings의 `enabledPlugins` 토글, `x` uninstall (확인 모달), `u` update selected (check + apply)
 - **MCP**: `p` = On 토글 (현재 프로젝트 `disabledMcpServers`, built-in은 `enabledMcpServers` opt-in; global 활성 스코프 없음 — `g`는 안내 메시지). Proj/Glob은 등록 위치 표시로 읽기 전용 — `p`/`g`로 등록을 옮길 수 없음
 - **Hooks**: `p`/`g` 토글 (설정 파일 내 `hooks`↔`disabledHooks` 이동 — user 파일 훅은 `g`, project/local 파일 훅은 `p`, plugin 훅은 읽기 전용), `v` preview (dry-run)
-- **Skills**: `p`/`g` = `.claude/skills` / `~/.claude/skills`에 symlink 링크/해제 (실제 파일·디렉터리는 삭제하지 않음 — symlink만 해제), `a` link (path 입력), `x` unlink (확인 모달), `U` update selected (check + apply)
-- **Market**: `a` add (2-step source+name 입력), `S` sync (대문자 — `s`는 정렬로 이동), `x` remove (확인). `p`/`g`는 안내 메시지 (전역 레지스트리)
-- **Commands** / **Agents**: `p`/`g` = `.claude/<sub>/` / `~/.claude/<sub>/`에 `.md` symlink 링크/해제, `e` 소스 파일을 `$EDITOR`로 열기, `U` update selected (check + apply)
+- **Skills**: `p`/`g` = `.claude/skills` / `~/.claude/skills`에 symlink 링크/해제 (실제 파일·디렉터리는 삭제하지 않음 — symlink만 해제), `a` link (path 입력), `x` unlink (확인 모달), `i` import to vault (원본 이동 + 원위치 symlink; plugin 소속·이미 vault인 항목은 거부), `u` update selected (check + apply)
+- **Market**: `a` add (2-step source+name 입력), `S` sync (무조건 sync — `s`는 정렬), `u` update selected (check + apply, 원격이 앞설 때만 sync), `x` remove (확인). `p`/`g`는 안내 메시지 (전역 레지스트리)
+- **Commands** / **Agents**: `p`/`g` = `.claude/<sub>/` / `~/.claude/<sub>/`에 `.md` symlink 링크/해제, `e` 소스 파일을 `$EDITOR`로 열기, `i` import to vault (Skills와 동일), `u` update selected (check + apply)
 - **모든 서브탭 (Vault / Skills / Commands / Agents / MCP / Hooks / Plugins / Market)**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
 
 ### 2.7 Context 탭 (2개 서브탭)

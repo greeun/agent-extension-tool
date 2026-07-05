@@ -57,7 +57,16 @@ from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
 )
 # Update orchestration — kept as module-level names (not wildcard-imported)
 # so tests can monkeypatch axt.tui.tabs.check_all_updates / apply_updates.
-from axt.update import check_all_updates, apply_updates  # noqa: F401
+from axt.update import (  # noqa: F401
+    check_all_updates,
+    apply_updates,
+    check_path_update,
+    apply_path_update,
+    load_cached_update_statuses,
+    save_cached_update_statuses,
+    UpdateStatus,
+    UPDATE_STATUS_TTL_S,
+)
 
 
 # ── Section 13: TUI — Tabs (initial: Vault + stubs for the rest) ─────────────
@@ -85,7 +94,7 @@ class TuiState:
     # Vault-specific state.
     vault_items: list[VaultItem] = field(default_factory=list)
     vault_selected: int = 0
-    vault_filter: str = "all"        # "all" | "skill" | "command" | "agent" | "plugin"
+    vault_filter: str = "all"        # "all" | "skill" | "command" | "agent"
     vault_sort: str = "name"         # "name" | "type" | "added" | "updated" | "project" | "global"
     vault_search: str = ""
     vault_searching: bool = False    # True while user is typing in the `/` prompt
@@ -118,6 +127,13 @@ class TuiState:
     # Space-marked item keys per non-vault sub-tab (mirrors vault_marked).
     # Marks accumulate across sort/search changes; p/g apply to the whole set.
     ext_marked: dict[str, set[str]] = field(default_factory=dict)
+    # Async update-availability check backing the non-vault `Upd` column.
+    # None = never loaded; the first non-vault render kicks a background
+    # check (disk cache short-circuits it while fresh — UPDATE_STATUS_TTL_S).
+    update_statuses: Optional[dict[tuple[str, str], Any]] = None  # (type, name) → UpdateStatus
+    update_checked_at: Optional[str] = None  # ISO8601 of the last completed check
+    update_check_loading: bool = False
+    update_check_thread: Optional[Any] = None  # threading.Thread, kept generic
 
     # Usage data caches (None = not loaded yet).
     usage_entries: Optional[list] = None
@@ -162,7 +178,7 @@ class TuiState:
     stdscr_callbacks: Optional[dict] = None
 
 
-_VAULT_FILTERS = ("all", "skill", "command", "agent", "plugin")
+_VAULT_FILTERS = ("all", "skill", "command", "agent")
 # Cycle order follows the table column layout (Name → Type → Proj → Glob →
 # Used), then the two column-less timestamp sorts last.
 _VAULT_SORTS = ("name", "type", "project", "global", "used", "added", "updated")
@@ -225,6 +241,27 @@ def set_status(state: TuiState, msg: str, kind: Optional[str] = None) -> None:
     state.status_set_at = time.monotonic() if msg else None
 
 
+def flash_status(state: TuiState, msg: str, kind: str = "info") -> None:
+    """Paint a transient status line *now*, before a blocking action.
+
+    The normal flow (`set_status` → handler return value → repaint) only
+    redraws after the handler returns, so a slow synchronous op — a git
+    fetch/pull during `u` update — freezes the UI with no feedback. This sets
+    the status and forces one synchronous frame through the render callback the
+    main loop registers in `stdscr_callbacks["render"]`. A no-op when no state
+    or render callback is present (tests, headless)."""
+    if state is None:
+        return
+    set_status(state, msg, kind)
+    cb = state.stdscr_callbacks
+    render = cb.get("render") if cb else None
+    if render:
+        try:
+            render()
+        except Exception:  # noqa: BLE001 — feedback paint must never break the action
+            pass
+
+
 def _invalidate_context(state: TuiState) -> None:
     """Mark Context analysis stale so the next Context/Usage paint re-runs
     ``analyze_context()``. Call from any branch that mutates filesystem
@@ -245,18 +282,9 @@ def _refresh_ext(state: TuiState, sub: str) -> None:
 
 def _vault_load(state: TuiState) -> None:
     """Refresh vault items from disk into state. Cheap — just reads metadata."""
-    plugins = list_installed_plugins(PATHS.installed_plugins)
-    plugin_refs = [
-        PluginRef(
-            id=p.id, name=p.name, description=p.description or "",
-            install_path=p.install_path, version=p.version or "",
-        )
-        for p in plugins
-    ]
     state.vault_items = list_vault_items_with_project_state(
         PATHS.vault,
         Path.cwd(),
-        installed_plugins=plugin_refs,
         global_dir=PATHS.claude_dir,
     )
 
@@ -416,6 +444,69 @@ def _prime_vault_scan(state: TuiState) -> None:
     _kick_vault_scan(state)
 
 
+# ── Async update-availability check (Upd column, non-vault sub-tabs) ────────
+
+# Types the background sweep covers — exactly the ones the `Upd` column can
+# render. mcp (report-only pins) and claude-code (binary) are excluded.
+_UPDATE_CHECK_TYPES = ["marketplace", "plugin", "skill", "command", "agent"]
+
+
+def _update_status_fresh(iso: Optional[str]) -> bool:
+    """True while the last completed check is younger than UPDATE_STATUS_TTL_S."""
+    if not iso:
+        return False
+    try:
+        when = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return False
+    return (datetime.now(timezone.utc) - when).total_seconds() < UPDATE_STATUS_TTL_S
+
+
+def _bind_update_statuses(state: TuiState, statuses: list, checked_at: Optional[str]) -> None:
+    state.update_statuses = {(s.item_type, s.name): s for s in statuses}
+    state.update_checked_at = checked_at
+
+
+def _update_check_worker(state: TuiState) -> None:
+    """Body of the background check (factored out so tests can run it
+    synchronously). Never raises: a failed sweep binds an empty-but-stamped
+    result so the render loop does not re-kick every frame."""
+    try:
+        statuses = check_all_updates(types=_UPDATE_CHECK_TYPES)
+        checked_at = _iso_now()
+        _bind_update_statuses(state, statuses, checked_at)
+        save_cached_update_statuses(statuses, checked_at)
+    except Exception:  # noqa: BLE001 — a broken sweep must not kill the thread loop
+        if state.update_statuses is None:
+            state.update_statuses = {}
+        state.update_checked_at = _iso_now()
+    finally:
+        state.update_check_loading = False
+
+
+def _kick_update_check(state: TuiState, force: bool = False) -> None:
+    """Async check_all_updates for the `Upd` column (mirrors _kick_vault_scan).
+
+    Idempotent while a check is in flight. Without `force`, the disk cache is
+    restored first and a fresh timestamp (< UPDATE_STATUS_TTL_S) short-circuits
+    the network sweep entirely; stale cached markers stay visible until the
+    daemon worker rebinds them.
+    """
+    if state.update_check_loading:
+        return
+    if not force and state.update_statuses is None:
+        cached, checked_at = load_cached_update_statuses()
+        if cached:
+            _bind_update_statuses(state, cached, checked_at)
+    if not force and state.update_statuses is not None and _update_status_fresh(state.update_checked_at):
+        return
+    state.update_check_loading = True
+    t = threading.Thread(target=_update_check_worker, args=(state,),
+                         name="axt-update-check", daemon=True)
+    state.update_check_thread = t
+    t.start()
+
+
 def _fmt_scan_age(iso: Optional[str]) -> str:
     """Relative age of the last scan: 'just now' / 'Nm ago' / 'Nh ago' / 'Nd ago'.
     Returns '' when the timestamp is missing or unparseable."""
@@ -463,7 +554,7 @@ def _vault_apply_pending(state: TuiState) -> str:
     cwd_ref = ProjectRef(path=str(cwd), name=_project_name_from_path(str(cwd)))
     for name in list(state.vault_pending_project):
         item = items_by_name.get(name)
-        if not item or item.type == "plugin":
+        if not item:
             state.vault_pending_project.discard(name)
             continue
         try:
@@ -479,7 +570,7 @@ def _vault_apply_pending(state: TuiState) -> str:
         state.vault_pending_project.discard(name)
     for name in list(state.vault_pending_global):
         item = items_by_name.get(name)
-        if not item or item.type == "plugin":
+        if not item:
             state.vault_pending_global.discard(name)
             continue
         try:
@@ -507,8 +598,6 @@ def _vault_unlink_from_all(state: TuiState, item: VaultItem) -> str:
     has its symlink removed and its `.axt-profile.json` entry dropped, and the
     in-memory + on-disk scan index is kept in sync so the `Used` column reverts.
     """
-    if item.type == "plugin":
-        return "Plugins use enabledPlugins, not symlinks — nothing to unlink."
     projects = get_projects(state.vault_usage_index, item.type, item.name)
     if not projects:
         return f"{item.name!r} not used by any project (press `f` to scan)"
@@ -544,16 +633,16 @@ def _vault_unlink_marked(state: TuiState) -> str:
 
     Marks come from `state.vault_marked` (toggled with Space) and are resolved
     against the full `vault_items` list, so a mark survives filter/search
-    changes. Plugins and never-used items contribute nothing. When a stdscr is
-    available a confirm modal lists each item and its project count; headless
-    callers (tests) apply directly. The scan cache and context estimate are
+    changes. Never-used items contribute nothing. When a stdscr is available
+    a confirm modal lists each item and its project count; headless callers
+    (tests) apply directly. The scan cache and context estimate are
     re-persisted once for the whole batch, and marks are cleared on success.
     """
     items_by_name = {i.name: i for i in state.vault_items}
     targets: list[tuple[VaultItem, list[ProjectRef]]] = []
     for name in sorted(state.vault_marked):
         item = items_by_name.get(name)
-        if not item or item.type == "plugin":
+        if not item:
             continue
         projects = get_projects(state.vault_usage_index, item.type, item.name)
         if projects:
@@ -631,14 +720,7 @@ def _fmt_date(d: Optional[datetime]) -> str:
 
 def _vault_pending_indicator(state: TuiState, item: VaultItem) -> tuple[str, str]:
     """Return the (project, global) cell text reflecting pending toggles.
-
-    Naming differs by item type:
-      • skill / command / agent → symlinks (`linked` / `—`)
-      • plugin                  → `enabledPlugins` settings flag (`enabled` / `off`)
-    The single-glyph cells (●/○) work for either, but the DetailPanel and the
-    cell suffix make the distinction explicit so users don't confuse the two
-    activation mechanisms.
-    """
+    ● / ○ = symlink present/absent; a trailing `*` marks an unapplied toggle."""
     proj_pending = item.name in state.vault_pending_project
     glob_pending = item.name in state.vault_pending_global
     project_now = (not item.is_linked) if proj_pending else item.is_linked
@@ -731,24 +813,22 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     detail_w = w
     detail_y = table_y_top + table_h
 
-    # Columns: # / Name / Ver / Type / Vault / Project / Global / Used in.
-    # "Vault" semantics:  ✓ = item is in ~/.axt/vault/  ;  glob*/proj* = import
-    # candidate living only in ~/.claude/{type}s/ or <project>/.claude/{type}s/.
-    # Plugins show ─ (never vaulted — enabledPlugins, not symlinks; matches
-    # _vault_cell on the other sub-tabs).
+    # Columns: # / Name / Ver / Type / Project / Global / Used in.
+    # Every row lives in ~/.axt/vault/ (this tab lists vault storage only —
+    # import candidates live on the Skills/Commands/Agents sub-tabs), so
+    # there is no Vault status column here.
     # "Project" / "Global" show the *intended* state after applying pending toggles.
     no_w = max(3, len(str(len(filtered))) + 1)
     used_w = 6  # "Used" header + " N proj" data ≤ 6
     proj_w = 5  # "Proj" header (4) + "● *" data (3) ≤ 5
     glob_w = 5  # "Glob"
     type_w = 6  # "Type"
-    vault_w = 6  # "Vault" header (5) + "glob*"/"proj*" data (5) ≤ 6
     ver_w = 8   # "Ver" header + "1.2.3" data ≤ 8
     # _draw_cell renders each column at `col.width + 2` cells (per-column
-    # gap). With 8 columns + 4-cell prefix the gap cost is 4 + 2*8 = 20. We
+    # gap). With 7 columns + 4-cell prefix the gap cost is 4 + 2*7 = 18. We
     # subtract a few more cells of safety so wrap can't eat the last column.
-    cols_fixed = no_w + ver_w + type_w + vault_w + proj_w + glob_w + used_w
-    name_w = max(10, table_w - cols_fixed - (4 + 2 * 8) - 4)
+    cols_fixed = no_w + ver_w + type_w + proj_w + glob_w + used_w
+    name_w = max(10, table_w - cols_fixed - (4 + 2 * 7) - 4)
     # Append a direction arrow to the header of the column the list is sorted by
     # (each fixed column has +2 cells of slack, so the glyph never shifts data).
     mark_col, mark_glyph = _VAULT_SORT_MARK.get(state.vault_sort, (None, ""))
@@ -761,7 +841,6 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         TableColumn("name", _lbl("name", "Name"), name_w),
         TableColumn("ver", "Ver", ver_w),
         TableColumn("type", _lbl("type", "Type"), type_w),
-        TableColumn("vault", "Vault", vault_w),
         TableColumn("project", _lbl("project", "Proj"), proj_w),
         TableColumn("global", _lbl("global", "Glob"), glob_w),
         TableColumn("used", _lbl("used", "Used"), used_w),
@@ -779,20 +858,11 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
             if state.vault_usage_index and f"{item.type}:{item.name}" in state.vault_usage_index
             else 0
         )
-        if item.type == "plugin":
-            vault_cell = "─"
-        elif item.in_vault:
-            vault_cell = "✓"
-        elif item.is_global_linked:
-            vault_cell = "glob*"
-        else:
-            vault_cell = "proj*"
         rows.append({
             "no": str(i + 1),
             "name": item.name,
             "ver": item.version or "─",
             "type": item.type,
-            "vault": vault_cell,
             "project": proj_cell,
             "global": glob_cell,
             "used": f"{used_count} proj" if used_count else "─",
@@ -807,18 +877,9 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         header_rule=False,  # header attaches directly to the list (no ──── rule)
     )
 
-    # Detail panel.
+    # Detail panel. Every row is vault-stored and symlink-activated, so no
+    # Vault/Activation rows — Project/Global carry the linked state directly.
     current = filtered[state.vault_selected]
-    if current.type == "plugin":
-        vault_status = "n/a (plugins are not vaulted)"
-    elif current.in_vault:
-        vault_status = "in vault"
-    elif current.is_global_linked:
-        vault_status = "global only (press `i` to import)"
-    else:
-        vault_status = "project only (press `i` to import)"
-    # Naming differs by activation mechanism (see _activation_term docstring).
-    activation_kind = "enabledPlugins" if current.type == "plugin" else "symlink"
     detail_fields: list[tuple[str, str]] = [
         ("Name", current.name),
         ("Type", current.type),
@@ -827,8 +888,6 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         ("Description", current.description or "—"),
         ("Added", _fmt_date(current.created_at)),
         ("Updated", _fmt_date(current.updated_at)),
-        ("Vault", vault_status),
-        ("Activation", activation_kind),
         ("Project", _activation_term(current.type, current.is_linked)),
         ("Global", _activation_term(current.type, current.is_global_linked)),
     ]
@@ -912,6 +971,30 @@ def _handle_ext_search_keys(state: TuiState, key: int) -> Optional[str]:
     return None
 
 
+def _vault_update_item(state: TuiState, item: Any) -> Optional[str]:
+    """u=update the focused row's stored content in place (check + apply).
+
+    Rows git-pull their storage directory (symlinks resolved first), so the
+    update works regardless of link state.
+    """
+    if not item.path:
+        return f"{item.name}: no storage path"
+    name = item.name
+    flash_status(state, f"Checking {name}…")
+    try:
+        st = check_path_update(item.type, name, item.path)
+    except Exception as exc:  # noqa: BLE001 — surface as status, never crash the TUI
+        return f"Update check failed: {exc}"
+    if not st.updatable:
+        return f"{name}: {st.error or st.note or 'up to date'}"
+    flash_status(state, f"Updating {name}…")
+    res = apply_path_update(item.type, name, item.path)
+    _vault_load(state)
+    if res.error:
+        return f"Update failed: {res.error}"
+    return f"Updated {name}: {res.before} → {res.after}" if res.updated else f"{name} up to date"
+
+
 def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
     """Vault tab key handler. Returns a status message or None."""
     # ── Tab: list ↔ detail focus toggle. Skipped during `/`-search input so
@@ -949,7 +1032,7 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
     elif key == curses.KEY_PPAGE:
         state.vault_selected = max(0, state.vault_selected - 10)
     elif key == ord("c"):
-        # c=cycle type filter (all/skill/command/agent/plugin)
+        # c=cycle type filter (all/skill/command/agent)
         i = _VAULT_FILTERS.index(state.vault_filter)
         state.vault_filter = _VAULT_FILTERS[(i + 1) % len(_VAULT_FILTERS)]
         state.vault_selected = 0
@@ -975,20 +1058,20 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         scope = "project" if key == ord("p") else "global"
         return (f"Toggled {scope} pending for {len(state.vault_marked)} marked "
                 f"— Enter to apply")
-    elif key == ord("p") and current and current.type != "plugin":
+    elif key == ord("p") and current:
         # Toggle pending project link for the selected item.
         if current.name in state.vault_pending_project:
             state.vault_pending_project.discard(current.name)
         else:
             state.vault_pending_project.add(current.name)
         return None
-    elif key == ord("g") and current and current.type != "plugin":
+    elif key == ord("g") and current:
         if current.name in state.vault_pending_global:
             state.vault_pending_global.discard(current.name)
         else:
             state.vault_pending_global.add(current.name)
         return None
-    elif key == ord(" ") and current and current.type != "plugin":
+    elif key == ord(" ") and current:
         # Space = select: toggle the focused item's bulk-unlink mark. Marks
         # accumulate across filter/search changes and are consumed by `U`.
         if current.name in state.vault_marked:
@@ -1000,10 +1083,13 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         # Marks present → bulk unlink every marked item from all its projects.
         # Mirrors Enter's apply-pending-else-focus split: `U` prefers the batch.
         return _vault_unlink_marked(state)
-    elif key == ord("U") and current and current.type != "plugin":
+    elif key == ord("U") and current:
         # No marks → unlink the selected item from every project that uses it
         # (per the last scan). Confirms via modal; updates symlinks, profiles, index.
         return _vault_unlink_from_all(state, current)
+    elif key == ord("u") and current:
+        # u = update the focused row's stored content (check + apply).
+        return _vault_update_item(state, current)
     elif is_enter(key) and (state.vault_pending_project or state.vault_pending_global):
         # Ask before committing pending toggles to disk. When no stdscr is
         # available (tests, headless) fall back to direct apply.
@@ -1053,25 +1139,6 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         state.vault_search = ""
         state.vault_selected = 0
         return "Search cleared"
-    elif key == ord("i") and current and not current.in_vault:
-        was_project_local = (not current.is_global_linked) and current.is_linked
-        try:
-            import_to_vault(PATHS.claude_dir, PATHS.vault, current)
-            if was_project_local:
-                # The symlink at `<project>/.claude/<sub>/<name>` is already
-                # in place (left behind by import_to_vault). Record the link
-                # in `.axt-profile.json` so `sync_project` won't later treat
-                # it as an orphan and unlink it.
-                sub = _type_to_dir(current.type)
-                profile = read_profile(Path.cwd()) or empty_profile()
-                profile = profile.with_added(sub, current.name)
-                write_profile(Path.cwd(), profile)
-            _vault_load(state)
-            _invalidate_context(state)
-            origin = "project-local" if was_project_local else "global"
-            return f"Imported {current.name!r} ({origin}) to vault"
-        except (OSError, ValueError, FileExistsError) as e:
-            return f"Import failed: {e}"
     elif key == ord("f"):
         # Re-scan in the current mode and persist to disk. Does NOT toggle
         # mode: a previous bug had `f` flip default↔full, which silently
@@ -2101,11 +2168,14 @@ def _ensure_subtab_loaded(state: TuiState, sub_key: str) -> None:
     if sub_key == "plugins":
         state.ext_cache["plugins"] = list_installed_plugins(PATHS.installed_plugins)
     elif sub_key == "skills":
-        state.ext_cache["skills"] = list_all_skills(project_dir=Path.cwd())
+        items = list_all_skills(project_dir=Path.cwd())
+        state.ext_cache["skills"] = items + list_vault_only_items("skills", items)
     elif sub_key == "commands":
-        state.ext_cache["commands"] = list_commands(project_dir=Path.cwd())
+        items = list_commands(project_dir=Path.cwd())
+        state.ext_cache["commands"] = items + list_vault_only_items("commands", items)
     elif sub_key == "agents":
-        state.ext_cache["agents"] = list_all_agents(project_dir=Path.cwd())
+        items = list_all_agents(project_dir=Path.cwd())
+        state.ext_cache["agents"] = items + list_vault_only_items("agents", items)
     elif sub_key == "mcp":
         state.ext_cache["mcp"] = collect_mcp_servers(_active_plugins())
     elif sub_key == "hooks":
@@ -2473,6 +2543,11 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         render_vault_tab(stdscr, state, sub_y, sub_h, w)
         return
 
+    # Lazily start the async update check backing the `Upd` column. Idempotent
+    # per frame: a fresh (< TTL) cached result short-circuits, an in-flight
+    # check is left alone, and a completed one re-kicks only after the TTL.
+    _kick_update_check(state)
+
     _ensure_subtab_loaded(state, sub)
     # Sorted view (state.ext_sort) — the same ordering _selected_item uses, so
     # the row the user acts on always matches the highlighted row.
@@ -2486,11 +2561,12 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     if sub == "plugins":
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Plugin", max(20, w - 72)),
+            TableColumn("name", "Plugin", max(20, w - 77)),
             TableColumn("version", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
+            TableColumn("upd", "Upd", 3),
             TableColumn("market", "Marketplace", 24),
         ]
         enabled_g = read_enabled_plugins(PATHS.settings)
@@ -2510,6 +2586,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "vault": _vault_cell(sub, p),
             "proj": _glyph(enabled_p.get(p.id)),
             "glob": _glyph(enabled_g.get(p.id)),
+            "upd": _upd_cell(state, sub, p),
             "market": p.marketplace or "—",
         } for i, p in enumerate(data)]
 
@@ -2518,11 +2595,12 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         glob_names = _scope_link_names(state, sub, "global")
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Skill", max(20, w - 91)),
+            TableColumn("name", "Skill", max(20, w - 96)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
+            TableColumn("upd", "Upd", 3),
             TableColumn("source", "Source", 9),
             TableColumn("type", "Type", 8),
             TableColumn("path", "Path", 30),
@@ -2534,6 +2612,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "vault": _vault_cell(sub, s),
             "proj": "●" if _item_base_name(sub, s) in proj_names else "○",
             "glob": "●" if _item_base_name(sub, s) in glob_names else "○",
+            "upd": _upd_cell(state, sub, s),
             "source": s.source,
             "type": "symlink" if s.is_symlink else "dir",
             "path": (s.target or s.path)[:60],
@@ -2544,11 +2623,12 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         glob_names = _scope_link_names(state, sub, "global")
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Command", max(20, w - 92)),
+            TableColumn("name", "Command", max(20, w - 97)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
+            TableColumn("upd", "Upd", 3),
             TableColumn("source", "Source", 9),
             TableColumn("desc", "Description", 50),
         ]
@@ -2559,6 +2639,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "vault": _vault_cell(sub, c),
             "proj": "●" if _item_base_name(sub, c) in proj_names else "○",
             "glob": "●" if _item_base_name(sub, c) in glob_names else "○",
+            "upd": _upd_cell(state, sub, c),
             "source": c.source,
             "desc": (c.description or "")[:80],
         } for i, c in enumerate(data)]
@@ -2568,11 +2649,12 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         glob_names = _scope_link_names(state, sub, "global")
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Agent", max(20, w - 92)),
+            TableColumn("name", "Agent", max(20, w - 97)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
+            TableColumn("upd", "Upd", 3),
             TableColumn("source", "Source", 9),
             TableColumn("desc", "Description", 50),
         ]
@@ -2583,6 +2665,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "vault": _vault_cell(sub, a),
             "proj": "●" if _item_base_name(sub, a) in proj_names else "○",
             "glob": "●" if _item_base_name(sub, a) in glob_names else "○",
+            "upd": _upd_cell(state, sub, a),
             "source": a.source,
             "desc": (a.description or "")[:80],
         } for i, a in enumerate(data)]
@@ -2595,11 +2678,12 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         # (`disabledMcpServers` / built-in opt-in `enabledMcpServers`).
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Server", max(18, w - 103)),
+            TableColumn("name", "Server", max(18, w - 108)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
+            TableColumn("upd", "Upd", 3),
             TableColumn("on", "On", 3),
             TableColumn("scope", "Scope", 13),
             TableColumn("transport", "Transport", 10),
@@ -2612,6 +2696,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "vault": _vault_cell(sub, s),
             "proj": "●" if s.scope in ("project", "project-file") else "─",
             "glob": "●" if s.scope == "user" else "─",
+            "upd": _upd_cell(state, sub, s),
             "on": "○" if s.disabled else "●",
             "scope": s.scope,
             "transport": s.transport,
@@ -2626,9 +2711,10 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
+            TableColumn("upd", "Upd", 3),
             TableColumn("type", "Type", 10),
             TableColumn("source", "Source", 10),
-            TableColumn("detail", "Detail", max(20, w - 102)),
+            TableColumn("detail", "Detail", max(20, w - 107)),
         ]
 
         def _hook_cells(h) -> tuple[str, str]:
@@ -2647,6 +2733,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
                 "vault": _vault_cell(sub, h),
                 "proj": proj_cell,
                 "glob": glob_cell,
+                "upd": _upd_cell(state, sub, h),
                 "type": h.type,
                 "source": h.source,
                 "detail": get_hook_detail(h)[:80],
@@ -2655,11 +2742,12 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     elif sub == "market":
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Marketplace", max(20, w - 102)),
+            TableColumn("name", "Marketplace", max(20, w - 107)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
+            TableColumn("upd", "Upd", 3),
             TableColumn("kind", "Source", 10),
             TableColumn("loc", "Location", 30),
             TableColumn("updated", "Updated", 12),
@@ -2671,6 +2759,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "vault": _vault_cell(sub, m),
             "proj": "─",  # marketplaces are a global-only registry
             "glob": "●",
+            "upd": _upd_cell(state, sub, m),
             "kind": m.source.kind,
             "loc": m.install_location[:50],
             "updated": m.last_updated[:10],
@@ -2795,12 +2884,16 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
         _cycle_sub_tab(state, "extensions", 1)
         return f"Sub-tab: {state.ext_sub_tab}"
     if key == ord("r"):
-        # Refresh the active sub-tab's cache.
+        # Refresh the active sub-tab's cache. On non-vault sub-tabs also
+        # force a fresh async update check (the Upd column's cache would
+        # otherwise persist until UPDATE_STATUS_TTL_S).
         state.ext_cache.pop(state.ext_sub_tab, None)
         if state.ext_sub_tab == "vault":
             state.vault_items = []
             state.refresh_token = 0
-        return "Refreshed"
+            return "Refreshed"
+        _kick_update_check(state, force=True)
+        return "Refreshed — re-checking updates…"
 
     sub = state.ext_sub_tab
     if sub == "vault":
@@ -3070,6 +3163,31 @@ def _vault_cell(sub: str, item: Any) -> str:
     return "✓" if p.is_relative_to(vault_sub) else "─"
 
 
+def _upd_cell(state: TuiState, sub: str, item: Any) -> str:
+    """`Upd` column marker for a non-vault sub-tab row.
+
+      ↑  update available (tier-1, apply with `u`)
+      ·  checked and up to date
+      !  the check errored for this item (e.g. fetch failed)
+      ─  not updatable here (mcp/hooks, plugin-sourced, manual/non-git, or
+         absent from the registry — e.g. a project-scope skill)
+      …  first check still running (no cached result yet)
+    """
+    target = _update_target_for(sub, item)
+    if target is None:
+        return "─"
+    if state.update_statuses is None:
+        return "…"
+    st = state.update_statuses.get(target)
+    if st is None:
+        return "─"
+    if st.updatable:
+        return "↑"
+    if st.error:
+        return "!"
+    return "─" if st.tier != 1 else "·"
+
+
 def _toggle_plugin_scope(item: Any, scope: str) -> tuple[bool, str]:
     """Flip the plugin's enabled flag in project/global settings.
 
@@ -3271,6 +3389,37 @@ def _act_skill_unlink(state: TuiState, stdscr: Any, sub: str, key: int) -> Optio
     return "Cancelled"
 
 
+# sub-tab key → vault item type, derived from the canonical pairs in core.
+_SUB_ITEM_TYPE: dict[str, str] = dict(LINKABLE_TYPES)
+
+
+def _act_import_to_vault(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    """i: move the selected item into vault storage, leaving a symlink behind."""
+    item = _selected_item(state, sub)
+    if item is None:
+        return None
+    if item.source == "plugin":
+        return "Plugin-bundled items stay with their plugin (not importable)"
+    if _vault_cell(sub, item) == "✓":
+        return "Already in vault"
+    disk = Path(_item_disk_path(sub, item))
+    vitem = VaultItem(name=disk.name, type=_SUB_ITEM_TYPE[sub], path=str(disk), description="")
+    try:
+        import_to_vault(PATHS.claude_dir, PATHS.vault, vitem)
+    except (OSError, ValueError, FileExistsError) as exc:
+        return f"Import failed: {exc}"
+    if item.source == "project" and (Path.cwd() / ".claude") in disk.parents:
+        # import_to_vault left a symlink at the project path; record it in
+        # .axt-profile.json so sync_project won't unlink it as an orphan.
+        # (Project `.agents/` sources stay outside the profile — sync_project
+        # only manages `.claude/<sub>/` links.)
+        profile = read_profile(Path.cwd()) or empty_profile()
+        profile = profile.with_added(sub, disk.name)
+        write_profile(Path.cwd(), profile)
+    _refresh_ext(state, sub)
+    return f"Imported {disk.name!r} to vault"
+
+
 def _act_market_add(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
     source_str = text_input_modal(
         stdscr,
@@ -3309,6 +3458,7 @@ def _act_market_sync(state: TuiState, stdscr: Any, sub: str, key: int) -> Option
     try:
         result = sync_marketplace(PATHS.known_marketplaces, m.name)
         state.ext_cache.pop("market", None)
+        _settle_update_status(state, "marketplace", m.name, result.after)
         return f"Synced {m.name}: {result.before} → {result.after}" if result.updated else f"{m.name} up to date"
     except (RuntimeError, KeyError) as exc:
         return f"Sync failed: {exc}"
@@ -3360,17 +3510,42 @@ def _act_edit_source(state: TuiState, stdscr: Any, sub: str, key: int) -> Option
     return f"Opened {item.source_path}" if ok else "Editor failed"
 
 
-_SUB_TO_UPDATE_TYPE = {"plugins": "plugin", "skills": "skill", "commands": "command", "agents": "agent"}
+_SUB_TO_UPDATE_TYPE = {
+    "plugins": "plugin",
+    "skills": "skill",
+    "commands": "command",
+    "agents": "agent",
+    "market": "marketplace",
+}
 
 
 def _update_target_for(sub: str, item: Any) -> Optional[tuple[str, str]]:
     """(item_type, name) for the update registry, or None if not updatable here.
-    Plugins key on `id` (name@marketplace); skills/commands/agents on `name`."""
+    Plugins key on `id` (name@marketplace); skills/commands/agents and
+    marketplaces on `name`."""
     itype = _SUB_TO_UPDATE_TYPE.get(sub)
     if itype is None or item is None:
         return None
     name = getattr(item, "id", None) or getattr(item, "name", None)
     return (itype, name) if name else None
+
+
+def _settle_update_status(state: Optional[TuiState], itype: str, name: str, version: str) -> None:
+    """After a successful apply/sync, flip the item's `Upd` marker to
+    up-to-date in place and re-persist the cache, so the column stays
+    truthful without waiting for the next full background sweep."""
+    if state is None or state.update_statuses is None:
+        return
+    key = (itype, name)
+    old = state.update_statuses.get(key)
+    tier = old.tier if old else 1
+    state.update_statuses[key] = UpdateStatus(itype, name, tier, version, version,
+                                              False, note="up to date")
+    try:
+        save_cached_update_statuses(list(state.update_statuses.values()),
+                                    state.update_checked_at or _iso_now())
+    except OSError:
+        pass  # cache write is best-effort; in-memory state is already correct
 
 
 def _act_update(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
@@ -3379,6 +3554,7 @@ def _act_update(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[st
     if target is None:
         return None
     itype, name = target
+    flash_status(state, f"Checking {name}…")
     try:
         statuses = [s for s in check_all_updates(types=[itype]) if s.name == name]
     except Exception as exc:  # noqa: BLE001 — surface as status, never crash the TUI
@@ -3388,10 +3564,12 @@ def _act_update(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[st
         return f"{name}: no update info"
     if st.tier != 1 or not st.updatable:
         return f"{name}: {st.error or st.note or 'up to date'}"
+    flash_status(state, f"Updating {name}…")
     res = apply_updates([(itype, name)])[0]
     _refresh_ext(state, sub)
     if res.error:
         return f"Update failed: {res.error}"
+    _settle_update_status(state, itype, name, res.after)
     return f"Updated {name}: {res.before} → {res.after}" if res.updated else f"{name} up to date"
 
 
@@ -3425,7 +3603,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("x"),), "x:uninstall",
                       "x=uninstall (confirm)",
                       True, _act_plugin_uninstall),
-        SubtabBinding((ord("U"),), "U:update", "U=update selected (check + apply)", True, _act_update),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
     ),
     "mcp": (
         SubtabBinding((ord("p"),), "p:on",
@@ -3446,7 +3624,10 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("x"),), "x:unlink",
                       "x=unlink (confirm)",
                       True, _act_skill_unlink),
-        SubtabBinding((ord("U"),), "U:update", "U=update selected (check + apply)", True, _act_update),
+        SubtabBinding((ord("i"),), "i:import",
+                      "i=import into vault (move + leave symlink)",
+                      False, _act_import_to_vault),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
     ),
     "market": (
         SubtabBinding((ord("p"), ord("g")), "", "", False, _act_market_scope_note),
@@ -3459,6 +3640,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("x"),), "x:remove",
                       "x=remove (confirm)",
                       True, _act_market_remove),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
     ),
     "hooks": (
         SubtabBinding((ord("p"),), "p:project",
@@ -3481,7 +3663,10 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("e"),), "e:edit",
                       "e=open source file in $EDITOR",
                       True, _act_edit_source),
-        SubtabBinding((ord("U"),), "U:update", "U=update selected (check + apply)", True, _act_update),
+        SubtabBinding((ord("i"),), "i:import",
+                      "i=import into vault (move + leave symlink)",
+                      False, _act_import_to_vault),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
     ),
     "agents": (
         SubtabBinding((ord("p"),), "p:project",
@@ -3493,7 +3678,10 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("e"),), "e:edit",
                       "e=open source file in $EDITOR",
                       True, _act_edit_source),
-        SubtabBinding((ord("U"),), "U:update", "U=update selected (check + apply)", True, _act_update),
+        SubtabBinding((ord("i"),), "i:import",
+                      "i=import into vault (move + leave symlink)",
+                      False, _act_import_to_vault),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
     ),
 }
 

@@ -594,15 +594,19 @@ def cli_project_status(args) -> int:
 # skill
 
 def cli_skill_list(args) -> int:
-    skills = list_skills(PATHS.skills)
+    # Same picture as the TUI Skills sub-tab: every discoverable location
+    # (~/.claude/skills, ~/.agents[/skills], project, plugins) plus
+    # vault-stored skills nothing links to yet (source "vault").
+    skills = list_all_skills(project_dir=os.getcwd())
+    skills += list_vault_only_items("skills", skills)
     if not skills:
-        print("No standalone skills found.")
+        print("No skills found.")
         return 0
-    _print_list_header(f" {'Name'.ljust(30)} {'Type'.ljust(10)} Path", 70)
+    _print_list_header(f" {'Name'.ljust(30)} {'Source'.ljust(8)} {'Type'.ljust(10)} Path", 78)
     for s in skills:
         type_str = _cyan("symlink") if s.is_symlink else _dim("dir")
         path_str = f"→ {s.target}" if s.is_symlink else s.path
-        print(f" {s.name.ljust(30)} {type_str.ljust(19)} {path_str}")
+        print(f" {s.name.ljust(30)} {s.source.ljust(8)} {type_str.ljust(19)} {path_str}")
     _print_count_footer(len(skills), "skill")
     return 0
 
@@ -1097,7 +1101,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # skill
     sp_skl = sub.add_parser("skill", help="Manage standalone skills").add_subparsers(dest="action", required=True)
-    p = sp_skl.add_parser("list", help="List standalone skills"); p.set_defaults(func=cli_skill_list)
+    p = sp_skl.add_parser("list", help="List skills from every location (user/project/plugin/vault)"); p.set_defaults(func=cli_skill_list)
     if is_symlink_supported():
         p = sp_skl.add_parser("link", help="Link a skill directory"); p.add_argument("path"); p.add_argument("-n", "--name"); p.set_defaults(func=cli_skill_link)
         p = sp_skl.add_parser("unlink", help="Unlink a skill"); p.add_argument("name"); p.set_defaults(func=cli_skill_unlink)

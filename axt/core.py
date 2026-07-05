@@ -807,7 +807,7 @@ class SkillInfo:
     name: str
     path: str
     is_symlink: bool
-    source: str  # "user" | "project" | "plugin"
+    source: str  # "user" | "project" | "plugin" | "vault" (in vault, not linked anywhere)
     target: Optional[str] = None
     plugin: Optional[str] = None
     version: str = ""
@@ -865,15 +865,30 @@ def list_skills(skills_dir: os.PathLike[str] | str) -> list[SkillInfo]:
     return _scan_skills_dir(skills_dir, "user")
 
 
+def _scan_dot_agents_skills(dot_agents_dir: os.PathLike[str] | str, source: str) -> list[SkillInfo]:
+    """Scan a `.agents` directory for skills.
+
+    Third-party skill installers (e.g. vercel-labs/skills, tracked via a
+    `.skill-lock.json` next to it) nest skills under `.agents/skills/`. Older
+    setups place skill folders directly under `.agents/`. Prefer the nested
+    layout when present so its folder isn't itself mistaken for a skill.
+    """
+    d = Path(dot_agents_dir)
+    nested = d / "skills"
+    if nested.is_dir():
+        return _scan_skills_dir(nested, source)
+    return _scan_skills_dir(d, source)
+
+
 def list_all_skills(*, project_dir: Optional[os.PathLike[str] | str] = None) -> list[SkillInfo]:
     """User (~/.claude/skills + ~/.agents) + project + enabled-plugin skills."""
     out: list[SkillInfo] = []
     out += _scan_skills_dir(PATHS.skills, "user")
-    out += _scan_skills_dir(HOME / ".agents", "user")
+    out += _scan_dot_agents_skills(HOME / ".agents", "user")
     if project_dir:
         out += _scan_skills_dir(Path(project_dir) / ".claude" / "skills", "project")
     # `.agents` next to the project, defaulting to cwd when project_dir missing.
-    out += _scan_skills_dir(Path(project_dir or os.getcwd()) / ".agents", "project")
+    out += _scan_dot_agents_skills(Path(project_dir or os.getcwd()) / ".agents", "project")
 
     for p in _active_plugins():
         out += _scan_skills_dir(Path(p.install_path) / "skills", "plugin", p.name)
@@ -910,7 +925,7 @@ def unlink_skill(skills_dir: os.PathLike[str] | str, name: str) -> None:
 @dataclass(frozen=True)
 class CommandInfo:
     name: str
-    source: str  # "user" | "project" | "plugin"
+    source: str  # "user" | "project" | "plugin" | "vault" (in vault, not linked anywhere)
     source_path: str
     description: str
     content: str
@@ -1011,7 +1026,7 @@ def list_commands(*, project_dir: Optional[os.PathLike[str] | str] = None) -> li
 @dataclass(frozen=True)
 class AgentInfo:
     name: str
-    source: str
+    source: str  # "user" | "project" | "plugin" | "vault" (in vault, not linked anywhere)
     source_path: str
     description: str
     plugin: Optional[str] = None
@@ -1032,6 +1047,50 @@ def list_all_agents(*, project_dir: Optional[os.PathLike[str] | str] = None) -> 
     out += _scan_md_dir(Path(project_dir or os.getcwd()) / ".agents", "project", factory=_make_agent)
     for p in _active_plugins():
         out += _scan_md_dir(Path(p.install_path) / "agents", "plugin", p.name, factory=_make_agent)
+    return out
+
+
+def list_vault_only_items(sub: str, existing: list) -> list:
+    """Vault-stored items no listed entry resolves to (nothing links to them
+    yet), tagged source="vault". Merged into the Skills/Commands/Agents
+    sub-tabs and `axt skill list` so vault content stays discoverable — and
+    can be activated — even before it is linked anywhere. Deliberately NOT
+    part of list_all_skills()/list_commands()/list_all_agents(): Claude never
+    reads ~/.axt/vault/ directly, so the Context tab and update checker must
+    not count these as active.
+
+    `sub` is the plural sub-tab key ("skills" | "commands" | "agents").
+    Resolves the subdir from PATHS.vault at call time: ~/.axt/vault/<sub>
+    may itself be a symlink to external storage."""
+    def _disk(item) -> str:
+        return item.path if sub == "skills" else item.source_path
+
+    vault_dir = Path(PATHS.vault) / sub
+    if sub == "skills":
+        # Same validity rule as the Vault tab: a skill is a dir carrying
+        # index.md/SKILL.md, not any stray folder in vault storage.
+        vault_items = [s for s in _scan_skills_dir(vault_dir, "vault")
+                       if _entry_is_item(Path(s.path), "skill")]
+    elif sub == "commands":
+        vault_items = _scan_md_dir(vault_dir, "vault", factory=_make_command)
+    elif sub == "agents":
+        vault_items = _scan_md_dir(vault_dir, "vault", factory=_make_agent)
+    else:
+        return []
+    linked: set = set()
+    for it in existing:
+        try:
+            linked.add(Path(_disk(it)).resolve())
+        except OSError:
+            continue
+    out = []
+    for v in vault_items:
+        try:
+            resolved = Path(_disk(v)).resolve()
+        except OSError:
+            continue
+        if resolved not in linked:
+            out.append(v)
     return out
 
 
@@ -1755,9 +1814,10 @@ def _iter_item_entries(dir_path: Path) -> list[Path]:
 
 
 def _entry_is_item(entry: Path, item_type: str) -> bool:
-    """Whether `entry` is a valid item of `item_type` (skill=dir, else .md file)."""
+    """Whether `entry` is a valid item of `item_type` (skill=dir containing
+    index.md/SKILL.md, else .md file)."""
     if item_type == "skill":
-        return entry.is_dir()
+        return entry.is_dir() and any((entry / c).is_file() for c in ("index.md", "SKILL.md"))
     return entry.is_file() and entry.suffix == ".md"
 
 
@@ -1926,81 +1986,6 @@ def sync_project(project_dir: os.PathLike[str] | str, vault_dir: os.PathLike[str
     return SyncResult(tuple(linked), tuple(unlinked), tuple(errors))
 
 
-def _collect_skip_names(
-    vault_dir: Path, *extra_roots: Optional[Path]
-) -> dict[str, set[str]]:
-    """type → names to skip: every vault item, plus every item directly under
-    each `extra_roots/<sub>` tree (used to shadow project items by global ones)."""
-    skip: dict[str, set[str]] = {}
-    for v in list_vault_items(vault_dir):
-        skip.setdefault(v.type, set()).add(v.name)
-    for root in extra_roots:
-        if root is None:
-            continue
-        for sub, item_type in LINKABLE_TYPES:
-            for entry in _iter_item_entries(root / sub):
-                skip.setdefault(item_type, set()).add(entry.name)
-    return skip
-
-
-def _list_non_vault_items(
-    root: Path,
-    skip_by_type: dict[str, set[str]],
-    *,
-    skip_symlinks: bool,
-    item_flags: dict[str, Any],
-) -> list[VaultItem]:
-    """Items under `root/<sub>/` of each linkable type that are NOT in
-    `skip_by_type`. `item_flags` is merged into each produced VaultItem."""
-    out: list[VaultItem] = []
-    for sub, item_type in LINKABLE_TYPES:
-        skip_names = skip_by_type.get(item_type, set())
-        for entry in _iter_item_entries(root / sub):
-            if entry.name in skip_names:
-                continue
-            # Symlinks here typically resolve to a vault target or another
-            # already-managed location — not a fresh import candidate.
-            if skip_symlinks and entry.is_symlink():
-                continue
-            if not _entry_is_item(entry, item_type):
-                continue
-            out.append(_make_vault_item(entry, item_type, in_vault=False, **item_flags))
-    return out
-
-
-def _list_global_non_vault_items(global_dir: Path, vault_dir: Path) -> list[VaultItem]:
-    """Items present in `~/.claude/<sub>/` but NOT in the vault yet."""
-    return _list_non_vault_items(
-        global_dir,
-        _collect_skip_names(vault_dir),
-        skip_symlinks=False,
-        item_flags={"is_global_linked": True},
-    )
-
-
-def _list_project_non_vault_items(
-    project_dir: Path, vault_dir: Path, global_dir: Optional[Path] = None,
-) -> list[VaultItem]:
-    """Items present in `<project>/.claude/<sub>/` but NOT in the vault and
-    NOT already shadowed by a same-name item in the global tree.
-
-    Used to surface project-local skills/commands/agents as import candidates
-    in the Vault tab — these are real files inside the project directory that
-    have never been promoted to the vault. Symlinks are skipped because they
-    are already pointing into the vault (or some other resolved location) and
-    should not be presented as fresh import candidates.
-    """
-    skip = _collect_skip_names(
-        vault_dir, Path(global_dir) if global_dir is not None else None
-    )
-    return _list_non_vault_items(
-        Path(project_dir) / ".claude",
-        skip,
-        skip_symlinks=True,
-        item_flags={"is_linked": True, "is_global_linked": False},
-    )
-
-
 def _move_path(src: Path, dest: Path, *, is_dir: bool) -> None:
     """Move `src`→`dest` via os.rename, falling back to copy+remove when rename
     fails (e.g. across devices)."""
@@ -2088,11 +2073,16 @@ def migrate_to_vault(
 def list_vault_items_with_project_state(
     vault_dir: os.PathLike[str] | str,
     project_dir: os.PathLike[str] | str,
-    installed_plugins: Optional[list[PluginRef]] = None,
     global_dir: Optional[os.PathLike[str] | str] = None,
 ) -> list[VaultItem]:
-    """`listVaultItems` enriched with project/global symlink state plus
-    plugin-enabled state for the Extensions/Vault TUI tab."""
+    """`listVaultItems` enriched with project/global symlink state for the
+    Extensions/Vault TUI tab.
+
+    Vault-only by design: rows are what physically lives in the vault.
+    Plugins are never vaulted (enabledPlugins, not symlinks) and live on the
+    Plugins sub-tab; items existing only in `~/.claude/<sub>/` or
+    `<project>/.claude/<sub>/` are surfaced on the Skills/Commands/Agents
+    sub-tabs instead, where `i` imports them."""
     items = list_vault_items(vault_dir)
     pd = Path(project_dir)
     gd = Path(global_dir) if global_dir else None
@@ -2105,50 +2095,6 @@ def list_vault_items_with_project_state(
         if gd:
             g_link = gd / sub / item.name
             item.is_global_linked = g_link.is_symlink() if g_link.exists() or g_link.is_symlink() else False
-
-    if installed_plugins:
-        proj_settings = read_json(claude_dir / "settings.json", fallback={})
-        enabled = proj_settings.get("enabledPlugins") if isinstance(proj_settings, dict) else {}
-        if not isinstance(enabled, dict):
-            enabled = {}
-        global_enabled: dict[str, Any] = {}
-        if gd:
-            gs = read_json(gd / "settings.json", fallback={})
-            ge = gs.get("enabledPlugins") if isinstance(gs, dict) else {}
-            if isinstance(ge, dict):
-                global_enabled = ge
-        for p in installed_plugins:
-            created: Optional[datetime] = None
-            updated: Optional[datetime] = None
-            if p.install_path:
-                created, updated = _stat_times(Path(p.install_path))
-            items.append(
-                VaultItem(
-                    name=p.name,
-                    type="plugin",
-                    path=p.install_path,
-                    description=p.description,
-                    is_linked=bool(enabled.get(p.id) is True),
-                    is_global_linked=bool(global_enabled.get(p.id) is True),
-                    created_at=created,
-                    updated_at=updated,
-                    version=p.version,
-                )
-            )
-
-    if gd:
-        global_items = _list_global_non_vault_items(gd, Path(vault_dir))
-        for g in global_items:
-            sub = _type_to_dir(g.type)
-            lp = claude_dir / sub / g.name
-            g.is_linked = lp.is_symlink() if lp.exists() or lp.is_symlink() else False
-        items += global_items
-
-    # Project-local items: real files inside the current project that have
-    # never been promoted to the vault. These appear in the Vault tab so the
-    # user can `i`-import them in one keystroke (move into vault + leave a
-    # symlink at the original project location + record in `.axt-profile.json`).
-    items += _list_project_non_vault_items(pd, Path(vault_dir), global_dir=gd)
 
     return items
 
@@ -4144,7 +4090,18 @@ def collect_context_sources(
 
     # 5. skills
     try:
+        # The same skill can be reachable twice (e.g. ~/.claude/skills/<name>
+        # symlinked to ~/.agents/skills/<name>); count its tokens once. First
+        # occurrence wins — scan order puts the ~/.claude entry first.
+        seen_skill_roots: set[str] = set()
         for skill in list_all_skills(project_dir=proj):
+            try:
+                skill_root = str(Path(skill.path).resolve())
+            except OSError:
+                skill_root = skill.path
+            if skill_root in seen_skill_roots:
+                continue
+            seen_skill_roots.add(skill_root)
             skill_md = _safe_read_text(Path(skill.path) / "SKILL.md")
             name = skill.name
             description = ""

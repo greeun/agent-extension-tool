@@ -235,10 +235,39 @@ def test_plugin_search_prints_hint():
 
 
 def test_skill_list_empty(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("axt.PATHS", axt.Paths(skills=tmp_path / "skills"))
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setattr("axt.HOME", home)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        skills=home / ".claude" / "skills",
+        vault=tmp_path / "vault",
+        installed_plugins=tmp_path / "ip.json",
+    ))
+    monkeypatch.chdir(home)  # empty cwd — no project skills
     code, out, _ = _run(["skill", "list"])
     assert code == 0
-    assert "No standalone skills found" in out
+    assert "No skills found" in out
+
+
+def test_skill_list_includes_vault_only(tmp_path: Path, monkeypatch):
+    """CLI skill list mirrors the TUI Skills sub-tab: vault-stored skills
+    nothing links to appear with source `vault`."""
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    vault = tmp_path / "vault"
+    v = vault / "skills" / "vault-only"
+    v.mkdir(parents=True)
+    (v / "SKILL.md").write_text("---\ndescription: v\n---")
+    monkeypatch.setattr("axt.HOME", home)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        skills=home / ".claude" / "skills",
+        vault=vault,
+        installed_plugins=tmp_path / "ip.json",
+    ))
+    monkeypatch.chdir(home)
+    code, out, _ = _run(["skill", "list"])
+    assert code == 0
+    assert "vault-only" in out
 
 
 # ─── vault ───────────────────────────────────────────────────────────────────

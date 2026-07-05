@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import curses
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -831,19 +832,15 @@ def test_handle_vault_input_unlink_from_all_no_projects():
 
 
 def test_handle_vault_input_mark_toggle():
-    """Space toggles the focused item's bulk-unlink mark; plugins are ignored."""
+    """Space toggles the focused item's bulk-unlink mark."""
     s = axt.TuiState()
     s.vault_items = [
         axt.VaultItem(name="alpha", type="skill", path="", description=""),
-        axt.VaultItem(name="plug", type="plugin", path="", description=""),
+        axt.VaultItem(name="beta", type="command", path="", description=""),
     ]
     s.vault_selected = 0
     axt.handle_vault_input(s, ord(" "))
     assert s.vault_marked == {"alpha"}
-    axt.handle_vault_input(s, ord(" "))
-    assert s.vault_marked == set()
-    # Plugins cannot be unlinked via symlink → marking them is a no-op.
-    s.vault_selected = 1
     axt.handle_vault_input(s, ord(" "))
     assert s.vault_marked == set()
 
@@ -913,6 +910,205 @@ def test_handle_vault_input_esc_clears_marks():
     msg = axt.handle_vault_input(s, 27)  # Esc
     assert s.vault_marked == set()
     assert "Cleared marks" in msg
+
+
+# ─── Vault "u" = update focused item in place ────────────────────────────────
+
+
+def test_handle_vault_input_update_git_backed(monkeypatch):
+    """`u` on a skill row checks the storage path and applies the git pull
+    when an update is available; the result lands in the status message."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="myskill", type="skill",
+                      path="/vault/skills/myskill", description="")
+    ]
+    calls = {}
+    monkeypatch.setattr(
+        "axt.tui.tabs.check_path_update",
+        lambda t, n, p: axt.update.UpdateStatus(t, n, 1, "abc", "def", True))
+    monkeypatch.setattr(
+        "axt.tui.tabs.apply_path_update",
+        lambda t, n, p: (calls.setdefault("apply", (t, n, p)),
+                         axt.update.UpdateResult(t, n, "abc", "def", True, "git pull"))[1])
+    monkeypatch.setattr("axt.tui.tabs._vault_load", lambda state: None)
+    msg = axt.handle_vault_input(s, ord("u"))
+    assert calls["apply"] == ("skill", "myskill", "/vault/skills/myskill")
+    assert "Updated myskill" in msg and "abc → def" in msg
+
+
+def test_handle_vault_input_update_not_updatable(monkeypatch):
+    """Non-git (or up-to-date) item → hint message only, apply never runs."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="plain", type="skill", path="/v/s/plain", description="")
+    ]
+    monkeypatch.setattr(
+        "axt.tui.tabs.check_path_update",
+        lambda t, n, p: axt.update.UpdateStatus(t, n, 2, "local", "local", False,
+                                                note="manual (non-git)"))
+    monkeypatch.setattr(
+        "axt.tui.tabs.apply_path_update",
+        lambda *a: (_ for _ in ()).throw(AssertionError("apply must not run")))
+    msg = axt.handle_vault_input(s, ord("u"))
+    assert "manual (non-git)" in msg
+
+
+def test_handle_vault_input_update_no_path():
+    """Row without a storage path (defensive) → hint, git helpers never touched."""
+    s = axt.TuiState()
+    s.vault_items = [
+        axt.VaultItem(name="ghost", type="skill", path="", description="")
+    ]
+    msg = axt.handle_vault_input(s, ord("u"))
+    assert "no storage path" in msg
+
+
+# ─── Upd column + async update-availability check ────────────────────────────
+
+# Original captured at import time — the conftest autouse fixture replaces the
+# module attribute with a no-op for every test, so kick tests call this.
+from axt.tui.tabs import _kick_update_check as REAL_KICK_UPDATE_CHECK  # noqa: E402
+
+
+class _StubThread:
+    """Records construction instead of running anything."""
+    started: list = []
+
+    def __init__(self, target=None, args=(), name=None, daemon=None):
+        self.name = name
+
+    def start(self):
+        _StubThread.started.append(self.name)
+
+
+def test_upd_cell_markers():
+    from types import SimpleNamespace
+    from axt.tui.tabs import _upd_cell
+    from axt.core import SkillInfo
+    US = axt.update.UpdateStatus
+    s = axt.TuiState()
+    sk = lambda n: SkillInfo(name=n, path="/p", is_symlink=False, source="user")
+
+    assert _upd_cell(s, "skills", sk("sk")) == "…"       # first check not done
+    s.update_statuses = {
+        ("skill", "sk"): US("skill", "sk", 1, "a", "b", True),
+        ("skill", "manual"): US("skill", "manual", 2, "local", "local", False, note="manual (non-git)"),
+        ("skill", "err"): US("skill", "err", 1, "a", "?", False, error="fetch failed"),
+        ("marketplace", "mk"): US("marketplace", "mk", 1, "a", "a", False, note="up to date"),
+    }
+    assert _upd_cell(s, "skills", sk("sk")) == "↑"       # updatable
+    assert _upd_cell(s, "skills", sk("manual")) == "─"   # tier-2 manual
+    assert _upd_cell(s, "skills", sk("err")) == "!"      # check errored
+    assert _upd_cell(s, "market", SimpleNamespace(name="mk")) == "·"   # up to date
+    assert _upd_cell(s, "skills", sk("ghost")) == "─"    # not in registry
+    assert _upd_cell(s, "mcp", SimpleNamespace(name="x")) == "─"       # never updatable
+    assert _upd_cell(s, "hooks", SimpleNamespace(name="x")) == "─"
+
+
+def test_kick_update_check_short_circuits_on_fresh_cache(monkeypatch):
+    """A fresh disk cache binds statuses and skips the background sweep."""
+    st = axt.update.UpdateStatus("skill", "sk", 1, "a", "a", False)
+    monkeypatch.setattr("axt.tui.tabs.load_cached_update_statuses",
+                        lambda: ([st], axt.tui.tabs._iso_now()))
+    monkeypatch.setattr("axt.tui.tabs.threading.Thread", _StubThread)
+    _StubThread.started = []
+    s = axt.TuiState()
+    REAL_KICK_UPDATE_CHECK(s)
+    assert s.update_statuses == {("skill", "sk"): st}
+    assert s.update_check_loading is False
+    assert _StubThread.started == []
+
+
+def test_kick_update_check_stale_cache_kicks_worker(monkeypatch):
+    """A stale cache stays visible but a background re-check is started."""
+    st = axt.update.UpdateStatus("skill", "sk", 1, "a", "a", False)
+    monkeypatch.setattr("axt.tui.tabs.load_cached_update_statuses",
+                        lambda: ([st], "2020-01-01T00:00:00.000Z"))
+    monkeypatch.setattr("axt.tui.tabs.threading.Thread", _StubThread)
+    _StubThread.started = []
+    s = axt.TuiState()
+    REAL_KICK_UPDATE_CHECK(s)
+    assert s.update_statuses == {("skill", "sk"): st}   # stale markers kept
+    assert s.update_check_loading is True
+    assert _StubThread.started == ["axt-update-check"]
+    # In flight → a second kick is a no-op.
+    REAL_KICK_UPDATE_CHECK(s)
+    assert _StubThread.started == ["axt-update-check"]
+
+
+def test_update_check_worker_binds_and_saves(monkeypatch):
+    st = axt.update.UpdateStatus("plugin", "foo@mk", 1, "1", "2", True)
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates", lambda types=None: [st])
+    saved = {}
+    monkeypatch.setattr("axt.tui.tabs.save_cached_update_statuses",
+                        lambda sts, at: saved.update(sts=sts, at=at))
+    s = axt.TuiState()
+    s.update_check_loading = True
+    axt.tui.tabs._update_check_worker(s)
+    assert s.update_statuses == {("plugin", "foo@mk"): st}
+    assert s.update_checked_at == saved["at"]
+    assert saved["sts"] == [st]
+    assert s.update_check_loading is False
+
+
+def test_update_check_worker_absorbs_failure(monkeypatch):
+    """A raising sweep stamps an empty result — no re-kick storm, no crash."""
+    def _boom(types=None):
+        raise RuntimeError("network down")
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates", _boom)
+    s = axt.TuiState()
+    s.update_check_loading = True
+    axt.tui.tabs._update_check_worker(s)
+    assert s.update_statuses == {}
+    assert s.update_checked_at is not None
+    assert s.update_check_loading is False
+
+
+def test_ext_r_key_forces_update_recheck(monkeypatch):
+    calls = []
+    monkeypatch.setattr("axt.tui.tabs._kick_update_check",
+                        lambda state, force=False: calls.append(force))
+    s = axt.TuiState()
+    s.ext_sub_tab = "plugins"
+    msg = axt.handle_extensions_input(s, ord("r"))
+    assert calls == [True]
+    assert "re-checking" in msg
+    # Vault keeps its cheap refresh — no forced sweep.
+    calls.clear()
+    s.ext_sub_tab = "vault"
+    msg = axt.handle_extensions_input(s, ord("r"))
+    assert calls == [] and msg == "Refreshed"
+
+
+def test_act_update_settles_upd_marker(monkeypatch):
+    """After `u` applies, the row's Upd marker flips to up-to-date in place."""
+    import axt
+    from axt.core import PluginInfo
+    plugin = PluginInfo(id="foo@mk", name="foo", marketplace="mk", version="1",
+                        install_path="", scope="user", installed_at="", last_updated="")
+    monkeypatch.setattr("axt.tui.tabs._selected_item", lambda state, sub: plugin)
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates",
+        lambda types=None: [axt.update.UpdateStatus("plugin", "foo@mk", 1, "1", "2", True)])
+    monkeypatch.setattr("axt.tui.tabs.apply_updates",
+        lambda targets: [axt.update.UpdateResult("plugin", "foo@mk", "1", "2", True, "reinstall")])
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    saved = {}
+    monkeypatch.setattr("axt.tui.tabs.save_cached_update_statuses",
+                        lambda sts, at: saved.update(sts=sts))
+    s = axt.TuiState()
+    s.update_statuses = {("plugin", "foo@mk"): axt.update.UpdateStatus("plugin", "foo@mk", 1, "1", "2", True)}
+    s.update_checked_at = "2026-07-05T00:00:00.000Z"
+    msg = axt.tui.tabs._act_update(s, None, "plugins", ord("u"))
+    assert "Updated foo@mk" in msg
+    settled = s.update_statuses[("plugin", "foo@mk")]
+    assert settled.updatable is False and settled.current == "2"
+    assert any(x.name == "foo@mk" and not x.updatable for x in saved["sts"])
+
+
+def test_settle_update_status_none_state_is_noop():
+    """_act_update is also called with state=None in headless paths."""
+    axt.tui.tabs._settle_update_status(None, "plugin", "x", "1")  # must not raise
 
 
 # ─── launch_tui graceful failure ─────────────────────────────────────────────
@@ -1305,12 +1501,12 @@ def test_vault_esc_discards_pending():
     assert state.vault_pending_project == set()
 
 
-def test_vault_p_ignored_for_plugins():
-    """Plugins use enabledPlugins, not symlinks — p must not enqueue."""
+def test_vault_p_enqueues_pending_toggle():
+    """p enqueues a pending project toggle for the focused item."""
     state = axt.TuiState()
-    state.vault_items = [axt.VaultItem(name="plug", type="plugin", path="", description="")]
+    state.vault_items = [axt.VaultItem(name="myskill", type="skill", path="", description="")]
     axt.handle_vault_input(state, ord("p"))
-    assert "plug" not in state.vault_pending_project
+    assert "myskill" in state.vault_pending_project
 
 
 def test_vault_scan_runs_without_toggling_mode(tmp_path, monkeypatch):
@@ -1374,8 +1570,9 @@ def test_vault_used_column_present_in_render(tmp_path, monkeypatch):
     assert "Global " not in flat
 
 
-def test_vault_global_only_status_clarified(tmp_path, monkeypatch):
-    """A global-only item (not in vault) is marked `glob*` in the Vault column."""
+def test_vault_tab_excludes_global_only_items(tmp_path, monkeypatch):
+    """The Vault tab lists vault storage only: an item existing ONLY in
+    ~/.claude/skills (never imported) must not appear at all."""
     vault = tmp_path / "vault"
     claude = tmp_path / "claude"
     # Item exists ONLY in ~/.claude/skills, NOT in vault.
@@ -1388,42 +1585,38 @@ def test_vault_global_only_status_clarified(tmp_path, monkeypatch):
     state = axt.TuiState()
     scr = _make_stdscr(rows=20, cols=140)
     axt.render_vault_tab(scr, state, 0, 18, 140)
-    # The "glob*" status must appear at least once.
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "glob*" in flat
+    assert "myskill" not in flat
+    assert "glob*" not in flat
 
 
-def test_vault_plugin_rows_show_dash_not_import_candidate(tmp_path, monkeypatch):
-    """Plugins are never vaulted (enabledPlugins, not symlinks), so their Vault
-    cell is `─` — not the `proj*`/`glob*` import-candidate markers — regardless
-    of enabled state, and the detail panel must not suggest `i` import."""
+def test_vault_tab_has_no_plugin_rows(tmp_path, monkeypatch):
+    """Plugins are never vaulted (enabledPlugins, not symlinks) and belong to
+    the Plugins sub-tab — installed plugins must not appear in the Vault tab,
+    even alongside real vault items."""
     claude = tmp_path / "claude"
+    vault = tmp_path / "vault"
+    (vault / "skills" / "vaulted-skill").mkdir(parents=True)
+    (vault / "skills" / "vaulted-skill" / "SKILL.md").write_text("---\ndescription: v\n---")
     (tmp_path / "pl" / "one").mkdir(parents=True)
-    (tmp_path / "pl" / "two").mkdir(parents=True)
     ip = tmp_path / "ip.json"
     ip.write_text(json.dumps({"version": 2, "plugins": {
-        # Disabled everywhere — previously fell through to "proj*".
         "one@mkt": [{"installPath": str(tmp_path / "pl" / "one"), "version": "1.0.0"}],
-        # Enabled globally — previously rendered "glob*".
-        "two@mkt": [{"installPath": str(tmp_path / "pl" / "two"), "version": "2.0.0"}],
     }}))
     claude.mkdir()
     (claude / "settings.json").write_text(json.dumps(
-        {"enabledPlugins": {"two@mkt": True}}))
+        {"enabledPlugins": {"one@mkt": True}}))
     monkeypatch.setattr("axt.PATHS", axt.Paths(
-        vault=tmp_path / "vault", installed_plugins=ip, claude_dir=claude,
+        vault=vault, installed_plugins=ip, claude_dir=claude,
     ))
     monkeypatch.chdir(tmp_path)
     state = axt.TuiState()
     scr = _make_stdscr(rows=24, cols=140)
     axt.render_vault_tab(scr, state, 0, 22, 140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "one" in flat and "two" in flat
-    assert "proj*" not in flat
-    assert "glob*" not in flat
-    # Detail panel (selected row is a plugin): n/a status, no import hint.
-    assert "plugins are not vaulted" in flat
-    assert "press `i` to import" not in flat
+    assert "vaulted-skill" in flat
+    assert "one" not in [i.name for i in state.vault_items]
+    assert not any(i.type == "plugin" for i in state.vault_items)
 
 
 def test_help_text_documents_new_keys():
@@ -1438,7 +1631,10 @@ def test_help_text_documents_new_keys():
 
 def test_help_text_documents_vault_column_meanings():
     h = axt.HELP_TEXT
-    assert "glob*" in h or "global only" in h.lower()
+    # Vault tab is vault-storage-only; import moved to the file sub-tabs.
+    assert "vault" in h.lower()
+    assert "glob*" not in h and "proj*" not in h
+    assert "i=import into vault" in h
     # The short column label is "Used" (was "Used in" before the column rename).
     assert "Used" in h
 
@@ -2056,10 +2252,11 @@ def test_mcp_rows_split_registration_and_activation():
         cells = sorted((c for c in scr.calls
                         if len(c) >= 3 and c[0] == row_y and isinstance(c[2], str)),
                        key=lambda c: c[1])
-        # Glyph cells on an MCP row, in x order: Ver, Vault, Proj, Glob, On
-        # (transport/detail hold plain text) — the last three are the target.
+        # Glyph cells on an MCP row, in x order: Ver, Vault, Proj, Glob, Upd,
+        # On (transport/detail hold plain text) — pick Proj/Glob/On, skipping
+        # the always-`─` Upd cell between Glob and On.
         glyphs = [t for t in (c[2].strip() for c in cells) if t in ("●", "○", "─")]
-        return glyphs[-3:]
+        return [glyphs[-4], glyphs[-3], glyphs[-1]]
 
     assert _proj_glob_on("glob-srv") == ["─", "●", "●"]
     assert _proj_glob_on("proj-srv") == ["●", "─", "●"]
@@ -4664,35 +4861,63 @@ def test_handle_vault_input_refresh_resets_token():
     assert msg == "Refreshed"
 
 
-# ─── Vault `i` import path ────────────────────────────────────────────────────
+# ─── Skills sub-tab `i` import path ──────────────────────────────────────────
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="vault import unsupported on Windows")
-def test_handle_vault_input_import_global_only_item(tmp_path, monkeypatch):
-    """`i` on a global-only item imports it into the vault."""
+def test_act_import_to_vault_moves_user_skill(tmp_path, monkeypatch):
+    """`i` on a non-vault skill row moves it into the vault and leaves a
+    symlink at the original location."""
     claude = tmp_path / "claude"
     vault = tmp_path / "vault"
-    (claude / "skills" / "gskill").mkdir(parents=True)
-    (claude / "skills" / "gskill" / "SKILL.md").write_text("---\ndescription: g\n---")
+    src = claude / "skills" / "gskill"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("---\ndescription: g\n---")
     monkeypatch.setattr("axt.PATHS", axt.Paths(
         vault=vault, installed_plugins=tmp_path / "ip.json", claude_dir=claude,
     ))
     proj = tmp_path / "proj"
     proj.mkdir()
     monkeypatch.chdir(proj)
-
-    item = axt.VaultItem(name="gskill", type="skill",
-                         path=str(claude / "skills" / "gskill"),
-                         description="g", in_vault=False, is_global_linked=True)
     s = axt.TuiState()
-    s.vault_items = [item]
-    s.refresh_token = 1
-    msg = axt.handle_vault_input(s, ord("i"))
+    s.ext_cache["skills"] = [axt.SkillInfo(
+        name="gskill", path=str(src), is_symlink=False, source="user")]
+    s.ext_selected["skills"] = 0
+    msg = axt._act_import_to_vault(s, None, "skills", ord("i"))
     assert msg is not None and "Imported" in msg
-    assert (vault / "skills" / "gskill").exists()
+    assert (vault / "skills" / "gskill" / "SKILL.md").exists()
+    assert src.is_symlink()
 
 
-def test_handle_vault_input_import_failure_returns_error(tmp_path, monkeypatch):
+def test_act_import_to_vault_already_vaulted_is_noop(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    vs = vault / "skills" / "vaulted"
+    vs.mkdir(parents=True)
+    (vs / "SKILL.md").write_text("---\ndescription: v\n---")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=vault, installed_plugins=tmp_path / "ip.json",
+        claude_dir=tmp_path / "claude",
+    ))
+    s = axt.TuiState()
+    s.ext_cache["skills"] = [axt.SkillInfo(
+        name="vaulted", path=str(vs), is_symlink=False, source="vault")]
+    s.ext_selected["skills"] = 0
+    msg = axt._act_import_to_vault(s, None, "skills", ord("i"))
+    assert msg == "Already in vault"
+    assert not vs.is_symlink()  # untouched
+
+
+def test_act_import_to_vault_refuses_plugin_source():
+    s = axt.TuiState()
+    s.ext_cache["skills"] = [axt.SkillInfo(
+        name="p:sk", path="/plug/skills/sk", is_symlink=False,
+        source="plugin", plugin="p")]
+    s.ext_selected["skills"] = 0
+    msg = axt._act_import_to_vault(s, None, "skills", ord("i"))
+    assert msg is not None and "not importable" in msg
+
+
+def test_act_import_to_vault_failure_returns_error(tmp_path, monkeypatch):
     """If import_to_vault raises, `i` returns an 'Import failed' status."""
     monkeypatch.setattr("axt.PATHS", axt.Paths(
         vault=tmp_path / "vault", installed_plugins=tmp_path / "ip.json",
@@ -4700,13 +4925,45 @@ def test_handle_vault_input_import_failure_returns_error(tmp_path, monkeypatch):
     ))
     monkeypatch.setattr("axt.tui.tabs.import_to_vault",
                         lambda *a, **kw: (_ for _ in ()).throw(OSError("boom")))
-    item = axt.VaultItem(name="x", type="skill", path="/nope",
-                         description="", in_vault=False, is_global_linked=True)
     s = axt.TuiState()
-    s.vault_items = [item]
-    s.refresh_token = 1
-    msg = axt.handle_vault_input(s, ord("i"))
+    s.ext_cache["skills"] = [axt.SkillInfo(
+        name="x", path=str(tmp_path / "claude" / "skills" / "x"),
+        is_symlink=False, source="user")]
+    s.ext_selected["skills"] = 0
+    msg = axt._act_import_to_vault(s, None, "skills", ord("i"))
     assert msg is not None and "Import failed" in msg
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need elevation")
+def test_skills_subtab_merges_vault_only_items(tmp_path, monkeypatch):
+    """The Skills sub-tab loader appends vault-stored skills nothing links to
+    (source="vault"), keeps linked ones deduped, and applies the same
+    SKILL.md validity rule as the Vault tab."""
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    vault = tmp_path / "vault"
+    v = vault / "skills" / "vault-only"
+    v.mkdir(parents=True)
+    (v / "SKILL.md").write_text("---\ndescription: v\n---")
+    (vault / "skills" / "stray").mkdir()  # no SKILL.md → not a skill
+    linked = vault / "skills" / "linked"
+    linked.mkdir()
+    (linked / "SKILL.md").write_text("---\ndescription: l\n---")
+    os.symlink(linked, home / ".claude" / "skills" / "linked")
+    monkeypatch.setattr("axt.HOME", home)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=vault, installed_plugins=tmp_path / "ip.json",
+        claude_dir=home / ".claude", skills=home / ".claude" / "skills",
+    ))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    s = axt.TuiState()
+    axt._ensure_subtab_loaded(s, "skills")
+    rows = [(i.name, i.source) for i in s.ext_cache["skills"]]
+    assert ("vault-only", "vault") in rows
+    assert [n for n, _ in rows].count("linked") == 1   # deduped via resolve()
+    assert not any(n == "stray" for n, _ in rows)
 
 
 def test_handle_vault_input_migrate(tmp_path, monkeypatch):
@@ -4898,7 +5155,7 @@ def test_handle_extensions_input_refresh_non_vault_clears_cache():
     s.ext_sub_tab = "plugins"
     s.ext_cache["plugins"] = ["dummy"]
     msg = axt.handle_extensions_input(s, ord("r"))
-    assert msg == "Refreshed"
+    assert msg == "Refreshed — re-checking updates…"
     assert "plugins" not in s.ext_cache
 
 
@@ -6322,25 +6579,25 @@ def test_vault_apply_confirm_modal_skips_missing_item(monkeypatch):
     assert "phantom" not in seen["msg"]
 
 
-def test_vault_import_records_project_local_profile(tmp_path, monkeypatch):
-    """`i` on a project-local-only item imports it and writes the profile entry
-    (lines 724-727)."""
+def test_skills_import_records_project_local_profile(tmp_path, monkeypatch):
+    """`i` on a project-source skill under <proj>/.claude/skills imports it
+    and records the link in .axt-profile.json."""
     monkeypatch.setattr("axt.PATHS", axt.Paths(
-        claude_dir=tmp_path / "claude", vault=tmp_path / "vault"))
+        claude_dir=tmp_path / "claude", vault=tmp_path / "vault",
+        installed_plugins=tmp_path / "ip.json"))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("axt.tui.tabs.import_to_vault", lambda cd, vd, item: None)
-    monkeypatch.setattr("axt.tui.tabs._vault_load", lambda state: None)
     written = {}
     monkeypatch.setattr("axt.tui.tabs.write_profile",
-                        lambda cwd, profile: written.setdefault("done", True))
+                        lambda cwd, profile: written.setdefault("profile", profile))
     s = axt.TuiState()
-    s.vault_items = [axt.VaultItem(
-        name="loc", type="skill", path="", description="",
-        in_vault=False, is_linked=True, is_global_linked=False)]
-    s.vault_selected = 0
-    msg = axt.handle_vault_input(s, ord("i"))
-    assert msg is not None and "project-local" in msg
-    assert written.get("done") is True
+    s.ext_cache["skills"] = [axt.SkillInfo(
+        name="loc", path=str(tmp_path / ".claude" / "skills" / "loc"),
+        is_symlink=False, source="project")]
+    s.ext_selected["skills"] = 0
+    msg = axt._act_import_to_vault(s, None, "skills", ord("i"))
+    assert msg is not None and "Imported" in msg
+    assert "loc" in written["profile"].skills
 
 
 def test_vault_migrate_failure(monkeypatch):
@@ -7603,8 +7860,9 @@ def test_extensions_shortcuts_show_search_state():
 
 
 def test_subtab_shortcuts_generated_from_keymap():
-    assert axt.subtab_shortcuts("plugins") == "p:project  g:global  x:uninstall  U:update  Tab:detail"
-    assert axt.subtab_shortcuts("commands") == "p:project  g:global  e:edit  U:update  Tab:detail"
+    assert axt.subtab_shortcuts("plugins") == "p:project  g:global  x:uninstall  u:update  Tab:detail"
+    assert axt.subtab_shortcuts("commands") == "p:project  g:global  e:edit  i:import  u:update  Tab:detail"
+    assert axt.subtab_shortcuts("market") == "a:add  S:sync  x:remove  u:update  Tab:detail"
     assert axt.subtab_shortcuts("mcp") == "p:on  Tab:detail"
     assert axt.subtab_shortcuts("vault") == ""  # vault owns its own status line
 
@@ -7618,10 +7876,11 @@ def test_help_text_includes_every_keymap_help_line():
                 assert b.help in HELP_TEXT, f"{sub}: {b.help!r} missing from HELP_TEXT"
 
 
-# ─── Extensions "U" = update selected (Task 8) ───────────────────────────────
+# ─── Extensions "u" = update selected (Task 8) ───────────────────────────────
 
 
 def test_update_target_for_maps_types():
+    from types import SimpleNamespace
     from axt.tui.tabs import _update_target_for
     from axt.core import PluginInfo, SkillInfo
     p = PluginInfo(id="foo@mk", name="foo", marketplace="mk", version="1",
@@ -7629,7 +7888,8 @@ def test_update_target_for_maps_types():
     assert _update_target_for("plugins", p) == ("plugin", "foo@mk")
     s = SkillInfo(name="s", path="/p", is_symlink=False, source="user")
     assert _update_target_for("skills", s) == ("skill", "s")
-    assert _update_target_for("mcp", object()) is None      # report-only, no U action
+    assert _update_target_for("market", SimpleNamespace(name="mk")) == ("marketplace", "mk")
+    assert _update_target_for("mcp", object()) is None      # report-only, no u action
     assert _update_target_for("hooks", object()) is None
 
 
@@ -7646,6 +7906,56 @@ def test_act_update_applies_updatable_selected(monkeypatch):
         lambda targets: (applied.setdefault("t", targets),
             [axt.update.UpdateResult("plugin", "foo@mk", "1", "2", True, "reinstall")])[1])
     monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
-    msg = axt.tui.tabs._act_update(None, None, "plugins", ord("U"))
+    msg = axt.tui.tabs._act_update(None, None, "plugins", ord("u"))
     assert applied["t"] == [("plugin", "foo@mk")]
     assert "Updated foo@mk" in msg and "1 → 2" in msg
+
+
+def test_act_update_market_syncs_marketplace(monkeypatch):
+    """`u` on the Market sub-tab routes through the marketplace updater."""
+    import axt
+    from types import SimpleNamespace
+    monkeypatch.setattr("axt.tui.tabs._selected_item",
+                        lambda state, sub: SimpleNamespace(name="mk"))
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates",
+        lambda types=None: [axt.update.UpdateStatus("marketplace", "mk", 1, "abc", "def", True)])
+    applied = {}
+    monkeypatch.setattr("axt.tui.tabs.apply_updates",
+        lambda targets: (applied.setdefault("t", targets),
+            [axt.update.UpdateResult("marketplace", "mk", "abc", "def", True, "sync")])[1])
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    msg = axt.tui.tabs._act_update(None, None, "market", ord("u"))
+    assert applied["t"] == [("marketplace", "mk")]
+    assert "Updated mk" in msg and "abc → def" in msg
+
+
+def test_flash_status_forces_immediate_render():
+    """flash_status sets the status AND drives the render callback so a slow op
+    can show 'Updating…' before it blocks."""
+    import axt
+    renders = []
+    state = axt.TuiState()
+    state.stdscr_callbacks = {"stdscr": None, "render": lambda: renders.append(state.status)}
+    axt.tui.tabs.flash_status(state, "Updating foo…")
+    assert state.status == "Updating foo…"
+    assert renders == ["Updating foo…"]      # painted synchronously, once
+
+
+def test_act_update_shows_updating_before_apply(monkeypatch):
+    """`u` paints an 'Updating…' indicator BEFORE the blocking apply runs."""
+    import axt
+    from axt.core import PluginInfo
+    plugin = PluginInfo(id="foo@mk", name="foo", marketplace="mk", version="1",
+                        install_path="", scope="user", installed_at="", last_updated="")
+    monkeypatch.setattr("axt.tui.tabs._selected_item", lambda state, sub: plugin)
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates",
+        lambda types=None: [axt.update.UpdateStatus("plugin", "foo@mk", 1, "1", "2", True)])
+    seen = {}
+    monkeypatch.setattr("axt.tui.tabs.apply_updates",
+        lambda targets: (seen.setdefault("status_at_apply", state.status),
+            [axt.update.UpdateResult("plugin", "foo@mk", "1", "2", True, "reinstall")])[1])
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda s, sub: None)
+    state = axt.TuiState()
+    state.stdscr_callbacks = {"stdscr": None, "render": lambda: None}
+    axt.tui.tabs._act_update(state, None, "plugins", ord("u"))
+    assert seen["status_at_apply"] == "Updating foo@mk…"

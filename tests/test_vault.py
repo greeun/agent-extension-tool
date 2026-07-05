@@ -395,22 +395,11 @@ def test_list_with_project_state_marks_linked(tmp_path: Path):
     assert skill_enriched.is_linked is True
 
 
-def test_list_with_project_state_includes_plugins(tmp_path: Path):
-    vault = _make_vault(tmp_path)
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    plugin = axt.PluginRef(id="p@m", name="p", description="P plugin")
-    enriched = axt.list_vault_items_with_project_state(vault, proj, installed_plugins=[plugin])
-    plugin_items = [i for i in enriched if i.type == "plugin"]
-    assert len(plugin_items) == 1
-    assert plugin_items[0].name == "p"
-    assert plugin_items[0].description == "P plugin"
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
 def test_list_with_project_state_global_dir_enrichment(tmp_path: Path):
-    """Passing global_dir enriches items with global-link state, reads global
-    enabledPlugins, and merges in global-only (non-vault) items."""
+    """Passing global_dir enriches items with global-link state. The listing
+    stays vault-only: items existing only in the global tree are NOT merged
+    in (they belong to the Skills/Commands/Agents sub-tabs)."""
     vault = _make_vault(tmp_path)
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -419,20 +408,17 @@ def test_list_with_project_state_global_dir_enrichment(tmp_path: Path):
     # vault skill linked into the global dir → is_global_linked True
     skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
     axt.link_to_global(gd, skill)
-    # a global skill that is NOT in the vault → should be merged in
+    # a global skill that is NOT in the vault → must NOT appear
     extra = gd / "skills" / "global-only"
     extra.mkdir(parents=True)
     (extra / "SKILL.md").write_text("---\ndescription: g\n---\n")
-    # global enabledPlugins settings
-    (gd / "settings.json").write_text(json.dumps({"enabledPlugins": {"p@m": True}}))
-    plugin = axt.PluginRef(id="p@m", name="p", description="P")
-    enriched = axt.list_vault_items_with_project_state(
-        vault, proj, installed_plugins=[plugin], global_dir=gd)
+    enriched = axt.list_vault_items_with_project_state(vault, proj, global_dir=gd)
     myskill = next(i for i in enriched if i.name == "myskill")
     assert myskill.is_global_linked is True
-    plug = next(i for i in enriched if i.type == "plugin")
-    assert plug.is_global_linked is True
-    assert any(i.name == "global-only" and i.in_vault is False for i in enriched)
+    assert not any(i.name == "global-only" for i in enriched)
+    # Every row is vault-backed; plugins never appear here.
+    assert all(i.in_vault for i in enriched)
+    assert not any(i.type == "plugin" for i in enriched)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
@@ -544,7 +530,7 @@ def test_migrate_to_vault_skips_hidden_and_wrong_type(tmp_path: Path):
                for m in result.moved)
 
 
-# ─── Project-local import candidates ─────────────────────────────────────────
+# ─── Project-local sources for import_to_vault ───────────────────────────────
 
 
 def _make_project_local_skill(proj: Path, name: str = "proj-skill") -> Path:
@@ -556,84 +542,15 @@ def _make_project_local_skill(proj: Path, name: str = "proj-skill") -> Path:
     return skill
 
 
-def test_list_project_non_vault_items_finds_skill(tmp_path: Path):
-    vault = tmp_path / "vault"
-    proj = tmp_path / "proj"
-    _make_project_local_skill(proj)
-    items = axt._list_project_non_vault_items(proj, vault)
-    assert len(items) == 1
-    item = items[0]
-    assert item.name == "proj-skill"
-    assert item.type == "skill"
-    assert item.in_vault is False
-    assert item.is_linked is True
-    assert item.is_global_linked is False
-    assert item.description == "A project-local skill"
-
-
-def test_list_project_non_vault_items_finds_command_and_agent(tmp_path: Path):
-    vault = tmp_path / "vault"
-    proj = tmp_path / "proj"
-    (proj / ".claude" / "commands").mkdir(parents=True)
-    (proj / ".claude" / "commands" / "deploy.md").write_text(
-        '---\ndescription: "Project deploy"\n---\n'
-    )
-    (proj / ".claude" / "agents").mkdir(parents=True)
-    (proj / ".claude" / "agents" / "reviewer.md").write_text(
-        "---\ndescription: Reviews project\n---\n"
-    )
-    items = axt._list_project_non_vault_items(proj, vault)
-    by_type = {i.type: i for i in items}
-    assert set(by_type) == {"command", "agent"}
-    assert by_type["command"].name == "deploy.md"
-    assert by_type["agent"].name == "reviewer.md"
-
-
-def test_list_project_non_vault_items_skips_vault_names(tmp_path: Path):
-    vault = _make_vault(tmp_path)  # already has "myskill"
-    proj = tmp_path / "proj"
-    _make_project_local_skill(proj, name="myskill")
-    items = axt._list_project_non_vault_items(proj, vault)
-    # Project's "myskill" is shadowed by the vault entry — should not appear.
-    assert items == []
-
-
-def test_list_project_non_vault_items_skips_global_names(tmp_path: Path):
-    vault = tmp_path / "vault"
-    proj = tmp_path / "proj"
-    global_dir = tmp_path / "global"
-    (global_dir / "skills" / "shared").mkdir(parents=True)
-    (global_dir / "skills" / "shared" / "SKILL.md").write_text("---\n---\n")
-    _make_project_local_skill(proj, name="shared")
-    items = axt._list_project_non_vault_items(proj, vault, global_dir=global_dir)
-    # Same name exists globally; global wins. Project entry suppressed.
-    assert items == []
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need elevation")
-def test_list_project_non_vault_items_skips_symlinks(tmp_path: Path):
-    vault = _make_vault(tmp_path)
-    proj = tmp_path / "proj"
-    (proj / ".claude" / "skills").mkdir(parents=True)
-    # Pre-existing symlink (e.g. pointing into vault) is NOT a fresh
-    # import candidate.
-    os.symlink(vault / "skills" / "myskill", proj / ".claude" / "skills" / "linked")
-    items = axt._list_project_non_vault_items(proj, vault)
-    assert items == []
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
-def test_list_with_project_state_includes_project_local_items(tmp_path: Path):
+def test_list_with_project_state_excludes_project_local_items(tmp_path: Path):
+    """The Vault listing is vault-only: a real project-local skill never
+    promoted to the vault must NOT appear (it belongs to the Skills sub-tab)."""
     vault = _make_vault(tmp_path)
     proj = tmp_path / "proj"
     _make_project_local_skill(proj, name="local-only")
     enriched = axt.list_vault_items_with_project_state(vault, proj)
-    by_name = {i.name: i for i in enriched}
-    assert "local-only" in by_name
-    local = by_name["local-only"]
-    assert local.in_vault is False
-    assert local.is_linked is True
-    assert local.is_global_linked is False
+    assert not any(i.name == "local-only" for i in enriched)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
@@ -725,13 +642,17 @@ def test_iter_item_entries_sorted_skips_dotfiles(tmp_path: Path):
     assert [p.name for p in axt._iter_item_entries(d)] == ["a.md", "b.md"]
 
 
-def test_entry_is_item_skill_requires_dir(tmp_path: Path):
+def test_entry_is_item_skill_requires_dir_with_manifest(tmp_path: Path):
     d = tmp_path / "myskill"
     d.mkdir()
     f = tmp_path / "x.md"
     f.write_text("x")
+    bare = tmp_path / "not-a-skill"
+    bare.mkdir()
+    (d / "SKILL.md").write_text("---\ndescription: d\n---")
     assert axt._entry_is_item(d, "skill") is True
     assert axt._entry_is_item(f, "skill") is False
+    assert axt._entry_is_item(bare, "skill") is False
 
 
 def test_entry_is_item_command_requires_md_file(tmp_path: Path):

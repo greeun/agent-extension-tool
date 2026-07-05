@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from types import SimpleNamespace
 from pathlib import Path
+
+import pytest
 
 import axt
 
@@ -562,6 +566,37 @@ def test_collect_context_with_plugin_skills_mcp_commands_agents(tmp_path: Path, 
     # Commands + agents from the project.
     assert any(s.name == "deploy" for s in cats.get("commands", []))
     assert any(s.name == "helper" for s in cats.get("agents", []))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need elevation")
+def test_collect_context_dedups_symlinked_skill(tmp_path: Path, monkeypatch):
+    """A skill reachable twice — the real dir in ~/.agents/skills plus a
+    symlink in ~/.claude/skills — is counted once in the skills category."""
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    real = home / ".agents" / "skills" / "dup-skill"
+    real.mkdir(parents=True)
+    (real / "SKILL.md").write_text("---\nname: DupSkill\ndescription: d\n---\nbody")
+    (home / ".claude" / "skills").mkdir(parents=True)
+    os.symlink(real, home / ".claude" / "skills" / "dup-skill")
+
+    monkeypatch.setattr("axt.HOME", home)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        claude_dir=home / ".claude",
+        settings=home / ".claude" / "settings.json",
+        installed_plugins=tmp_path / "ip.json",
+        skills=home / ".claude" / "skills",
+    ))
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj,
+        installed_plugins_path=tmp_path / "ip.json",
+    )
+    dup_srcs = [s for s in sources if s.category == "skills" and "dup-skill" in s.name]
+    assert len(dup_srcs) == 1
 
 
 def test_collect_context_includes_sessionstart_hook(tmp_path: Path, monkeypatch):

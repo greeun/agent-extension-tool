@@ -73,13 +73,13 @@ Vault
   p             Toggle PROJECT link (pending) — marked items in bulk, else focused
   g             Toggle GLOBAL link (pending) — marked items in bulk, else focused
   U             Unlink from ALL projects: selected items if any, else focused (confirm)
+  u             Update focused item's stored content (git pull)
   Enter         Apply pending toggles (confirm y/N) OR focus detail panel
   Esc           Discard pending / clear marks → clear search → blur detail panel
   Tab           Toggle list ↔ detail panel focus
   /             Search input (type → Enter to apply, Esc to clear)
-  c             Cycle filter (all/skill/command/agent/plugin)
+  c             Cycle filter (all/skill/command/agent)
   s             Cycle sort (Name→Type→Proj→Glob→Used→Added→Updated); active column header marked ▲/▼
-  i             Import a global-only item into the vault (selected row)
   f             Re-scan ALL projects to refresh `Used` (auto-runs on launch in
                 the background; cached to disk; title shows scan age / scanning…)
   F             Toggle scan mode (default ↔ full) and re-scan (f's full variant)
@@ -89,10 +89,13 @@ Vault
   o             Open a new terminal at the item's storage path
 
 Extensions sub-tab actions
-  All sub-tabs: shared status columns Ver / Vault / Proj / Glob —
+  All sub-tabs: shared status columns Ver / Vault / Proj / Glob / Upd —
                 Vault:     ✓ stored in ~/.axt/vault  ─ not vault-managed
                 Proj/Glob: ● active  ○ inactive  · unset (plugins)
                            ─ not applicable (Market project)
+                Upd:       ↑ update available (`u` applies)  · up to date
+                           ! check error  ─ not updatable  … first check
+                           running (async; cached 1h — `r` re-checks now)
                 MCP only:  Proj/Glob mark the REGISTRATION scope (read-only:
                            user config → Glob, project/.mcp.json → Proj,
                            plugin/claude.ai/built-in → neither); the On
@@ -141,13 +144,12 @@ linked vs enabled (activation mechanism)
                             via enabledMcpServers) — always project-scoped
   The TUI shows ● / ○ for both, with the DetailPanel labeling the kind.
 
-Vault column meanings
-  Vault   ✓        Item lives in ~/.axt/vault/
-          glob*    Item only exists in ~/.claude/{{type}}s/ (use `i` to import)
-          proj*    Item only exists in <project>/.claude/{{type}}s/ (`i` imports)
-          ─        Plugins — never vaulted (managed via enabledPlugins)
-  Proj    ● / ○    linked/enabled in this project (* = pending toggle)
-  Glob    ● / ○    linked/enabled globally
+Vault tab columns
+  (every row lives in ~/.axt/vault/ — the tab lists vault storage only;
+   items found elsewhere appear on the Skills/Commands/Agents sub-tabs,
+   where `i` imports them; plugins live on the Plugins sub-tab)
+  Proj    ● / ○    linked in this project (* = pending toggle)
+  Glob    ● / ○    linked globally
   Used    N proj   Project count; auto-scanned on launch, `f` to refresh
 
 Globals
@@ -236,8 +238,8 @@ def _render_frame(stdscr, state: TuiState) -> None:
             )
         else:
             shortcuts = (
-                "1-3:tab  [/]:sub  j/k:nav  Space:mark  p:project  g:global  U:unlink-all  "
-                "Enter:apply  c:filter  s:sort  /:search  i:import  f:scan  F:scan+mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
+                "1-3:tab  [/]:sub  j/k:nav  Space:mark  p:project  g:global  u:update  U:unlink-all  "
+                "Enter:apply  c:filter  s:sort  /:search  f:scan  F:scan+mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
         shortcuts = _extensions_shortcuts(state)
@@ -370,12 +372,15 @@ def _has_background_work(state: TuiState) -> bool:
     Cases:
       - Usage tab's background loader is in flight.
       - The cross-project vault scan is in flight.
+      - The async update-availability check (Upd column) is in flight.
       - A status message is shown and waiting to auto-clear so the
         bottom-bar shortcut hints can come back.
     """
     if state.usage_loading:
         return True
     if state.vault_scan_loading:
+        return True
+    if state.update_check_loading:
         return True
     if state.status and state.status_set_at is not None:
         return True
@@ -408,7 +413,9 @@ def _tui_loop(stdscr, theme: str = "dark") -> None:
     tui_init_colors(theme, stdscr)
 
     state = TuiState()
-    state.stdscr_callbacks = {"stdscr": stdscr}
+    # `render` lets synchronous handlers force an immediate repaint before a
+    # blocking op (e.g. flash "Updating…" ahead of a git fetch/pull on `u`).
+    state.stdscr_callbacks = {"stdscr": stdscr, "render": lambda: _render_frame(stdscr, state)}
     # Show the last cross-project scan instantly, then refresh it in the
     # background so the Vault `Used` column is current on launch — no manual
     # `f` needed. The poll loop redraws when the worker finishes.

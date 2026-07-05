@@ -20,6 +20,23 @@ if str(_HERE) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
+def _no_async_update_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neutralize the Upd-column background check for every test.
+
+    `render_extensions_tab` kicks `_kick_update_check`, whose worker would
+    otherwise git-fetch the user's real marketplaces and touch the real
+    update-status cache. Tests that exercise the kick/worker re-patch these
+    seams themselves (or call the original captured at import time).
+    """
+    monkeypatch.setattr("axt.tui.tabs._kick_update_check",
+                        lambda state, force=False: None)
+    monkeypatch.setattr("axt.tui.tabs.load_cached_update_statuses",
+                        lambda: ([], None))
+    monkeypatch.setattr("axt.tui.tabs.save_cached_update_statuses",
+                        lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Run every test from a tmp dir.
 

@@ -11,14 +11,14 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 from axt.core import (
-    PATHS,
+    AXT_CONFIG_DIR, PATHS,
     list_marketplaces, get_marketplace_version, sync_marketplace, pooled_map,
-    read_json, list_installed_plugins, find_plugin_source_dir,
+    read_json, write_json_atomic, list_installed_plugins, find_plugin_source_dir,
     _read_plugin_manifest, _parse_plugin_id, is_git_repo, read_sha_file, _git,
     update_installed_plugin,
     list_all_skills, list_commands, list_all_agents,
@@ -160,11 +160,19 @@ def _plugin_check_all() -> list[UpdateStatus]:
         vi = mk_ver.get(p.marketplace)
         mk_updatable = bool(vi and vi.updatable)
         ver_changed = src_ver not in ("?", "unknown", p.version)
-        updatable = mk_updatable or ver_changed
+        # A plugin whose source has vanished from the marketplace (upstream
+        # restructured, renamed, or removed it) can never be reinstalled —
+        # _plugin_apply would fail the same way. Never advertise it as updatable
+        # off the marketplace's git movement; surface the error instead.
+        updatable = (mk_updatable or ver_changed) and not src_err
+        if src_err:
+            available = "?"
+        elif src_ver not in ("?", "unknown"):
+            available = src_ver
+        else:
+            available = vi.remote if vi else "?"
         out.append(UpdateStatus(
-            "plugin", p.id, 1, p.version,
-            src_ver if src_ver not in ("?", "unknown") else (vi.remote if vi else "?"),
-            updatable,
+            "plugin", p.id, 1, p.version, available, updatable,
             note=("up to date" if not updatable and not src_err else ""),
             error=src_err or (vi.error if vi else None),
         ))
@@ -310,6 +318,17 @@ command_updater = Updater("command", 1, _command_check_all, _command_apply)
 agent_updater = Updater("agent", 1, _agent_check_all, _agent_apply)
 
 
+def check_path_update(item_type: str, name: str, path: str) -> UpdateStatus:
+    """Update status for an item addressed by its storage path instead of the
+    linked-item registry (Vault tab: works whether or not the item is linked)."""
+    return _git_dir_status(item_type, name, _resolve_real_dir(path))
+
+
+def apply_path_update(item_type: str, name: str, path: str) -> UpdateResult:
+    """git-pull an item addressed by its storage path (see check_path_update)."""
+    return _git_dir_apply(item_type, name, _resolve_real_dir(path))
+
+
 # ── MCP updater (tier 2) — pin-detection report-only ────────────────────────
 
 def _mcp_pin_note(args: tuple[str, ...]) -> str:
@@ -417,6 +436,44 @@ def check_all_updates(types: Optional[list[str]] = None) -> list[UpdateStatus]:
         except Exception as e:  # noqa: BLE001 — isolate a broken updater
             out.append(UpdateStatus(u.item_type, "*", u.tier, "?", "?", False, error=str(e)))
     return out
+
+
+# ── update-status disk cache ────────────────────────────────────────────────
+#
+# Backs the TUI's async `Upd` column: a full check_all_updates sweep hits the
+# network (git fetch per marketplace / standalone repo), so results are
+# persisted and reused across sessions until UPDATE_STATUS_TTL_S elapses.
+# Same location & atomic-write policy as the vault scan cache.
+
+UPDATE_STATUS_TTL_S = 3600  # re-check after an hour; `r` forces earlier
+
+def _update_status_cache_path() -> Path:
+    return AXT_CONFIG_DIR / "cache" / "update-status.json"
+
+
+def save_cached_update_statuses(statuses: list[UpdateStatus], checked_at: str) -> None:
+    payload = {"checkedAt": checked_at, "statuses": [asdict(s) for s in statuses]}
+    write_json_atomic(_update_status_cache_path(), payload)
+
+
+def load_cached_update_statuses() -> tuple[list[UpdateStatus], Optional[str]]:
+    """(statuses, checkedAt ISO) from disk; ([], None) when missing/corrupt."""
+    try:
+        data = read_json(_update_status_cache_path(), fallback=None)
+    except (OSError, ValueError):  # unreadable / invalid JSON — stale, not fatal
+        return [], None
+    if not isinstance(data, dict):
+        return [], None
+    out: list[UpdateStatus] = []
+    for entry in data.get("statuses") or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            out.append(UpdateStatus(**entry))
+        except TypeError:  # schema drift — treat the whole cache as stale
+            return [], None
+    checked_at = data.get("checkedAt")
+    return out, checked_at if isinstance(checked_at, str) else None
 
 
 def apply_updates(targets: list[tuple[str, str]], *, no_sync: bool = False) -> list[UpdateResult]:

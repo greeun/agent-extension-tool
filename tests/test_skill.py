@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -70,6 +71,36 @@ def test_unlink_skill_removes_symlink(tmp_path: Path):
     axt.unlink_skill(skills_dir, "link")
     assert not (skills_dir / "link").exists()
     assert target.exists()  # target untouched
+
+
+def test_list_all_skills_prefers_nested_dot_agents_skills_dir(tmp_path: Path, monkeypatch):
+    """Third-party installers (e.g. vercel-labs/skills) nest skills under
+    `.agents/skills/`. That subfolder must not itself be mistaken for a skill,
+    and the real skills inside it must be found."""
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".agents" / "skills" / "real-skill").mkdir(parents=True)
+    (home / ".agents" / ".skill-lock.json").write_text("{}")
+    monkeypatch.setattr("axt.core.HOME", home)
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(skills=home / ".claude" / "skills"))
+    monkeypatch.setattr("axt.core._active_plugins", lambda: [])
+    found = axt.list_all_skills(project_dir=tmp_path / "proj")
+    names = sorted(s.name for s in found)
+    assert names == ["real-skill"]
+
+
+def test_list_all_skills_falls_back_to_flat_dot_agents_layout(tmp_path: Path, monkeypatch):
+    """Without a nested `skills/` subfolder, `.agents/<name>` itself is a skill
+    (the pre-existing legacy layout)."""
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".agents" / "flat-skill").mkdir(parents=True)
+    monkeypatch.setattr("axt.core.HOME", home)
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(skills=home / ".claude" / "skills"))
+    monkeypatch.setattr("axt.core._active_plugins", lambda: [])
+    found = axt.list_all_skills(project_dir=tmp_path / "proj")
+    names = sorted(s.name for s in found)
+    assert names == ["flat-skill"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only behavior")
