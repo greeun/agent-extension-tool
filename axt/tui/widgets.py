@@ -720,10 +720,11 @@ def preview_modal(stdscr, content: str, *, title: str = "Preview",
                   heading_prefix: Optional[str] = None) -> None:
     """Scrollable full-screen overlay for long content (file body, hook output).
 
-    j/k or arrows scroll; PgUp/PgDn page; g/G jump top/bottom; q/Enter exit.
-    / opens a case-insensitive search; n/N jump to the next/previous match;
-    matches are highlighted and the footer shows [match i/N]. While a search is
-    active Esc clears it first, then a second Esc closes the modal.
+    j/k or arrows scroll; PgUp/PgDn page; g/G or Home/End jump top/bottom;
+    q/Enter exit. / opens a case-insensitive search; n/N jump to the
+    next/previous match; matches are highlighted and the footer shows
+    [match i/N]. While a search is active Esc clears it first, then a second
+    Esc closes the modal.
 
     Lines starting with ``heading_prefix`` render bold-cyan as section
     headings — for callers that concatenate several documents into one preview
@@ -789,7 +790,7 @@ def preview_modal(stdscr, content: str, *, title: str = "Preview",
             if query:
                 tag = f"[match {midx + 1}/{len(matches)}]" if matches else "[no match]"
                 indicator = f"{tag}  {indicator}"
-            footer = " /:search  n/N:match  j/k ↑↓  PgUp/PgDn  g/G  q/Enter:close "
+            footer = " /:search  n/N:match  j/k ↑↓  PgUp/PgDn  g/G/Home/End  q/Enter:close "
             safe_addnstr(win, box_h - 2, 2, fit_cells(footer, box_w - 4), box_w - 4, CP_DIM())
             safe_addnstr(win, box_h - 2, max(2, box_w - cell_width(indicator) - 3), indicator, len(indicator), CP_DIM())
             win.refresh()
@@ -820,9 +821,9 @@ def preview_modal(stdscr, content: str, *, title: str = "Preview",
                 scroll = min(max_scroll, scroll + inner_h)
             elif k == curses.KEY_PPAGE:
                 scroll = max(0, scroll - inner_h)
-            elif k == ord("g"):
+            elif k in (ord("g"), curses.KEY_HOME):
                 scroll = 0
-            elif k == ord("G"):
+            elif k in (ord("G"), curses.KEY_END):
                 scroll = max_scroll
     finally:
         del win

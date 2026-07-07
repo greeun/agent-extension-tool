@@ -4575,6 +4575,17 @@ def test_preview_modal_scrolls_then_quits(monkeypatch):
     assert "row 0" in flat
 
 
+def test_preview_modal_home_end_jump_top_bottom(monkeypatch):
+    scr = _make_stdscr()
+    content = "\n".join(f"row {i}" for i in range(200))
+    # End (bottom), Home (top), then quit — same effect as G then g.
+    win, _calls = _make_modal_win([curses.KEY_END, curses.KEY_HOME, ord("q")])
+    monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
+    axt.preview_modal(scr, content, title="Big")
+    flat = "".join(c[2] for c in win.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "row 0" in flat
+
+
 def test_preview_modal_heading_prefix_colors_headings(monkeypatch):
     """Lines starting with heading_prefix render with the bold heading attr;
     body lines keep the plain attr — the per-source separation is visible."""
