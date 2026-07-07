@@ -350,6 +350,34 @@ def test_unlink_from_agents_leaves_foreign_symlink(tmp_path: Path):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_list_vault_items_enriches_is_agents_linked(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    axt.link_to_agents(agents, skill)
+    items = axt.list_vault_items_with_project_state(
+        vault, tmp_path / "proj", agents_dir=agents
+    )
+    s = next(i for i in items if i.name == "myskill")
+    assert s.is_agents_linked is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_is_agents_linked_false_for_foreign_symlink(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    (agents / "skills").mkdir(parents=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    os.symlink(other, agents / "skills" / "myskill")
+    items = axt.list_vault_items_with_project_state(
+        vault, tmp_path / "proj", agents_dir=agents
+    )
+    s = next(i for i in items if i.name == "myskill")
+    assert s.is_agents_linked is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
 def test_sync_project_links_declared_and_unlinks_orphans(tmp_path: Path):
     vault = _make_vault(tmp_path)
     proj = tmp_path / "proj"

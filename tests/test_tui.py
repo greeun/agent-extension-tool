@@ -1742,6 +1742,82 @@ def test_apply_pending_project_unlink_removes_from_used_index(tmp_path, monkeypa
     assert all(p.path != str(proj) for p in projects)
 
 
+# ─── Vault `G` — global + .agents mirror toggle ──────────────────────────────
+
+
+def _seed_G_env(tmp_path, monkeypatch):
+    """Point axt.PATHS/HOME at tmp_path and return (skill_dir, home)."""
+    skill_dir = _seed_vault_skill(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setattr("axt.HOME", home)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=tmp_path / "vault",
+        installed_plugins=tmp_path / "ip.json",
+        claude_dir=tmp_path / "claude",
+    ))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    return skill_dir, home
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_vault_G_activates_global_and_agents(tmp_path, monkeypatch):
+    skill_dir, home = _seed_G_env(tmp_path, monkeypatch)
+    item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
+                         description="", in_vault=True)
+    state = axt.TuiState()
+    state.vault_items = [item]
+
+    msg = axt.handle_vault_input(state, ord("G"))
+    assert (tmp_path / "claude" / "skills" / "myskill").is_symlink()
+    assert (home / ".agents" / "skills" / "myskill").is_symlink()
+    assert "Activated" in msg
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_vault_G_deactivates_when_both_linked(tmp_path, monkeypatch):
+    skill_dir, home = _seed_G_env(tmp_path, monkeypatch)
+    item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
+                         description="", in_vault=True,
+                         is_global_linked=True, is_agents_linked=True)
+    axt.link_to_global(tmp_path / "claude", item)
+    axt.link_to_agents(home / ".agents", item)
+    state = axt.TuiState()
+    state.vault_items = [item]
+
+    msg = axt.handle_vault_input(state, ord("G"))
+    assert not (tmp_path / "claude" / "skills" / "myskill").exists()
+    assert not (home / ".agents" / "skills" / "myskill").exists()
+    assert "Deactivated" in msg
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_vault_G_respects_skill_lock_guard(tmp_path, monkeypatch):
+    skill_dir, home = _seed_G_env(tmp_path, monkeypatch)
+    (home / ".agents").mkdir(parents=True)
+    (home / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
+                         description="", in_vault=True)
+    state = axt.TuiState()
+    state.vault_items = [item]
+
+    msg = axt.handle_vault_input(state, ord("G"))
+    # .claude linked; .agents skipped because a .skill-lock.json guards it.
+    assert (tmp_path / "claude" / "skills" / "myskill").is_symlink()
+    assert not (home / ".agents" / "skills" / "myskill").exists()
+    assert axt.SKILL_LOCK_NAME in msg
+
+
+def test_vault_G_noop_for_non_skill():
+    state = axt.TuiState()
+    state.vault_items = [
+        axt.VaultItem(name="deploy.md", type="command", path="", description="")
+    ]
+    msg = axt.handle_vault_input(state, ord("G"))
+    assert "Only skills" in msg
+
+
 # ─── Scan cache persistence ──────────────────────────────────────────────────
 
 

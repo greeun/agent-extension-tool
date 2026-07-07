@@ -1474,6 +1474,7 @@ class VaultItem:
     description: str
     is_linked: bool = False
     is_global_linked: bool = False
+    is_agents_linked: bool = False  # skill mirrored into ~/.agents/skills (points at this vault item)
     in_vault: Optional[bool] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -2152,6 +2153,7 @@ def list_vault_items_with_project_state(
     vault_dir: os.PathLike[str] | str,
     project_dir: os.PathLike[str] | str,
     global_dir: Optional[os.PathLike[str] | str] = None,
+    agents_dir: Optional[os.PathLike[str] | str] = None,
 ) -> list[VaultItem]:
     """`listVaultItems` enriched with project/global symlink state for the
     Extensions/Vault TUI tab.
@@ -2160,10 +2162,16 @@ def list_vault_items_with_project_state(
     Plugins are never vaulted (enabledPlugins, not symlinks) and live on the
     Plugins sub-tab; items existing only in `~/.claude/<sub>/` or
     `<project>/.claude/<sub>/` are surfaced on the Skills/Commands/Agents
-    sub-tabs instead, where `i` imports them."""
+    sub-tabs instead, where `i` imports them.
+
+    When `agents_dir` (a `.agents` directory) is given, skills also get
+    `is_agents_linked` — true only when `<agents_dir>/skills/<name>` is a
+    symlink resolving to this vault item, so a foreign installer's symlink or a
+    real dir does not read as our mirror."""
     items = list_vault_items(vault_dir)
     pd = Path(project_dir)
     gd = Path(global_dir) if global_dir else None
+    ad = Path(agents_dir) if agents_dir else None
     claude_dir = pd / ".claude"
 
     for item in items:
@@ -2173,6 +2181,13 @@ def list_vault_items_with_project_state(
         if gd:
             g_link = gd / sub / item.name
             item.is_global_linked = g_link.is_symlink() if g_link.exists() or g_link.is_symlink() else False
+        if ad and item.type == "skill":
+            a_link = ad / "skills" / item.name
+            if a_link.is_symlink():
+                try:
+                    item.is_agents_linked = os.path.realpath(a_link) == os.path.realpath(item.path)
+                except OSError:
+                    item.is_agents_linked = False
 
     return items
 

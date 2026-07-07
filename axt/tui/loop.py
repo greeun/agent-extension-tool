@@ -72,6 +72,9 @@ Vault
   Space         Select/deselect focused item for bulk actions (left checkbox ■/□)
   p             Toggle PROJECT link (pending) — marked items in bulk, else focused
   g             Toggle GLOBAL link (pending) — marked items in bulk, else focused
+  G             Skill only: toggle GLOBAL + .agents/skills mirror together
+                (immediate, confirm). Both linked → unlink both; else link the
+                missing side. .agents skipped when a .skill-lock.json guards it.
   U             Unlink from ALL projects: selected items if any, else focused (confirm)
   u             Update focused item's stored content (git pull)
   Enter         Apply pending toggles (confirm y/N) OR focus detail panel
@@ -238,7 +241,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
             )
         else:
             shortcuts = (
-                "1-3:tab  [/]:sub  j/k:nav  Space:mark  p:project  g:global  u:update  U:unlink-all  "
+                "1-3:tab  [/]:sub  j/k:nav  Space:mark  p:project  g:global  G:global+agents  u:update  U:unlink-all  "
                 "Enter:apply  c:filter  s:sort  /:search  f:scan  F:scan+mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":

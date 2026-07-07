@@ -287,6 +287,7 @@ def _vault_load(state: TuiState) -> None:
         PATHS.vault,
         Path.cwd(),
         global_dir=PATHS.claude_dir,
+        agents_dir=HOME / ".agents",
     )
 
 
@@ -587,6 +588,47 @@ def _vault_apply_pending(state: TuiState) -> str:
     if applied:
         _invalidate_context(state)
     return f"Applied {applied}" + (f", {errors} errors" if errors else "")
+
+
+def _vault_toggle_mirror_global(state: TuiState, item: VaultItem) -> str:
+    """`G`: activate/deactivate a skill in BOTH ~/.claude/skills and
+    ~/.agents/skills at once. Immediate (like `U`), with a confirm modal —
+    it does not use the pending `g` set.
+
+    Direction keys off the combined state: when the skill is linked in both,
+    deactivate both; otherwise link wherever it is missing. The .agents mirror
+    stays guarded — a .skill-lock.json tree is left untouched (force is
+    CLI-only via `--force-agents`), and the skip is reported."""
+    if item.type != "skill":
+        return "Only skills mirror to .agents/skills"
+    agents_dir = HOME / ".agents"
+    both_linked = item.is_global_linked and item.is_agents_linked
+    action = "Deactivate" if both_linked else "Activate"
+    cb = state.stdscr_callbacks
+    stdscr = cb.get("stdscr") if cb else None
+    if stdscr is not None:
+        msg = f"{action} {item.name} in BOTH ~/.claude/skills and ~/.agents/skills?"
+        if not confirm_modal(stdscr, msg, title="Confirm global+agents"):
+            return "Cancelled"
+    notes: list[str] = []
+    try:
+        if both_linked:
+            unlink_from_global(PATHS.claude_dir, item)
+            unlink_from_agents(agents_dir, item)
+        else:
+            if not item.is_global_linked:
+                link_to_global(PATHS.claude_dir, item)
+            if not item.is_agents_linked:
+                ok, m = link_to_agents(agents_dir, item)
+                if not ok:
+                    notes.append(m)
+    except (OSError, ValueError, FileExistsError) as exc:
+        _vault_load(state)
+        return f"Error: {exc}"
+    _vault_load(state)
+    _invalidate_context(state)
+    tail = f" ({'; '.join(notes)})" if notes else ""
+    return f"{action}d {item.name} in .claude + .agents{tail}"
 
 
 def _vault_unlink_from_all(state: TuiState, item: VaultItem) -> str:
@@ -892,6 +934,10 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         ("Project", _activation_term(current.type, current.is_linked)),
         ("Global", _activation_term(current.type, current.is_global_linked)),
     ]
+    if current.type == "skill":
+        detail_fields.append(
+            ("Agents", "mirrored" if current.is_agents_linked else "not mirrored")
+        )
     if state.vault_usage_index:
         usage = state.vault_usage_index.get(f"{current.type}:{current.name}")
         if usage and usage.projects:
@@ -1072,6 +1118,9 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         else:
             state.vault_pending_global.add(current.name)
         return None
+    elif key == ord("G") and current:
+        # G = immediate global + .agents mirror toggle for the selected skill.
+        return _vault_toggle_mirror_global(state, current)
     elif key == ord(" ") and current:
         # Space = select: toggle the focused item's bulk-unlink mark. Marks
         # accumulate across filter/search changes and are consumed by `U`.
