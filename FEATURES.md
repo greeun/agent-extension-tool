@@ -103,8 +103,8 @@ TUI 대시보드 실행.
 | `migrate` | — | `~/.claude/skills,commands,agents` → vault 이동 |
 | `add <path>` | 경로 + `-t/--type` | vault 추가 (파일/디렉터리 복사) |
 | `install <marketplace> <name>` | 마켓 + 이름 + `-t/--type` (기본 `skill`) | 마켓→vault 직접 설치 |
-| `link-global <type> <name>` | 타입 + 이름 | `~/.claude/{type}s/`에 symlink |
-| `unlink-global <type> <name>` | 타입 + 이름 | symlink 제거 |
+| `link-global <type> <name>` | 타입 + 이름 + `--mirror-agents` `--force-agents` | `~/.claude/{type}s/`에 symlink. `--mirror-agents`(skill 한정)로 `~/.agents/skills/`에도 vault를 직접 가리키는 symlink 병행 생성 — `.skill-lock.json`(서드파티 설치기 소유 표시)이 있으면 기본 거부, `--force-agents`로 강제 |
+| `unlink-global <type> <name>` | 타입 + 이름 + `--mirror-agents` | symlink 제거. `--mirror-agents`로 `~/.agents/skills/`의 대응 symlink도 제거 (이 vault 항목을 가리킬 때만) |
 
 ### 1.11 글로벌 옵션
 - `--help, -h` / `--version, -V`
@@ -156,6 +156,9 @@ Space       포커스 항목 선택/해제 — 일괄 액션 마킹 (좌측 체�
             마크가 있으면 p/g가 마크 전체의 pending 토글, U가 일괄 unlink로 동작
 U           모든 프로젝트에서 unlink: 선택된 항목 있으면 일괄, 없으면 포커스 항목 (스캔 인덱스 기준, 확인 모달)
 u           포커스 항목 콘텐츠 업데이트 (check+apply): 저장 디렉터리 git pull(심링크 추적)
+G           skill 전용 — GLOBAL + ~/.agents/skills 미러 동시 토글 (즉시 실행, 확인 모달; pending
+            `g`와 별개). 둘 다 링크됨 → 둘 다 해제, 아니면 없는 쪽을 링크. `.skill-lock.json`이
+            있는 트리는 자동 건너뜀(강제는 CLI `--force-agents` 전용)
 ```
 
 ### 2.6 키바인딩 (서브탭별 고유)
@@ -236,6 +239,7 @@ Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) 
 - `read_profile`, `write_profile` (`.axt-profile.json`)
 - `link_to_project`, `unlink_from_project`, `sync_project`
 - `link_to_global`, `unlink_from_global`
+- `link_to_agents`, `unlink_from_agents`, `skill_lock_present` — skill을 `~/.agents/skills/`에도 미러(vault 원본을 직접 가리킴). `.skill-lock.json`(서드파티 설치기 소유 트리 표시) 존재 시 기본 거부, `force=True`로 우회
 - `import_to_vault`, `migrate_to_vault`
 - **Windows 미지원**: symlink 생성 fail-safe 메시지
 
