@@ -887,13 +887,24 @@ def cli_vault_link_global(args) -> int:
         return 1
     link_to_global(PATHS.claude_dir, item)
     print(_green(f'✓ Linked {args.type} "{args.name}" to global (~/.claude/{args.type}s/{args.name})'))
+    if getattr(args, "mirror_agents", False):
+        ok, msg = link_to_agents(HOME / ".agents", item, force=getattr(args, "force_agents", False))
+        print((_green if ok else _yellow)(f'{"✓" if ok else "⊘"} {msg}'))
     return 0
 
 
 def cli_vault_unlink_global(args) -> int:
-    item = VaultItem(name=args.name, type=args.type, path="", description="")
+    # Look the item up so its vault path is known — that lets the .agents mirror
+    # remove only a symlink pointing at this vault content (see unlink_from_agents).
+    item = next(
+        (i for i in list_vault_items(PATHS.vault) if i.name == args.name and i.type == args.type),
+        None,
+    ) or VaultItem(name=args.name, type=args.type, path="", description="")
     unlink_from_global(PATHS.claude_dir, item)
     print(_green(f'✓ Unlinked {args.type} "{args.name}" from global'))
+    if getattr(args, "mirror_agents", False):
+        ok, msg = unlink_from_agents(HOME / ".agents", item)
+        print((_green if ok else _yellow)(f'{"✓" if ok else "⊘"} {msg}'))
     return 0
 
 
@@ -1128,8 +1139,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sp_vlt.add_parser("migrate", help="Move global extensions to vault"); p.set_defaults(func=cli_vault_migrate)
     p = sp_vlt.add_parser("add", help="Add extension to vault"); p.add_argument("path"); p.add_argument("-t", "--type", choices=["skill", "command", "agent"]); p.set_defaults(func=cli_vault_add)
     p = sp_vlt.add_parser("install", help="Install extension from marketplace directly to vault"); p.add_argument("marketplace"); p.add_argument("name"); p.add_argument("-t", "--type", choices=["skill", "command", "agent"], default="skill"); p.set_defaults(func=cli_vault_install)
-    p = sp_vlt.add_parser("link-global", help="Symlink vault extension to global ~/.claude/"); p.add_argument("type"); p.add_argument("name"); p.set_defaults(func=cli_vault_link_global)
-    p = sp_vlt.add_parser("unlink-global", help="Remove symlink from global ~/.claude/"); p.add_argument("type"); p.add_argument("name"); p.set_defaults(func=cli_vault_unlink_global)
+    p = sp_vlt.add_parser("link-global", help="Symlink vault extension to global ~/.claude/"); p.add_argument("type"); p.add_argument("name"); p.add_argument("--mirror-agents", action="store_true", help="Also symlink a skill into ~/.agents/skills for cross-agent tools"); p.add_argument("--force-agents", action="store_true", help="Override the .skill-lock.json guard when mirroring to ~/.agents/skills"); p.set_defaults(func=cli_vault_link_global)
+    p = sp_vlt.add_parser("unlink-global", help="Remove symlink from global ~/.claude/"); p.add_argument("type"); p.add_argument("name"); p.add_argument("--mirror-agents", action="store_true", help="Also remove the matching ~/.agents/skills symlink"); p.set_defaults(func=cli_vault_unlink_global)
 
     return parser
 

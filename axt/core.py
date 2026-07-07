@@ -1928,6 +1928,84 @@ def unlink_from_global(global_dir: os.PathLike[str] | str, item: VaultItem) -> N
         pass
 
 
+# ─── Cross-agent (.agents/skills) mirror ─────────────────────────────────────
+#
+# A vault skill can be exposed to non-Claude agents (Gemini CLI, Codex, …) that
+# read `~/.agents/skills/` by symlinking the vault content there in addition to
+# `~/.claude/skills/`. The guard below keeps axt from fighting a third-party
+# installer (e.g. vercel-labs/skills) that manages the same tree via a
+# `.skill-lock.json` sitting next to `skills/`.
+
+SKILL_LOCK_NAME = ".skill-lock.json"
+
+
+def skill_lock_present(dot_agents_dir: os.PathLike[str] | str) -> bool:
+    """True when a `.skill-lock.json` sits in the `.agents` directory — the
+    marker that a third-party installer owns that tree. axt must not write into
+    a lock-managed dir or the two managers overwrite each other."""
+    return (Path(dot_agents_dir) / SKILL_LOCK_NAME).exists()
+
+
+def link_to_agents(
+    dot_agents_dir: os.PathLike[str] | str,
+    item: VaultItem,
+    *,
+    force: bool = False,
+) -> tuple[bool, str]:
+    """Mirror a vault skill into `<.agents>/skills/<name>` as a symlink to
+    `item.path`, so agents that read `.agents/skills` also see it.
+
+    Guarded: refuses when `.skill-lock.json` marks the tree as installer-owned
+    (pass ``force=True`` to override). Only skills mirror — `.agents/skills` is
+    the cross-agent skill convention. The link points straight at the vault
+    content (no chain through `.claude/skills`). Returns ``(linked, message)``
+    and only raises on unsupported platform / an existing real file collision,
+    so callers can batch the guard/skip cases."""
+    if IS_WINDOWS:
+        raise OSError("Vault linking is not supported on Windows.")
+    if item.type != "skill":
+        return False, f"Only skills mirror to .agents/skills (got {item.type})"
+    d = Path(dot_agents_dir)
+    if skill_lock_present(d) and not force:
+        return False, f"{SKILL_LOCK_NAME} present — .agents/skills is installer-managed (use force to override)"
+    target_dir = d / "skills"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    link_path = target_dir / item.name
+    _ensure_no_real_file(link_path, target_dir)
+    os.symlink(item.path, link_path)
+    return True, f"Mirrored {item.name} to .agents/skills"
+
+
+def unlink_from_agents(
+    dot_agents_dir: os.PathLike[str] | str,
+    item: VaultItem,
+) -> tuple[bool, str]:
+    """Remove the `.agents/skills/<name>` symlink axt created for `item`.
+
+    When `item.path` is known, only a symlink that resolves to it is removed, so
+    a real skill dir or a foreign installer's symlink is never touched. With no
+    path (a bare lookup item) it falls back to removing the symlink by name. The
+    lockfile guard does NOT block removal — cleaning up our own link is always
+    safe. Returns ``(removed, message)``."""
+    if IS_WINDOWS:
+        raise OSError("Vault linking is not supported on Windows.")
+    link_path = Path(dot_agents_dir) / "skills" / item.name
+    if not link_path.is_symlink():
+        return False, f"No axt symlink at .agents/skills/{item.name}"
+    if item.path:
+        try:
+            points_here = os.path.realpath(link_path) == os.path.realpath(item.path)
+        except OSError:
+            points_here = False
+        if not points_here:
+            return False, f".agents/skills/{item.name} points elsewhere — left as is"
+    try:
+        link_path.unlink()
+    except OSError as exc:
+        return False, f"Unlink failed: {exc}"
+    return True, f"Removed .agents/skills/{item.name}"
+
+
 # ─── Sync / Migrate / Import ─────────────────────────────────────────────────
 
 

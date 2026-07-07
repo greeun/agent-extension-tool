@@ -274,6 +274,81 @@ def test_link_unlink_global(tmp_path: Path):
     assert not (global_dir / "skills" / "myskill").exists()
 
 
+# ─── Cross-agent (.agents/skills) mirror ─────────────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_agents_mirrors_skill_pointing_at_vault(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    ok, _ = axt.link_to_agents(agents, skill)
+    link = agents / "skills" / "myskill"
+    assert ok
+    assert link.is_symlink()
+    # Points straight at the vault content, not through .claude/skills.
+    assert os.path.realpath(link) == os.path.realpath(skill.path)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_agents_refuses_non_skill(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    cmd = next(i for i in axt.list_vault_items(vault) if i.type == "command")
+    ok, msg = axt.link_to_agents(tmp_path / ".agents", cmd)
+    assert not ok and "Only skills" in msg
+    assert not (tmp_path / ".agents").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_agents_guarded_by_skill_lock(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    (agents / axt.SKILL_LOCK_NAME).write_text("{}")
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    ok, msg = axt.link_to_agents(agents, skill)
+    assert not ok and axt.SKILL_LOCK_NAME in msg
+    assert not (agents / "skills" / "myskill").exists()
+    # force overrides the guard.
+    ok, _ = axt.link_to_agents(agents, skill, force=True)
+    assert ok and (agents / "skills" / "myskill").is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_agents_refuses_real_dir_collision(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    (agents / "skills" / "myskill").mkdir(parents=True)
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    with pytest.raises(FileExistsError):
+        axt.link_to_agents(agents, skill)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_unlink_from_agents_only_removes_matching_link(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    axt.link_to_agents(agents, skill)
+    ok, _ = axt.unlink_from_agents(agents, skill)
+    assert ok
+    assert not (agents / "skills" / "myskill").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_unlink_from_agents_leaves_foreign_symlink(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    (agents / "skills").mkdir(parents=True)
+    foreign = tmp_path / "elsewhere"
+    foreign.mkdir()
+    os.symlink(foreign, agents / "skills" / "myskill")
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    ok, msg = axt.unlink_from_agents(agents, skill)
+    assert not ok and "points elsewhere" in msg
+    assert (agents / "skills" / "myskill").is_symlink()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
 def test_sync_project_links_declared_and_unlinks_orphans(tmp_path: Path):
     vault = _make_vault(tmp_path)
