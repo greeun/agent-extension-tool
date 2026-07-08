@@ -274,10 +274,30 @@ def _invalidate_context(state: TuiState) -> None:
 
 
 def _refresh_ext(state: TuiState, sub: str) -> None:
-    """Drop the cached listing for `sub` and mark context analysis stale — the
-    standard pair after any extension mutation in the Extensions tab."""
+    """Drop the cached listing for `sub`, reload it immediately, and re-anchor
+    the selection on the same item by identity — the standard pair after any
+    extension mutation in the Extensions tab.
+
+    A mutation can reorder the sort or insert a new row (e.g. `g` linking a
+    plugin-sourced agent into ~/.claude/agents adds an unprefixed entry that
+    sorts ahead of the plugin's own `plugin:name` row), so reusing the old
+    numeric selection index would silently focus a different item. Falls
+    back to the stale numeric index (clamped downstream) when the previously
+    selected item no longer exists, e.g. after uninstall/unlink."""
+    selected_key = None
+    if sub in state.ext_cache:
+        view = _subtab_view(state, sub)
+        idx = state.ext_selected.get(sub, 0)
+        if 0 <= idx < len(view):
+            selected_key = _item_key(sub, view[idx])
     state.ext_cache.pop(sub, None)
     _invalidate_context(state)
+    if selected_key is not None:
+        _ensure_subtab_loaded(state, sub)
+        new_view = _subtab_view(state, sub)
+        new_idx = next((i for i, it in enumerate(new_view) if _item_key(sub, it) == selected_key), None)
+        if new_idx is not None:
+            state.ext_selected[sub] = new_idx
 
 
 def _vault_load(state: TuiState) -> None:
