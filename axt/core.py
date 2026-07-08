@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 
 T = TypeVar("T")
 
