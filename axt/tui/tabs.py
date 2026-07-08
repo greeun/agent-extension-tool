@@ -46,11 +46,8 @@ from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
     _add_to_index,
     _date_in_tz,
     _days_ago_in_tz,
-    _encode_project_dir_name,
     _iso_now,
     _project_name_from_path,
-    _safe_listdir,
-    _safe_read_text,
     _today_in_tz,
     _ts_ms,
     _type_to_dir,
@@ -162,7 +159,7 @@ class TuiState:
     # "project" (per-project context files). Rate limits render above both
     # sub-tabs as a persistent strip. ←/→ at the subTab focus layer or [/] in
     # the body cycle between them — mirrors the Extensions sub-tab model.
-    context_sub_tab: str = "sources"
+    context_sub_tab: str = "project"
     # Scroll offset for the shared bottom detail panel (mirrors the active
     # sub-tab's selected row). PgUp/PgDn scroll it; reset on selection move.
     context_detail_scroll: int = 0
@@ -171,6 +168,8 @@ class TuiState:
     # Detail-panel scroll is owned by context_detail_scroll, not here.
     project_items: Optional[list] = None
     project_selected: int = 0
+    # Active `s`-cycle sort key for the Project sub-tab (mirrors ext_sort).
+    project_sort: str = "tokens"
 
     # Bridge between handler functions and curses-bound widgets. The handlers
     # don't receive stdscr (so they remain unit-testable), so we stash a dict
@@ -1819,6 +1818,7 @@ def _project_item_detail_fields(item) -> list[tuple[str, str]]:
     return [
         ("Source", item.source),
         ("Lines", str(item.lines)),
+        ("Tokens", f"{format_tokens(item.estimated_tokens)} ({item.percentage:.1f}%)"),
         ("Path", item.path),
         ("Preview", preview or "—"),
     ]
@@ -1838,12 +1838,16 @@ def _render_project_files_table(stdscr, state: TuiState, y0: int, h: int, w: int
         return
     state.project_selected = max(0, min(state.project_selected, len(items) - 1))
     columns = [
-        TableColumn("name", "Name", max(20, w - 24)),
+        TableColumn("name", "Name", max(20, w - 44)),
         TableColumn("source", "Source", 8),
         TableColumn("lines", "Lines", 6),
+        TableColumn("tokens", "Tokens", 10),
+        TableColumn("pct", "%", 8),
     ]
-    rows_data = [{"name": i.name, "source": i.source, "lines": str(i.lines)}
-                 for i in items]
+    rows_data = [{
+        "name": i.name, "source": i.source, "lines": str(i.lines),
+        "tokens": format_tokens(i.estimated_tokens), "pct": f"{i.percentage:.1f}%",
+    } for i in items]
     render_table(stdscr, body_y, 0, body_h, w, columns, rows_data,
                  selected=(state.project_selected if focused else -1),
                  show_header=True)
@@ -1858,7 +1862,7 @@ def _context_detail_for(state: TuiState, analysis: ContextAnalysis,
         if items and 0 <= state.project_selected < len(items):
             cur = items[state.project_selected]
             return cur.name, _project_item_detail_fields(cur)
-        return "Project files", [("(empty)", "—")]
+        return "Project context", [("(empty)", "—")]
     if rows and 0 <= state.context_selected < len(rows):
         current = rows[state.context_selected]
         fields: list[tuple[str, str]] = []
@@ -2019,69 +2023,113 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
 # ─── Project tab ─────────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
-class ProjectContextItem:
-    name: str
-    source: str
-    path: str
-    content: str
-    lines: int
+# `s`-cycle sort definitions for the Project sub-tab's column headers, mirroring
+# the Extensions sub-tabs' _SUBTAB_SORT_SPECS (same (key, keyfunc, reverse,
+# marked_col, glyph) shape — see that comment for the field meanings). "tokens"
+# is the default so the list opens biggest-consumer-first; "pct" is omitted
+# because percentage is a fixed linear scaling of tokens (same total for every
+# row), so it would always produce an identical order — a no-op cycle step.
+_PROJECT_SORT_SPECS: tuple = (
+    ("tokens",   lambda s: s.estimated_tokens,                                        True,  "tokens",   "▼"),
+    ("name",     lambda s: _lc(s.name),                                               False, "name",     "▲"),
+    ("category", lambda s: (_lc(s.category), _lc(s.name)),                            False, "category", "▲"),
+    ("scope",    lambda s: (getattr(s, "scope", "global") != "project", _lc(s.name)),  False, "scope",    "▲"),
+)
 
 
-def load_project_context(cwd: os.PathLike[str] | str) -> list[ProjectContextItem]:
-    """Mirror src/core/project-context.ts. Returns CLAUDE.md / settings.json /
-    memory files relevant to the given project directory."""
-    home = HOME
-    claude_dir = home / ".claude"
-    # Encode the project path the way Claude Code names its projects dir:
-    # `/` and `.` both collapse to `-`, leading dash preserved.
-    project_settings_dir_name = _encode_project_dir_name(cwd)
-    project_settings_dir = claude_dir / "projects" / project_settings_dir_name
+def _project_sort_spec(state: TuiState):
+    keys = [s[0] for s in _PROJECT_SORT_SPECS]
+    cur = state.project_sort if state.project_sort in keys else keys[0]
+    return next(s for s in _PROJECT_SORT_SPECS if s[0] == cur)
 
-    # Project settings live in the project tree (<cwd>/.claude/settings*.json)
-    # — the same paths collect_context_sources reads; ~/.claude/projects/<key>/
-    # only holds transcripts and memory.
-    candidates = [
-        ("CLAUDE.md (global)", "global", home / "CLAUDE.md"),
-        ("CLAUDE.md (user)", "user", claude_dir / "CLAUDE.md"),
-        ("CLAUDE.md (project)", "project", Path(cwd) / "CLAUDE.md"),
-        ("CLAUDE.md (project/.claude)", "project", Path(cwd) / ".claude" / "CLAUDE.md"),
-        ("CLAUDE.local.md (local)", "local", Path(cwd) / "CLAUDE.local.md"),
-        ("settings.json (global)", "global", claude_dir / "settings.json"),
-        ("settings.local.json (global)", "global", claude_dir / "settings.local.json"),
-        ("settings.json (project)", "project", Path(cwd) / ".claude" / "settings.json"),
-        ("settings.local.json (project)", "project", Path(cwd) / ".claude" / "settings.local.json"),
-    ]
-    items: list[ProjectContextItem] = []
-    for name, source, path in candidates:
-        content = _safe_read_text(path)
-        if content is None:
-            continue
-        items.append(ProjectContextItem(
-            name=name, source=source, path=str(path), content=content,
-            lines=content.count("\n") + 1,
-        ))
 
-    memory_dir = project_settings_dir / "memory"
-    for f in _safe_listdir(memory_dir):
-        if not f.endswith(".md"):
-            continue
-        fp = memory_dir / f
-        content = _safe_read_text(fp)
-        if content is None:
-            continue
-        stem = Path(f).stem
-        items.append(ProjectContextItem(
-            name=f"Memory: {stem}", source="memory", path=str(fp),
-            content=content, lines=content.count("\n") + 1,
-        ))
-    return items
+def _apply_project_sort(state: TuiState, items: list) -> list:
+    _, keyfunc, reverse, _, _ = _project_sort_spec(state)
+    try:
+        return sorted(items, key=keyfunc, reverse=reverse)
+    except (TypeError, AttributeError):
+        return items
+
+
+def _cycle_project_sort(state: TuiState) -> None:
+    """Advance state.project_sort to the next column in _PROJECT_SORT_SPECS
+    and re-sort the already-loaded items in place."""
+    keys = [s[0] for s in _PROJECT_SORT_SPECS]
+    i = keys.index(state.project_sort) if state.project_sort in keys else 0
+    state.project_sort = keys[(i + 1) % len(keys)]
+    state.project_selected = 0
+    if state.project_items is not None:
+        state.project_items = _apply_project_sort(state, state.project_items)
 
 
 def _ensure_project_loaded(state: TuiState) -> None:
+    """Populate state.project_items with every ContextSource that occupies
+    this session's context — not just the CLAUDE.md/settings/memory files a
+    project owns, but the full baseline (system prompt, hooks, skills,
+    mcp-tools, plugins, commands, agents, git-status, user-context) that
+    axt would also load when run in this project. Reuses the same analysis
+    the Sources sub-tab shows (collect_context_sources), just flattened to
+    item level instead of rolled up by category."""
     if state.project_items is not None:
         return
-    state.project_items = load_project_context(Path.cwd())
+    _ensure_context_loaded(state)
+    state.project_items = _apply_project_sort(state, list(state.context_analysis.sources))
+
+
+def _project_item_detail_fields(item) -> list[tuple[str, str]]:
+    """(label, value) pairs for the focused Project item's detail panel."""
+    preview = "\n".join(item.content.splitlines()[:12]) if item.content else ""
+    fields: list[tuple[str, str]] = [
+        ("Category", CATEGORY_LABELS.get(item.category, item.category)),
+        ("Scope", "project" if getattr(item, "scope", "global") == "project" else "global"),
+        ("Tokens", f"{format_tokens(item.estimated_tokens)} ({item.percentage:.1f}%)"),
+    ]
+    if item.hint:
+        fields.append(("Hint", item.hint))
+    fields.append(("Path", item.path or "—"))
+    fields.append(("Preview", preview or "—"))
+    return fields
+
+
+def _render_project_files_table(stdscr, state: TuiState, y0: int, h: int, w: int,
+                                focused: bool = False) -> None:
+    """Render every context source occupying this project's session (system
+    prompt, CLAUDE.md, settings, memory, skills, mcp-tools, plugins, hooks,
+    commands, agents, git-status, user-context) as a full-width table.
+    Detail goes to the shared bottom panel."""
+    _ensure_project_loaded(state)
+    items = state.project_items or []
+    render_section_header(stdscr, y0, w,
+        f"Project context — {Path.cwd().name}  ({len(items)} sources)")
+    body_y, body_h = y0 + 1, max(1, h - 1)
+    if not items:
+        safe_addnstr(stdscr, body_y, 2, "No project context sources found.", w - 4, CP_DIM())
+        return
+    state.project_selected = max(0, min(state.project_selected, len(items) - 1))
+    columns = [
+        TableColumn("name", "Name", max(20, w - 54)),
+        TableColumn("category", "Category", 15),
+        TableColumn("scope", "Scope", 8),
+        TableColumn("tokens", "Tokens", 10),
+        TableColumn("pct", "%", 7),
+    ]
+    # Mark the header of the column the list is currently sorted by (`s` cycles it).
+    _, _, _, marked_col, glyph = _project_sort_spec(state)
+    if marked_col:
+        columns = [
+            TableColumn(c.key, f"{c.label} {glyph}", c.width) if c.key == marked_col else c
+            for c in columns
+        ]
+    rows_data = [{
+        "name": i.name,
+        "category": CATEGORY_LABELS.get(i.category, i.category),
+        "scope": "project" if getattr(i, "scope", "global") == "project" else "global",
+        "tokens": format_tokens(i.estimated_tokens),
+        "pct": f"{i.percentage:.1f}%",
+    } for i in items]
+    render_table(stdscr, body_y, 0, body_h, w, columns, rows_data,
+                 selected=(state.project_selected if focused else -1),
+                 show_header=True)
 
 
 def handle_project_input(state: TuiState, key: int) -> Optional[str]:
@@ -2095,14 +2143,34 @@ def handle_project_input(state: TuiState, key: int) -> Optional[str]:
         state.project_selected = max(0, state.project_selected - 1)
     elif key == ord("r"):
         state.project_items = None
+        state.context_analysis = None
         return "Refreshed"
+    elif key == ord("s"):
+        _cycle_project_sort(state)
+        return f"Sort: {state.project_sort}"
     elif is_enter(key) and state.stdscr_callbacks and items and state.project_selected < n:
         item = items[state.project_selected]
-        preview_modal(state.stdscr_callbacks["stdscr"], item.content, title=item.name)
+        preview_modal(state.stdscr_callbacks["stdscr"], item.content or "", title=item.name)
     elif key == ord("e") and state.stdscr_callbacks and items and state.project_selected < n:
         item = items[state.project_selected]
+        if not item.path:
+            return "No file to edit for this source"
         ok = open_in_editor(state.stdscr_callbacks["stdscr"], item.path)
         return f"Opened {item.path}" if ok else "Editor failed"
+    elif key == ord("d") and state.stdscr_callbacks and items and state.project_selected < n:
+        item = items[state.project_selected]
+        if item.category != "memory":
+            return "Only memory files can be deleted here"
+        stdscr = state.stdscr_callbacks["stdscr"]
+        if confirm_modal(stdscr, f"Delete {item.name}?\nThis removes {item.path}.", title="Confirm delete"):
+            try:
+                delete_memory_file(item.path)
+                state.project_items = None
+                state.context_analysis = None
+                return f"Deleted {item.name}"
+            except (OSError, ValueError) as exc:
+                return f"Delete failed: {exc}"
+        return "Cancelled"
     return None
 
 
@@ -2122,8 +2190,8 @@ EXTENSION_SUB_TABS: tuple[tuple[str, str], ...] = (
 
 # Context sub-tabs (Rate limits renders above both as a persistent strip).
 CONTEXT_SUB_TABS: tuple[tuple[str, str], ...] = (
-    ("sources", "Sources"),
     ("project", "Project"),
+    ("sources", "Sources"),
 )
 
 # Registry: which main tabs own a sub-tab bar, plus the TuiState attribute

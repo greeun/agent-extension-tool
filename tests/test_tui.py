@@ -30,16 +30,27 @@ def _make_stdscr(rows: int = 30, cols: int = 120):
     return scr
 
 
+def _project_source(name, *, category="claude-md", scope="project", path="",
+                    content="x\n", tokens=1, pct=0.0):
+    """Minimal ContextSource for Project sub-tab tests (state.project_items
+    now holds ContextSource, not the removed ProjectContextItem)."""
+    return axt.ContextSource(
+        name=name, category=category, path=path, chars=len(content),
+        estimated_tokens=tokens, percentage=pct, actionable=True,
+        content=content, scope=scope,
+    )
+
+
 def test_main_tabs_three_resource_types():
     """Top-level tabs after Dashboard was folded into Usage."""
     keys = [t[0] for t in axt.MAIN_TABS]
     assert keys == ["extensions", "context", "usage"]
 
 
-def test_tui_state_default_context_sub_tab_is_sources():
-    """Context tab opens on the Sources sub-tab."""
+def test_tui_state_default_context_sub_tab_is_project():
+    """Context tab opens on the Project sub-tab."""
     s = axt.TuiState()
-    assert s.context_sub_tab == "sources"
+    assert s.context_sub_tab == "project"
 
 
 def test_render_frame_dispatches_usage_tab(monkeypatch):
@@ -60,11 +71,11 @@ def test_cycle_sub_tab_rotates_extensions_and_context():
     assert state.ext_sub_tab == "vault"
     axt._cycle_sub_tab(state, "extensions", +1)
     assert state.ext_sub_tab == "skills"
-    assert state.context_sub_tab == "sources"  # untouched
+    assert state.context_sub_tab == "project"  # untouched
     axt._cycle_sub_tab(state, "context", +1)
-    assert state.context_sub_tab == "project"
-    axt._cycle_sub_tab(state, "context", +1)  # wraps back
     assert state.context_sub_tab == "sources"
+    axt._cycle_sub_tab(state, "context", +1)  # wraps back
+    assert state.context_sub_tab == "project"
 
 
 def _make_empty_context_analysis():
@@ -92,57 +103,52 @@ def _make_empty_context_analysis_with_source():
 
 
 def test_context_tab_shows_project_files_on_project_sub_tab(monkeypatch, tmp_path):
-    """The Project sub-tab lists project context files under its header."""
+    """The Project sub-tab lists every context source under its header."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "CLAUDE.md").write_text("# test\nproject level\n")
 
     scr = _make_stdscr(rows=40, cols=140)
     state = axt.TuiState()
     state.context_sub_tab = "project"
-    state.context_analysis = _make_empty_context_analysis()
+    state.context_analysis = _seed_context_analysis_with_sources()
     axt.render_context_tab(scr, state, y0=3, h=30, w=140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Project files" in flat
+    assert "Project context" in flat
     assert "CLAUDE.md" in flat
 
 
 def test_context_tab_hides_project_files_on_sources_sub_tab(monkeypatch, tmp_path):
-    """The Sources sub-tab (default) does not render the Project files list."""
+    """The Sources sub-tab does not render the Project sources list."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "CLAUDE.md").write_text("# test\nshould not appear\n")
 
     scr = _make_stdscr(rows=40, cols=140)
-    state = axt.TuiState()  # defaults to the sources sub-tab
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
     state.context_analysis = _make_empty_context_analysis()
     axt.render_context_tab(scr, state, y0=3, h=30, w=140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Project files" not in flat
+    assert "Project context" not in flat
 
 
-def test_context_tab_default_sub_tab_is_sources():
-    assert axt.TuiState().context_sub_tab == "sources"
+def test_context_tab_default_sub_tab_is_project():
+    assert axt.TuiState().context_sub_tab == "project"
 
 
 def test_context_tab_bracket_keys_cycle_sub_tabs():
     """[ / ] cycle the Context sub-tab from the body (mirrors Extensions)."""
     state = axt.TuiState()
-    assert state.context_sub_tab == "sources"
-    msg = axt.handle_context_input(state, ord("]"))
     assert state.context_sub_tab == "project"
-    assert "project" in msg
-    axt.handle_context_input(state, ord("["))
+    msg = axt.handle_context_input(state, ord("]"))
     assert state.context_sub_tab == "sources"
+    assert "sources" in msg
+    axt.handle_context_input(state, ord("["))
+    assert state.context_sub_tab == "project"
 
 
 def test_context_tab_jk_routes_to_project_sub_tab():
     """On the Project sub-tab, j/k drive project_selected, not context_selected
     (the keys are routed to the project handler)."""
     state = axt.TuiState()
-    state.project_items = [
-        axt.ProjectContextItem(name=f"f{i}", source="project",
-                               path=f"/p/{i}", content="x\n", lines=1)
-        for i in range(3)
-    ]
+    state.project_items = [_project_source(f"f{i}", path=f"/p/{i}") for i in range(3)]
     state.context_sub_tab = "project"
     before_ctx = state.context_selected
     axt.handle_context_input(state, ord("j"))
@@ -163,19 +169,20 @@ def test_at_top_of_content_tracks_active_sub_tab():
 
 
 def test_context_tab_project_pane_has_detail_panel(monkeypatch, tmp_path):
-    """The shared bottom detail panel exposes the focused Project file's
-    metadata (Source / Path / Lines) when the Project pane owns the keyboard."""
+    """The shared bottom detail panel exposes the focused Project source's
+    metadata (Category / Scope / Tokens / Path) when the Project pane owns
+    the keyboard."""
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "CLAUDE.md").write_text("# heading\nbody line\n")
     scr = _make_stdscr(rows=40, cols=140)
     state = axt.TuiState()
-    state.context_analysis = _make_empty_context_analysis()
+    state.context_analysis = _seed_context_analysis_with_sources()
     state.context_sub_tab = "project"  # Project sub-tab → shared detail mirrors it
     axt.render_context_tab(scr, state, y0=3, h=34, w=140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Source:" in flat
+    assert "Category:" in flat
+    assert "Scope:" in flat
+    assert "Tokens:" in flat
     assert "Path:" in flat
-    assert "Lines:" in flat
 
 
 def test_tui_state_initial_focus_is_main_tab():
@@ -1324,6 +1331,7 @@ def test_render_context_basic(tmp_path, monkeypatch):
     monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
     monkeypatch.setattr("axt.get_git_status", lambda _: "")
     state = axt.TuiState()
+    state.context_sub_tab = "sources"
     scr = _make_stdscr(rows=30, cols=140)
     axt.render_context_tab(scr, state, 0, 28, 140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
@@ -1369,24 +1377,22 @@ def test_extensions_sub_tab_cycle_backward():
     assert state.ext_sub_tab == "market"
 
 
-# ─── load_project_context smoke test ─────────────────────────────────────────
+# ─── _ensure_project_loaded smoke test ────────────────────────────────────────
 
 
-def test_load_project_context_picks_up_claude_md(tmp_path, monkeypatch):
+def test_ensure_project_loaded_picks_up_claude_md_and_system_prompt(tmp_path, monkeypatch):
+    """Project sub-tab items come straight from collect_context_sources, so a
+    project CLAUDE.md shows up alongside always-on baseline sources like the
+    system prompt — not just the file categories."""
     _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
     (tmp_path / "CLAUDE.md").write_text("hello")
-    items = axt.load_project_context(tmp_path)
-    names = [i.name for i in items]
+    state = axt.TuiState()
+    axt._ensure_project_loaded(state)
+    names = [i.name for i in state.project_items]
     assert "CLAUDE.md (project)" in names
-
-
-def test_load_project_context_lines_count(tmp_path, monkeypatch):
-    _setup_isolated_paths(tmp_path, monkeypatch)
-    (tmp_path / "CLAUDE.md").write_text("one\ntwo\nthree\n")
-    items = axt.load_project_context(tmp_path)
-    item = next((i for i in items if i.name == "CLAUDE.md (project)"), None)
-    assert item is not None
-    assert item.lines == 4  # 3 newlines + 1 (final empty line counts)
+    assert "System Prompt" in names
 
 
 # ─── Vault: tab background + search + pending toggles + scan ─────────────────
@@ -3184,9 +3190,8 @@ def test_project_enter_calls_preview(monkeypatch):
     called = []
     monkeypatch.setattr("axt.preview_modal", lambda stdscr, content, title="Preview": called.append((title, content)))
     state = axt.TuiState()
-    state.project_items = [axt.ProjectContextItem(
-        name="CLAUDE.md (project)", source="project", path="/p/CLAUDE.md",
-        content="hello", lines=1,
+    state.project_items = [_project_source(
+        "CLAUDE.md (project)", path="/p/CLAUDE.md", content="hello",
     )]
     state.project_selected = 0
     state.stdscr_callbacks = {"stdscr": object()}
@@ -3208,6 +3213,7 @@ def test_context_sources_enter_previews_actual_content(monkeypatch):
         name="System prompt", category="claude-md", path="",
         chars=0, estimated_tokens=50, percentage=0.5, actionable=False)
     state = axt.TuiState()
+    state.context_sub_tab = "sources"
     state.context_analysis = axt.ContextAnalysis(
         total_tokens=150, context_window_size=200_000, used_percent=0.1,
         model="claude-sonnet", sources=[with_content, without_content],
@@ -3228,13 +3234,86 @@ def test_project_e_calls_editor(monkeypatch):
     called = []
     monkeypatch.setattr("axt.open_in_editor", lambda stdscr, path: called.append(path) or True)
     state = axt.TuiState()
-    state.project_items = [axt.ProjectContextItem(
-        name="X", source="project", path="/p/X.md", content="x", lines=1,
-    )]
+    state.project_items = [_project_source("X", path="/p/X.md")]
     state.project_selected = 0
     state.stdscr_callbacks = {"stdscr": object()}
     axt.handle_project_input(state, ord("e"))
     assert called == ["/p/X.md"]
+
+
+def test_project_e_no_file_for_fixed_source(monkeypatch):
+    """A fixed source with no real path (e.g. System Prompt) reports the
+    no-file status instead of failing the editor call."""
+    state = axt.TuiState()
+    state.project_items = [_project_source("System Prompt", category="system-prompt", scope="global", path="")]
+    state.project_selected = 0
+    state.stdscr_callbacks = {"stdscr": object()}
+    msg = axt.handle_project_input(state, ord("e"))
+    assert msg == "No file to edit for this source"
+
+
+def test_project_d_deletes_memory_file_on_confirm(monkeypatch):
+    deleted = []
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: True)
+    monkeypatch.setattr("axt.delete_memory_file", lambda path: deleted.append(str(path)))
+    state = axt.TuiState()
+    state.project_items = [_project_source(
+        "Memory: topic", category="memory", path="/mem/topic.md",
+    )]
+    state.project_selected = 0
+    state.context_analysis = object()  # invalidated on success
+    state.stdscr_callbacks = {"stdscr": object()}
+    msg = axt.handle_project_input(state, ord("d"))
+    assert deleted == ["/mem/topic.md"]
+    assert msg == "Deleted Memory: topic"
+    assert state.project_items is None
+    assert state.context_analysis is None
+
+
+def test_project_d_cancelled_leaves_file(monkeypatch):
+    deleted = []
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: False)
+    monkeypatch.setattr("axt.delete_memory_file", lambda path: deleted.append(str(path)))
+    state = axt.TuiState()
+    state.project_items = [_project_source(
+        "Memory: topic", category="memory", path="/mem/topic.md",
+    )]
+    state.project_selected = 0
+    state.stdscr_callbacks = {"stdscr": object()}
+    msg = axt.handle_project_input(state, ord("d"))
+    assert deleted == []
+    assert msg == "Cancelled"
+    assert state.project_items is not None  # untouched
+
+
+def test_project_d_rejects_non_memory_source(monkeypatch):
+    deleted = []
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: True)
+    monkeypatch.setattr("axt.delete_memory_file", lambda path: deleted.append(str(path)))
+    state = axt.TuiState()
+    state.project_items = [_project_source(
+        "CLAUDE.md (project)", path="/p/CLAUDE.md",
+    )]
+    state.project_selected = 0
+    state.stdscr_callbacks = {"stdscr": object()}
+    msg = axt.handle_project_input(state, ord("d"))
+    assert deleted == []
+    assert msg == "Only memory files can be deleted here"
+
+
+def test_project_d_delete_failure_reports_message(monkeypatch):
+    monkeypatch.setattr("axt.confirm_modal", lambda *a, **kw: True)
+    def _raise(path):
+        raise OSError("boom")
+    monkeypatch.setattr("axt.delete_memory_file", _raise)
+    state = axt.TuiState()
+    state.project_items = [_project_source(
+        "Memory: topic", category="memory", path="/mem/topic.md",
+    )]
+    state.project_selected = 0
+    state.stdscr_callbacks = {"stdscr": object()}
+    msg = axt.handle_project_input(state, ord("d"))
+    assert msg == "Delete failed: boom"
 
 
 # ─── Context Rate-Limit bars ─────────────────────────────────────────────────
@@ -3487,9 +3566,9 @@ def test_context_down_arrow_descends_to_sub_tab():
     subTab layer (mirrors Extensions); a second ↓ enters the content."""
     state = axt.TuiState()
     state.tab_idx = _tab_idx("context")
-    # Give the Sources sub-tab focusable rows so the second descent passes the
-    # "no rows → keep focus on subTab" guard.
-    state.context_analysis = _make_empty_context_analysis_with_source()
+    # Give the (default) Project sub-tab focusable rows so the second descent
+    # passes the "no rows → keep focus on subTab" guard.
+    state.project_items = [_project_source("CLAUDE.md", path="/p/CLAUDE.md")]
     scr = _make_stdscr()
     axt._handle_layer_key(scr, state, curses.KEY_DOWN, "context")
     assert state.focused_layer == "subTab"
@@ -5176,6 +5255,7 @@ def test_handle_context_input_navigation():
 
 def test_handle_context_input_refresh_clears_analysis():
     s = axt.TuiState()
+    s.context_sub_tab = "sources"
     s.context_analysis = _seed_context_analysis_with_sources()
     msg = axt.handle_context_input(s, ord("r"))
     assert msg == "Refreshed"
@@ -5187,6 +5267,7 @@ def test_handle_context_input_enter_opens_preview(monkeypatch):
     monkeypatch.setattr("axt.preview_modal",
                         lambda stdscr, content, title="Preview", **kw: called.append((title, content)))
     s = axt.TuiState()
+    s.context_sub_tab = "sources"
     s.context_analysis = _seed_context_analysis_with_sources()
     s.stdscr_callbacks = {"stdscr": object()}
     s.context_selected = 0
@@ -5200,6 +5281,7 @@ def test_handle_context_input_e_opens_editor(monkeypatch):
     monkeypatch.setattr("axt.open_in_editor",
                         lambda stdscr, path: called.append(path) or True)
     s = axt.TuiState()
+    s.context_sub_tab = "sources"
     s.context_analysis = _seed_context_analysis_with_sources()
     s.stdscr_callbacks = {"stdscr": object()}
     s.context_selected = 0
@@ -5215,6 +5297,7 @@ def test_handle_context_input_e_no_file_in_category(monkeypatch):
         percentage=0.1, path="", hint="", chars=40, actionable=False,
     )
     s = axt.TuiState()
+    s.context_sub_tab = "sources"
     s.context_analysis = axt.ContextAnalysis(
         total_tokens=10, context_window_size=200_000, used_percent=0.0,
         model="m", sources=[src],
@@ -5256,28 +5339,25 @@ def test_handle_context_input_nav_and_cycle_reset_detail_scroll():
     assert s.context_detail_scroll == 0
     s.context_detail_scroll = 7
     axt.handle_context_input(s, ord("]"))
-    assert s.context_sub_tab == "project"
+    assert s.context_sub_tab == "sources"
     assert s.context_detail_scroll == 0
 
 
 def test_handle_project_input_nav_moves_selection():
     s = axt.TuiState()
-    s.project_items = [
-        axt.ProjectContextItem(name=f"f{i}", source="project",
-                               path=f"/p/f{i}", content="x", lines=1)
-        for i in range(3)
-    ]
+    s.project_items = [_project_source(f"f{i}", path=f"/p/f{i}") for i in range(3)]
     axt.handle_project_input(s, ord("j"))
     assert s.project_selected == 1
 
 
 def test_handle_project_input_refresh():
     s = axt.TuiState()
-    s.project_items = [axt.ProjectContextItem(
-        name="f", source="project", path="/p/f", content="x", lines=1)]
+    s.project_items = [_project_source("f", path="/p/f")]
+    s.context_analysis = _make_empty_context_analysis()
     msg = axt.handle_project_input(s, ord("r"))
     assert msg == "Refreshed"
     assert s.project_items is None
+    assert s.context_analysis is None
 
 
 # ─── handle_extensions_input: list nav on non-vault sub-tabs ──────────────────
@@ -5961,26 +6041,28 @@ def test_render_context_tab_sources_and_project_sub_tabs(tmp_path, monkeypatch):
     state = axt.TuiState()
     state.context_analysis = _seed_context_analysis_with_sources()
 
-    # Sources sub-tab (default): sources table, no Project files list.
+    # Sources sub-tab: sources table, no Project sources list.
+    state.context_sub_tab = "sources"
     scr = _make_stdscr(rows=40, cols=140)
     axt.render_context_tab(scr, state, 0, 38, 140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Category" in flat  # sources table header
-    assert "Project files" not in flat
+    assert "Project context" not in flat
     assert "cost:" in flat
 
-    # Project sub-tab: Project files list.
+    # Project sub-tab: Project sources list.
     state.context_sub_tab = "project"
     scr = _make_stdscr(rows=40, cols=140)
     axt.render_context_tab(scr, state, 0, 38, 140)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "Project files" in flat
+    assert "Project context" in flat
     assert "cost:" in flat
 
 
 def test_render_context_tab_no_sources_message(tmp_path, monkeypatch):
     _setup_isolated_paths(tmp_path, monkeypatch)
     state = axt.TuiState()
+    state.context_sub_tab = "sources"
     state.context_analysis = _make_empty_context_analysis()  # no sources
     scr = _make_stdscr(rows=40, cols=140)
     axt.render_context_tab(scr, state, 0, 38, 140)
@@ -5995,21 +6077,18 @@ def test_render_project_files_pane_empty(tmp_path, monkeypatch):
     scr = _make_stdscr(rows=20, cols=120)
     axt._render_project_files_table(scr, state, 0, 10, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "No project context files found." in flat
+    assert "No project context sources found." in flat
 
 
 def test_render_project_files_pane_with_items(tmp_path, monkeypatch):
     _setup_isolated_paths(tmp_path, monkeypatch)
     state = axt.TuiState()
-    state.project_items = [
-        axt.ProjectContextItem(name="CLAUDE.md", source="project",
-                               path="/p/CLAUDE.md", content="x", lines=10)
-    ]
+    state.project_items = [_project_source("CLAUDE.md", path="/p/CLAUDE.md")]
     scr = _make_stdscr(rows=20, cols=120)
     axt._render_project_files_table(scr, state, 0, 10, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "CLAUDE.md" in flat
-    assert "Project files" in flat
+    assert "Project context" in flat
 
 
 # ─── render_vault_tab: empty filtered + search prompt ─────────────────────────
@@ -6124,6 +6203,7 @@ def test_content_layer_non_climb_key_not_consumed():
     False so the tab body handler can process it."""
     state = axt.TuiState()
     state.tab_idx = _tab_idx("context")
+    state.context_sub_tab = "sources"
     state.focused_layer = "content"
     state.context_selected = 3  # not at top → KEY_UP does not climb
     scr = _make_stdscr()
@@ -6229,7 +6309,7 @@ def test_tui_loop_resize_then_quit(monkeypatch, tmp_path):
 
 
 def test_tui_loop_context_sub_tab_switch_then_quit(monkeypatch, tmp_path):
-    """←/→ on the Context sub-tab bar switches sub-tabs (Sources → Project)."""
+    """←/→ on the Context sub-tab bar switches sub-tabs (Project → Sources)."""
     _setup_isolated_paths(tmp_path, monkeypatch)
     monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
     monkeypatch.setattr("axt.get_git_status", lambda _: "")
@@ -6242,10 +6322,10 @@ def test_tui_loop_context_sub_tab_switch_then_quit(monkeypatch, tmp_path):
         captured["sub_tab"] = state.context_sub_tab
         return real_render(stdscr, state)
     monkeypatch.setattr("axt.tui.loop._render_frame", spy_render)
-    # '2' → Context tab; ↓ → subTab layer; → cycles to Project; 'q' quits.
+    # '2' → Context tab; ↓ → subTab layer; → cycles to Sources; 'q' quits.
     scr = _loop_stdscr([ord("2"), curses.KEY_DOWN, curses.KEY_RIGHT, ord("q")])
     axt._tui_loop(scr)
-    assert captured["sub_tab"] == "project"
+    assert captured["sub_tab"] == "sources"
 
 
 def test_tui_loop_timeout_tick_redraws(monkeypatch, tmp_path):
@@ -6283,8 +6363,10 @@ def test_tui_loop_content_layer_routes_keys_to_tab_handler(monkeypatch, tmp_path
         captured["selected"] = state.context_selected
         return real_render(stdscr, state)
     monkeypatch.setattr("axt.tui.loop._render_frame", spy_render)
-    # '2' → Context tab; ↓ → subTab; ↓ → content layer; 'j' → handler; 'q' quits.
-    scr = _loop_stdscr([ord("2"), curses.KEY_DOWN, curses.KEY_DOWN, ord("j"), ord("q")])
+    # '2' → Context tab; ↓ → subTab (Project); → cycles to Sources; ↓ → content
+    # layer; 'j' → handler; 'q' quits.
+    scr = _loop_stdscr([ord("2"), curses.KEY_DOWN, curses.KEY_RIGHT,
+                        curses.KEY_DOWN, ord("j"), ord("q")])
     axt._tui_loop(scr)
     assert captured["layer"] == "content"
 
@@ -6900,6 +6982,7 @@ def test_render_context_sources_empty_category_detail(monkeypatch, tmp_path):
     rows = [axt._ContextCategoryRow(
         category="rules", scope="global", label="Rules", items=0, tokens=0, pct=0.0)]
     state = axt.TuiState()
+    state.context_sub_tab = "sources"
     state.context_selected = 0
     title, fields = axt._context_detail_for(state, analysis, rows)
     assert title == "Rules — global"
@@ -6918,53 +7001,79 @@ def test_render_context_tab_loading_when_analysis_none(tmp_path, monkeypatch):
     assert "Loading context" in flat
 
 
-def test_load_project_context_skips_non_md_memory(tmp_path, monkeypatch):
-    """A non-.md file in the project memory dir is skipped (line 1541 continue);
-    a readable .md memory file is included (lines 1546-1550)."""
-    monkeypatch.setattr("axt.HOME", tmp_path / "home")
-    proj = tmp_path / "myproj"
-    proj.mkdir()
-    settings_dir_name = str(proj).replace("/", "-")
-    mem = tmp_path / "home" / ".claude" / "projects" / settings_dir_name / "memory"
-    mem.mkdir(parents=True)
-    (mem / "notes.md").write_text("# memory note\nbody\n")
-    (mem / "skipme.txt").write_text("ignored")
-    items = axt.load_project_context(proj)
-    names = [i.name for i in items]
-    assert any("Memory: notes" in n for n in names)
-    assert not any("skipme" in n for n in names)
-
-
-def test_load_project_context_skips_unreadable_md_memory(tmp_path, monkeypatch):
-    """A .md memory file that can't be read (content is None) is skipped via
-    the `continue` at line 1545 — no Memory item is produced for it."""
-    monkeypatch.setattr("axt.HOME", tmp_path / "home")
-    proj = tmp_path / "myproj"
-    proj.mkdir()
-    settings_dir_name = str(proj).replace("/", "-")
-    mem = tmp_path / "home" / ".claude" / "projects" / settings_dir_name / "memory"
-    mem.mkdir(parents=True)
-    bad = mem / "broken.md"
-    bad.write_text("x")
-    # Force _safe_read_text to return None for the memory .md file (simulating
-    # a read error) while leaving other candidate reads to the real function.
-    real_read = axt.tui.tabs._safe_read_text
-    monkeypatch.setattr("axt.tui.tabs._safe_read_text",
-                        lambda p: None if str(p).endswith("broken.md") else real_read(p))
-    items = axt.load_project_context(proj)
-    assert not any("Memory: broken" in i.name for i in items)
-
-
 def test_handle_project_input_k_moves_selection_up():
     """`k` on the Project sub-tab moves the selection up."""
     s = axt.TuiState()
     s.project_items = [
-        axt.ProjectContextItem(name="a", source="user", path="/a", content="x", lines=1),
-        axt.ProjectContextItem(name="b", source="user", path="/b", content="y", lines=1),
+        _project_source("a", path="/a", content="x"),
+        _project_source("b", path="/b", content="y"),
     ]
     s.project_selected = 1
     axt.handle_project_input(s, ord("k"))
     assert s.project_selected == 0
+
+
+# ─── Project sub-tab: `s` column-sort cycle ───────────────────────────────────
+
+
+def _project_sort_fixture():
+    return [
+        _project_source("Zebra", category="commands", scope="global", tokens=5, pct=5.0),
+        _project_source("Alpha", category="hooks", scope="project", tokens=50, pct=50.0),
+        _project_source("Middle", category="agents", scope="project", tokens=20, pct=20.0),
+    ]
+
+
+def test_cycle_project_sort_advances_through_columns():
+    """`s` cycles Project's active sort key tokens → name → category → scope,
+    wrapping back to tokens; each step re-sorts the loaded items and resets
+    the selection."""
+    s = axt.TuiState()
+    assert s.project_sort == "tokens"
+    s.project_items = _project_sort_fixture()
+    s.project_selected = 2
+
+    axt._cycle_project_sort(s)
+    assert s.project_sort == "name"
+    assert s.project_selected == 0
+    assert [i.name for i in s.project_items] == ["Alpha", "Middle", "Zebra"]
+
+    axt._cycle_project_sort(s)
+    assert s.project_sort == "category"
+    assert [i.category for i in s.project_items] == ["agents", "commands", "hooks"]
+
+    axt._cycle_project_sort(s)
+    assert s.project_sort == "scope"
+    assert [i.scope for i in s.project_items] == ["project", "project", "global"]
+
+    axt._cycle_project_sort(s)
+    assert s.project_sort == "tokens"
+    assert [i.name for i in s.project_items] == ["Alpha", "Middle", "Zebra"]  # 50, 20, 5 desc
+
+
+def test_handle_project_input_s_cycles_sort():
+    s = axt.TuiState()
+    s.project_items = _project_sort_fixture()
+    msg = axt.handle_project_input(s, ord("s"))
+    assert s.project_sort == "name"
+    assert msg == "Sort: name"
+
+
+def test_render_project_files_table_marks_sorted_column_header():
+    """The active sort column's header carries the ▲/▼ glyph (mirrors the
+    Vault/Extensions sub-tab sort-cycle convention)."""
+    state = axt.TuiState()
+    state.project_items = _project_sort_fixture()
+    scr = _make_stdscr(rows=20, cols=140)
+    axt._render_project_files_table(scr, state, 0, 10, 140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Tokens ▼" in flat
+
+    axt._cycle_project_sort(state)  # → name
+    scr2 = _make_stdscr(rows=20, cols=140)
+    axt._render_project_files_table(scr2, state, 0, 10, 140)
+    flat2 = "".join(c[2] for c in scr2.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Name ▲" in flat2
 
 
 def test_ensure_subtab_loaded_commands(tmp_path, monkeypatch):

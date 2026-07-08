@@ -372,6 +372,54 @@ def test_truncate_memory_byte_limit():
     assert len(out.encode("utf-8")) <= axt.MEMORY_BYTE_LIMIT
 
 
+# ── delete_memory_file ────────────────────────────────────────────────────────
+
+
+def test_delete_memory_file_removes_file_and_index_line(tmp_path: Path):
+    mem_dir = tmp_path / "memory"
+    mem_dir.mkdir()
+    (mem_dir / "MEMORY.md").write_text(
+        "# Memory index\n"
+        "- [Branching policy](branching-policy.md) — hook\n"
+        "- [Other](other.md) — hook\n"
+    )
+    (mem_dir / "branching-policy.md").write_text("content")
+
+    axt.delete_memory_file(mem_dir / "branching-policy.md")
+
+    assert not (mem_dir / "branching-policy.md").exists()
+    index = (mem_dir / "MEMORY.md").read_text()
+    assert "branching-policy.md" not in index
+    assert "other.md" in index
+
+
+def test_delete_memory_file_missing_index_is_noop(tmp_path: Path):
+    mem_dir = tmp_path / "memory"
+    mem_dir.mkdir()
+    (mem_dir / "topic.md").write_text("content")
+
+    axt.delete_memory_file(mem_dir / "topic.md")  # no MEMORY.md → no error
+
+    assert not (mem_dir / "topic.md").exists()
+
+
+def test_delete_memory_file_deleting_index_itself_skips_strip(tmp_path: Path):
+    mem_dir = tmp_path / "memory"
+    mem_dir.mkdir()
+    (mem_dir / "MEMORY.md").write_text("# Memory index\n")
+
+    axt.delete_memory_file(mem_dir / "MEMORY.md")
+
+    assert not (mem_dir / "MEMORY.md").exists()
+
+
+def test_delete_memory_file_rejects_path_outside_memory_dir(tmp_path: Path):
+    (tmp_path / "notes.md").write_text("content")
+    with pytest.raises(ValueError):
+        axt.delete_memory_file(tmp_path / "notes.md")
+    assert (tmp_path / "notes.md").exists()
+
+
 # ── get_claude_version / get_git_status error handling ───────────────────────
 
 
@@ -491,6 +539,50 @@ def test_collect_context_memory_and_settings(tmp_path: Path, monkeypatch):
     git_srcs = by_cat["git-status"]
     assert "M file.py" in (git_srcs[0].content or "")
     assert git_srcs[0].estimated_tokens == axt.estimate_tokens(git_srcs[0].content)
+
+
+def test_collect_context_skips_non_md_memory_file(tmp_path: Path, monkeypatch):
+    """A non-.md file in the project memory dir is not turned into a source;
+    a readable .md memory file is."""
+    _isolate_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    proj.mkdir(parents=True)
+    (home / ".claude").mkdir(parents=True)
+    mem_dir = home / ".claude" / "projects" / axt._encode_project_dir_name(proj) / "memory"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "notes.md").write_text("# memory note\nbody\n")
+    (mem_dir / "skipme.txt").write_text("ignored")
+
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json")
+    names = [s.name for s in sources if s.category == "memory"]
+    assert any("notes" in n for n in names)
+    assert not any("skipme" in n for n in names)
+
+
+def test_collect_context_skips_unreadable_md_memory_file(tmp_path: Path, monkeypatch):
+    """A .md memory file that fails to read (content is None) produces no
+    Memory source for it."""
+    _isolate_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    proj.mkdir(parents=True)
+    (home / ".claude").mkdir(parents=True)
+    mem_dir = home / ".claude" / "projects" / axt._encode_project_dir_name(proj) / "memory"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "broken.md").write_text("x")
+    real_read = axt._safe_read_text
+    monkeypatch.setattr("axt._safe_read_text",
+                        lambda p: None if str(p).endswith("broken.md") else real_read(p))
+
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json")
+    assert not any("broken" in s.name for s in sources if s.category == "memory")
 
 
 def test_collect_context_project_settings_from_project_tree(tmp_path: Path, monkeypatch):

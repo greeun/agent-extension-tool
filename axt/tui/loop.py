@@ -138,6 +138,8 @@ Context
                 Project: preview the focused file's content
   e             Sources: open first source file in $EDITOR
                 Project: open the focused file in $EDITOR
+  d             Project: delete the focused Memory: * file (confirm) — also
+                drops its line from the sibling MEMORY.md index
 
 linked vs enabled (activation mechanism)
   skill / command / agent → "linked"   = SYMLINK at .claude/<type>s/<name>
@@ -247,7 +249,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
     elif tab_key == "extensions":
         shortcuts = _extensions_shortcuts(state)
     elif tab_key == "context":
-        shortcuts = "1-3:tab  [/]:sub  j/k:nav  PgUp/PgDn:scroll  e:edit  Enter:preview  r:refresh  ?:help  q:quit"
+        shortcuts = "1-3:tab  [/]:sub  j/k:nav  PgUp/PgDn:scroll  e:edit  d:delete(memory)  Enter:preview  r:refresh  ?:help  q:quit"
     else:
         shortcuts = "1-3:tab  j/k:nav  r:refresh  ?:help  q:quit"
     # Color the status message by its kind so action results stand out:

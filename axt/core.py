@@ -1035,15 +1035,24 @@ def _scan_dot_agents_skills(dot_agents_dir: os.PathLike[str] | str, source: str)
     return _scan_skills_dir(d, source)
 
 
-def list_all_skills(*, project_dir: Optional[os.PathLike[str] | str] = None) -> list[SkillInfo]:
-    """User (~/.claude/skills + ~/.agents) + project + enabled-plugin skills."""
+def list_all_skills(*, project_dir: Optional[os.PathLike[str] | str] = None,
+                     include_agents_dir: bool = True) -> list[SkillInfo]:
+    """User (~/.claude/skills + ~/.agents) + project + enabled-plugin skills.
+
+    `include_agents_dir=False` skips the `.agents` cross-agent mirror tree —
+    Claude Code itself never reads it (only Gemini CLI/Codex/vercel-labs-style
+    tools do), so callers modeling what Claude actually loads (the Context
+    tab's token accounting) must pass False. Mirrors the reasoning in
+    `list_vault_only_items`."""
     out: list[SkillInfo] = []
     out += _scan_skills_dir(PATHS.skills, "user")
-    out += _scan_dot_agents_skills(HOME / ".agents", "user")
+    if include_agents_dir:
+        out += _scan_dot_agents_skills(HOME / ".agents", "user")
     if project_dir:
         out += _scan_skills_dir(Path(project_dir) / ".claude" / "skills", "project")
-    # `.agents` next to the project, defaulting to cwd when project_dir missing.
-    out += _scan_dot_agents_skills(Path(project_dir or os.getcwd()) / ".agents", "project")
+    if include_agents_dir:
+        # `.agents` next to the project, defaulting to cwd when project_dir missing.
+        out += _scan_dot_agents_skills(Path(project_dir or os.getcwd()) / ".agents", "project")
 
     for p in _active_plugins():
         out += _scan_skills_dir(Path(p.install_path) / "skills", "plugin", p.name)
@@ -1197,13 +1206,20 @@ def _make_agent(name, source, path, plugin, description, _raw, version):
                      description=description, version=version)
 
 
-def list_all_agents(*, project_dir: Optional[os.PathLike[str] | str] = None) -> list[AgentInfo]:
+def list_all_agents(*, project_dir: Optional[os.PathLike[str] | str] = None,
+                     include_agents_dir: bool = True) -> list[AgentInfo]:
+    """`include_agents_dir=False` skips the `.agents` cross-agent mirror tree —
+    Claude Code itself never reads it (only Gemini CLI/Codex/vercel-labs-style
+    tools do), so callers modeling what Claude actually loads (the Context
+    tab's token accounting) must pass False."""
     out: list[AgentInfo] = []
     out += _scan_md_dir(PATHS.claude_dir / "agents", "user", factory=_make_agent)
-    out += _scan_md_dir(HOME / ".agents", "user", factory=_make_agent)
+    if include_agents_dir:
+        out += _scan_md_dir(HOME / ".agents", "user", factory=_make_agent)
     if project_dir:
         out += _scan_md_dir(Path(project_dir) / ".claude" / "agents", "project", factory=_make_agent)
-    out += _scan_md_dir(Path(project_dir or os.getcwd()) / ".agents", "project", factory=_make_agent)
+    if include_agents_dir:
+        out += _scan_md_dir(Path(project_dir or os.getcwd()) / ".agents", "project", factory=_make_agent)
     for p in _active_plugins():
         out += _scan_md_dir(Path(p.install_path) / "agents", "plugin", p.name,
                              factory=_make_agent, plugin_version=p.version or "")
@@ -4118,6 +4134,46 @@ def _truncate_memory(content: str) -> str:
     return joined
 
 
+_MEMORY_INDEX_LINK_RE = re.compile(r"\]\(([^)]+)\)")
+
+
+def _strip_memory_index_line(index_path: Path, filename: str) -> None:
+    """Best-effort: drop the `MEMORY.md` index line that links to `filename`
+    (format: `- [Title](filename.md) — hook`). No-op if the index is missing
+    or none of its lines reference that file."""
+    content = _safe_read_text(index_path)
+    if content is None:
+        return
+    kept = [
+        line for line in content.split("\n")
+        if (m := _MEMORY_INDEX_LINK_RE.search(line)) is None or m.group(1).strip() != filename
+    ]
+    new_content = "\n".join(kept)
+    if new_content == content:
+        return
+    tmp_path = index_path.parent / f".tmp-{uuid.uuid4().hex}.md"
+    try:
+        tmp_path.write_text(new_content, encoding="utf-8")
+        os.replace(tmp_path, index_path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def delete_memory_file(path: os.PathLike[str] | str) -> None:
+    """Delete one memory markdown file (`~/.claude/projects/<key>/memory/*.md`)
+    and drop its line from the sibling `MEMORY.md` index, if any."""
+    p = Path(path)
+    if p.parent.name != "memory":
+        raise ValueError(f'"{p}" is not inside a memory/ directory.')
+    p.unlink()
+    if p.name != "MEMORY.md":
+        _strip_memory_index_line(p.parent / "MEMORY.md", p.name)
+
+
 @dataclass
 class ContextSource:
     name: str
@@ -4383,11 +4439,13 @@ def collect_context_sources(
 
     # 5. skills
     try:
-        # The same skill can be reachable twice (e.g. ~/.claude/skills/<name>
-        # symlinked to ~/.agents/skills/<name>); count its tokens once. First
-        # occurrence wins — scan order puts the ~/.claude entry first.
+        # The same vault skill can be reachable twice (e.g. linked into both
+        # ~/.claude/skills/<name> and <proj>/.claude/skills/<name>); count its
+        # tokens once. First occurrence wins — scan order puts the user entry
+        # first. include_agents_dir=False: Claude Code never reads .agents/skills
+        # (that tree is for other agent tools), so it must not inflate this count.
         seen_skill_roots: set[str] = set()
-        for skill in list_all_skills(project_dir=proj):
+        for skill in list_all_skills(project_dir=proj, include_agents_dir=False):
             try:
                 skill_root = str(Path(skill.path).resolve())
             except OSError:
@@ -4474,7 +4532,7 @@ def collect_context_sources(
     # 10. agents
     _collect_listed(
         sources,
-        lambda: list_all_agents(project_dir=proj),
+        lambda: list_all_agents(project_dir=proj, include_agents_dir=False),
         "agents",
         text_fn=lambda a: f"- {a.name}: {a.description}",
         path_fn=lambda a: a.source_path,
