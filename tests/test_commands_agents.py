@@ -247,6 +247,34 @@ def test_list_commands_includes_enabled_plugin(tmp_path: Path, monkeypatch):
     assert plugin_cmds[0].name == "myplug:pcmd"
     assert plugin_cmds[0].plugin == "myplug"
     assert plugin_cmds[0].description == "Plugin command"
+    assert plugin_cmds[0].version == "3.1"  # falls back to parent plugin's manifest version
+
+
+def test_list_commands_own_frontmatter_version_wins_over_plugin(tmp_path: Path, monkeypatch):
+    import json
+
+    install = tmp_path / "plug"
+    _write_md(
+        install / "commands" / "pcmd.md",
+        '---\ndescription: "Plugin command"\nversion: 9.9.9\n---\n',
+    )
+    ip = tmp_path / "installed_plugins.json"
+    ip.write_text(json.dumps({
+        "version": 2,
+        "plugins": {
+            "myplug@mkt": [{"scope": "user", "installPath": str(install), "version": "3.1",
+                            "installedAt": "", "lastUpdated": ""}]
+        },
+    }))
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"enabledPlugins": {"myplug@mkt": True}}))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        claude_dir=tmp_path / "nohome",
+        settings=settings,
+        installed_plugins=ip,
+    ))
+    plugin_cmds = [c for c in axt.list_commands() if c.source == "plugin"]
+    assert plugin_cmds[0].version == "9.9.9"
 
 
 def test_list_commands_skips_disabled_plugin(tmp_path: Path, monkeypatch):
@@ -276,4 +304,4 @@ def test_list_all_agents_includes_enabled_plugin(tmp_path: Path, monkeypatch):
     assert len(plugin_agents) == 1
     assert plugin_agents[0].name == "myplug:pagent"
     assert plugin_agents[0].description == "Plugin agent"
-    assert plugin_agents[0].version == ""  # _make_agent does not propagate plugin version field here
+    assert plugin_agents[0].version == "3.1"  # falls back to parent plugin's manifest version

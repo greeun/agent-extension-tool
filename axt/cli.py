@@ -438,7 +438,7 @@ def cli_plan_set(args) -> int:
 # plugin
 
 def cli_plugin_list(args) -> int:
-    plugins = list_installed_plugins(PATHS.installed_plugins)
+    plugins = list_installed_plugins(PATHS.installed_plugins, PATHS.known_marketplaces)
     enabled_g = read_enabled_plugins(PATHS.settings)
     enabled_p = read_enabled_plugins(project_settings_path())
     if not plugins:
@@ -485,7 +485,7 @@ def cli_plugin_disable(args) -> int:
 
 
 def cli_plugin_info(args) -> int:
-    info = get_plugin_info(PATHS.installed_plugins, args.plugin_id)
+    info = get_plugin_info(PATHS.installed_plugins, args.plugin_id, PATHS.known_marketplaces)
     if not info:
         print(_red(f'Plugin "{args.plugin_id}" not found.'))
         return 1

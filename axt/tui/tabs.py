@@ -2186,7 +2186,7 @@ def _ensure_subtab_loaded(state: TuiState, sub_key: str) -> None:
     if sub_key in state.ext_cache:
         return
     if sub_key == "plugins":
-        state.ext_cache["plugins"] = list_installed_plugins(PATHS.installed_plugins)
+        state.ext_cache["plugins"] = list_installed_plugins(PATHS.installed_plugins, PATHS.known_marketplaces)
     elif sub_key == "skills":
         items = list_all_skills(project_dir=Path.cwd())
         state.ext_cache["skills"] = items + list_vault_only_items("skills", items)
@@ -2574,10 +2574,12 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     data = _subtab_view(state, sub)
 
     # Uniform status columns (mirror Vault): the leftmost ■/□ prefix shows
-    # the Space marks, `#` carries the row number, and every sub-tab shares
-    # the `Ver Vault Proj Glob` block right after the name column —
-    # Vault: ✓ stored in ~/.axt/vault / ─ not vault-managed;
-    # Proj/Glob: ● active ○ inactive · unset (plugins) ─ n/a.
+    # the Space marks, `#` carries the row number, and every sub-tab but
+    # market shares the `Ver Vault Proj Glob` block right after the name
+    # column — Vault: ✓ stored in ~/.axt/vault / ─ not vault-managed;
+    # Proj/Glob: ● active ○ inactive · unset (plugins) ─ n/a. Market skips
+    # all four: no per-source version, and marketplaces are a global-only
+    # registry (no vault/project/global scoping to show).
     if sub == "plugins":
         cols = [
             TableColumn("no", "#", 3),
@@ -2762,11 +2764,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     elif sub == "market":
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Marketplace", max(20, w - 107)),
-            TableColumn("ver", "Ver", 8),
-            TableColumn("vault", "Vault", 5),
-            TableColumn("proj", "Proj", 4),
-            TableColumn("glob", "Glob", 4),
+            TableColumn("name", "Marketplace", max(20, w - 78)),
             TableColumn("upd", "Upd", 3),
             TableColumn("kind", "Source", 10),
             TableColumn("loc", "Location", 30),
@@ -2775,13 +2773,9 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         rows = [{
             "no": str(i + 1),
             "name": m.name,
-            "ver": "─",  # marketplace has no per-source version concept
-            "vault": _vault_cell(sub, m),
-            "proj": "─",  # marketplaces are a global-only registry
-            "glob": "●",
             "upd": _upd_cell(state, sub, m),
             "kind": m.source.kind,
-            "loc": m.install_location[:50],
+            "loc": m.install_location[:30],  # matches column width — longer values collided with "updated"
             "updated": m.last_updated[:10],
         } for i, m in enumerate(data)]
     else:

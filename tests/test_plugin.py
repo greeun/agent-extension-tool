@@ -2,9 +2,22 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import axt
+
+
+def _git_init_with_tag(d: Path, tag: str) -> str:
+    """Init a git repo, make one commit, tag it. Returns the commit sha."""
+    d.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q"], cwd=d, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "--allow-empty", "-m", "init"], cwd=d, check=True)
+    subprocess.run(["git", "tag", tag], cwd=d, check=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, check=True,
+                          capture_output=True, text=True).stdout.strip()
+    return sha
 
 
 def _write_installed(ip_path: Path, plugins: dict) -> None:
@@ -323,6 +336,119 @@ def test_list_installed_plugins_non_dict_top_level(tmp_path: Path):
     ip = tmp_path / "ip.json"
     ip.write_text(json.dumps(["not", "a", "dict"]))
     assert axt.list_installed_plugins(ip) == []
+
+
+def test_list_installed_plugins_resolves_raw_sha_version_to_release_tag(tmp_path: Path):
+    # A manifest with no `version` field makes Claude Code fall back to the
+    # commit sha as the installed "version" (e.g. the caveman plugin). When a
+    # km_path is given and the marketplace's git clone has a tag pointing at
+    # that exact commit, prefer the tag over the raw sha.
+    mk_repo = tmp_path / "marketplace"
+    sha = _git_init_with_tag(mk_repo, "v1.9.1")
+    install = tmp_path / "cache" / "caveman"
+    _write_manifest(install, {"name": "caveman", "description": "..."})
+    _write_installed(
+        tmp_path / "ip.json",
+        {
+            "caveman@caveman": [
+                {
+                    "scope": "user",
+                    "installPath": str(install),
+                    "version": sha,
+                    "installedAt": "",
+                    "lastUpdated": "",
+                    "gitCommitSha": sha,
+                }
+            ]
+        },
+    )
+    km_path = tmp_path / "known_marketplaces.json"
+    km_path.write_text(json.dumps({"caveman": {"installLocation": str(mk_repo)}}))
+    p = axt.list_installed_plugins(tmp_path / "ip.json", km_path)[0]
+    assert p.version == "v1.9.1"
+    assert p.git_commit_sha == sha
+
+
+def test_list_installed_plugins_resolves_short_sha_prefix_of_full_gitCommitSha(tmp_path: Path):
+    # Real-world shape: installed_plugins.json stores a short (12-char)
+    # "version" alongside the full 40-char gitCommitSha it was abbreviated
+    # from — they never string-equal, so resolution must match by prefix.
+    mk_repo = tmp_path / "marketplace"
+    full_sha = _git_init_with_tag(mk_repo, "v2.3.0")
+    short_sha = full_sha[:12]
+    install = tmp_path / "cache" / "p"
+    _write_manifest(install, {"name": "p"})
+    _write_installed(
+        tmp_path / "ip.json",
+        {
+            "p@mk": [
+                {
+                    "scope": "user",
+                    "installPath": str(install),
+                    "version": short_sha,
+                    "installedAt": "",
+                    "lastUpdated": "",
+                    "gitCommitSha": full_sha,
+                }
+            ]
+        },
+    )
+    km_path = tmp_path / "known_marketplaces.json"
+    km_path.write_text(json.dumps({"mk": {"installLocation": str(mk_repo)}}))
+    p = axt.list_installed_plugins(tmp_path / "ip.json", km_path)[0]
+    assert p.version == "v2.3.0"
+
+
+def test_list_installed_plugins_raw_sha_without_km_path_stays_raw(tmp_path: Path):
+    # Backward compatible default: no km_path means no resolution attempt.
+    install = tmp_path / "cache" / "caveman"
+    _write_manifest(install, {"name": "caveman"})
+    sha = "0d95a81d35a9"
+    _write_installed(
+        tmp_path / "ip.json",
+        {
+            "caveman@caveman": [
+                {
+                    "scope": "user",
+                    "installPath": str(install),
+                    "version": sha,
+                    "installedAt": "",
+                    "lastUpdated": "",
+                    "gitCommitSha": sha,
+                }
+            ]
+        },
+    )
+    p = axt.list_installed_plugins(tmp_path / "ip.json")[0]
+    assert p.version == sha
+
+
+def test_list_installed_plugins_raw_sha_no_matching_tag_stays_raw(tmp_path: Path):
+    # Marketplace repo exists but has no tag on that commit: keep the sha.
+    mk_repo = tmp_path / "marketplace"
+    sha = _git_init_with_tag(mk_repo, "v1.0.0")
+    install = tmp_path / "cache" / "p"
+    _write_manifest(install, {"name": "p"})
+    other_sha = "deadbeefcafe"
+    _write_installed(
+        tmp_path / "ip.json",
+        {
+            "p@mk": [
+                {
+                    "scope": "user",
+                    "installPath": str(install),
+                    "version": other_sha,
+                    "installedAt": "",
+                    "lastUpdated": "",
+                    "gitCommitSha": other_sha,
+                }
+            ]
+        },
+    )
+    km_path = tmp_path / "known_marketplaces.json"
+    km_path.write_text(json.dumps({"mk": {"installLocation": str(mk_repo)}}))
+    p = axt.list_installed_plugins(tmp_path / "ip.json", km_path)[0]
+    assert p.version == other_sha
 
 
 # ─── add/remove against a malformed (non-dict) registry ──────────────────────

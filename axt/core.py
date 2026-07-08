@@ -401,10 +401,37 @@ def _read_plugin_manifest(install_path: os.PathLike[str] | str) -> dict[str, Any
     return secondary if isinstance(secondary, dict) else {}
 
 
-def list_installed_plugins(ip_path: os.PathLike[str] | str) -> list[PluginInfo]:
-    """Read installed_plugins.json and merge each entry's manifest metadata."""
+def _resolve_release_tag(install_location: str, commit_sha: str) -> Optional[str]:
+    """Map a pinned commit back to a release tag in the marketplace's git clone.
+
+    Some plugin manifests carry no `version` field, so Claude Code falls back
+    to the raw commit sha as the installed "version" — confusing next to
+    sibling plugins that show a real semver. If the marketplace repo (a full
+    git clone, unlike the plugin's own cache dir) has a tag pointing at that
+    exact commit, prefer it.
+    """
+    if not commit_sha or not is_git_repo(install_location):
+        return None
+    code, out, _ = _git(["git", "-C", str(install_location), "tag", "--points-at", commit_sha])
+    if code != 0:
+        return None
+    tags = [t for t in out.strip().splitlines() if t]
+    return tags[-1] if tags else None
+
+
+def list_installed_plugins(
+    ip_path: os.PathLike[str] | str,
+    km_path: Optional[os.PathLike[str] | str] = None,
+) -> list[PluginInfo]:
+    """Read installed_plugins.json and merge each entry's manifest metadata.
+
+    ``km_path`` (known_marketplaces.json) is optional; when given, a
+    plugin's raw-commit-sha "version" is resolved to a real release tag via
+    the marketplace's git clone where possible.
+    """
     data = read_json(ip_path, fallback={"version": 2, "plugins": {}})
     plugins_map = data.get("plugins") or {} if isinstance(data, dict) else {}
+    known_marketplaces = _read_known(km_path) if km_path else {}
     results: list[PluginInfo] = []
     for plugin_id, entries in plugins_map.items():
         if not entries:
@@ -412,12 +439,27 @@ def list_installed_plugins(ip_path: os.PathLike[str] | str) -> list[PluginInfo]:
         entry = entries[0]
         name, marketplace = _parse_plugin_id(plugin_id)
         manifest = _read_plugin_manifest(entry.get("installPath", ""))
+        version = entry.get("version", "")
+        git_commit_sha = entry.get("gitCommitSha", "")
+        # Claude Code sometimes stores the (possibly short-form) commit sha as
+        # "version" when the plugin manifest declares none — check by prefix,
+        # not equality, since "version" may be a 12-char abbreviation of the
+        # full 40-char gitCommitSha.
+        if (
+            version
+            and git_commit_sha
+            and re.fullmatch(r"[0-9a-f]{6,40}", version)
+            and git_commit_sha.startswith(version)
+        ):
+            mp_entry = known_marketplaces.get(marketplace)
+            mp_install = mp_entry.get("installLocation", "") if isinstance(mp_entry, dict) else ""
+            version = _resolve_release_tag(mp_install, git_commit_sha) or version
         results.append(
             PluginInfo(
                 id=plugin_id,
                 name=name,
                 marketplace=marketplace,
-                version=entry.get("version", ""),
+                version=version,
                 install_path=entry.get("installPath", ""),
                 scope=entry.get("scope", ""),
                 installed_at=entry.get("installedAt", ""),
@@ -426,13 +468,18 @@ def list_installed_plugins(ip_path: os.PathLike[str] | str) -> list[PluginInfo]:
                 description=manifest.get("description") if isinstance(manifest.get("description"), str) else None,
                 homepage=_normalize_manifest_string(manifest.get("homepage")),
                 repository=_normalize_manifest_string(manifest.get("repository")),
+                git_commit_sha=git_commit_sha or None,
             )
         )
     return results
 
 
-def get_plugin_info(ip_path: os.PathLike[str] | str, plugin_id: str) -> Optional[PluginInfo]:
-    for p in list_installed_plugins(ip_path):
+def get_plugin_info(
+    ip_path: os.PathLike[str] | str,
+    plugin_id: str,
+    km_path: Optional[os.PathLike[str] | str] = None,
+) -> Optional[PluginInfo]:
+    for p in list_installed_plugins(ip_path, km_path):
         if p.id == plugin_id:
             return p
     return None
@@ -446,7 +493,7 @@ def _active_plugins() -> list[PluginInfo]:
     CLI (``cli_mcp_list`` / ``cli_mcp_info``) and the TUI (Extensions tab's
     mcp sub-tab loader).
     """
-    plugins = list_installed_plugins(PATHS.installed_plugins)
+    plugins = list_installed_plugins(PATHS.installed_plugins, PATHS.known_marketplaces)
     enabled = read_enabled_plugins(PATHS.settings)
     return [p for p in plugins if enabled.get(p.id) is True]
 
@@ -979,8 +1026,11 @@ def _scan_md_dir(
     plugin: Optional[str] = None,
     *,
     factory,
+    plugin_version: str = "",
 ):
-    """Generic `.md` scanner shared by commands/agents."""
+    """Generic `.md` scanner shared by commands/agents. Falls back to the
+    parent plugin's manifest version (mirrors mcp/hook) when the file itself
+    declares no `version:` frontmatter — commands/agents rarely carry one."""
     d = Path(dir_path)
     if not d.exists() or not d.is_dir():
         return []
@@ -1000,7 +1050,7 @@ def _scan_md_dir(
         display_name = f"{plugin}:{name}" if plugin else name
         description = _extract_md_description(raw)
         fm = _FRONTMATTER_BLOCK_RE.match(raw.replace("\r\n", "\n").replace("\r", "\n"))
-        version = parse_yaml_version(fm.group(1)) if fm else ""
+        version = (parse_yaml_version(fm.group(1)) if fm else "") or plugin_version
         out.append(factory(display_name, source, str(entry), plugin, description, raw, version))
     return out
 
@@ -1016,7 +1066,8 @@ def list_commands(*, project_dir: Optional[os.PathLike[str] | str] = None) -> li
     if project_dir:
         out += _scan_md_dir(Path(project_dir) / ".claude" / "commands", "project", factory=_make_command)
     for p in _active_plugins():
-        out += _scan_md_dir(Path(p.install_path) / "commands", "plugin", p.name, factory=_make_command)
+        out += _scan_md_dir(Path(p.install_path) / "commands", "plugin", p.name,
+                             factory=_make_command, plugin_version=p.version or "")
     return out
 
 
@@ -1046,7 +1097,8 @@ def list_all_agents(*, project_dir: Optional[os.PathLike[str] | str] = None) -> 
         out += _scan_md_dir(Path(project_dir) / ".claude" / "agents", "project", factory=_make_agent)
     out += _scan_md_dir(Path(project_dir or os.getcwd()) / ".agents", "project", factory=_make_agent)
     for p in _active_plugins():
-        out += _scan_md_dir(Path(p.install_path) / "agents", "plugin", p.name, factory=_make_agent)
+        out += _scan_md_dir(Path(p.install_path) / "agents", "plugin", p.name,
+                             factory=_make_agent, plugin_version=p.version or "")
     return out
 
 

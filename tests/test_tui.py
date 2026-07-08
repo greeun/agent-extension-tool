@@ -3153,8 +3153,14 @@ def test_uniform_status_columns_rendered_on_every_subtab(tmp_path, monkeypatch):
         scr = _make_stdscr(rows=30, cols=160)
         axt.render_extensions_tab(scr, state, 0, 28, 160)
         flat = _flat(scr)
-        for header in ("Ver", "Vault", "Proj", "Glob"):
-            assert header in flat, f"{sub}: {header} column missing"
+        if sub == "market":
+            # Marketplaces have no per-source version and are a global-only
+            # registry — Ver/Vault/Proj/Glob columns don't apply.
+            for header in ("Ver", "Proj", "Glob"):
+                assert header not in flat, f"market: {header} column should not be rendered"
+        else:
+            for header in ("Ver", "Vault", "Proj", "Glob"):
+                assert header in flat, f"{sub}: {header} column missing"
     # MCP: the plugin-sourced server's version lands in the Ver column.
     state = axt.TuiState()
     state.ext_sub_tab = "mcp"
@@ -6292,7 +6298,7 @@ def test_tui_loop_plugins_detail_esc_returns_focus_to_list(monkeypatch, tmp_path
     monkeypatch.setattr("axt.get_git_status", lambda _: "")
     _quiet_curses(monkeypatch)
     monkeypatch.setattr("axt.tui.tabs.list_installed_plugins",
-                        lambda _: [_plugin("a"), _plugin("b")])
+                        lambda *_a: [_plugin("a"), _plugin("b")])
     captured = {}
     real_render = axt.tui.loop._render_frame
     def spy_render(stdscr, state):
