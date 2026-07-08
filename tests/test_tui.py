@@ -5316,17 +5316,44 @@ def test_handle_context_input_e_no_file_in_category(monkeypatch):
 # ─── handle_project_input paging branches ────────────────────────────────────
 
 
-def test_handle_context_input_pgdn_pgup_scrolls_shared_detail():
-    """PgUp/PgDn scroll the shared bottom detail panel (context_detail_scroll),
-    clamped at 0 — both Context sub-tabs share this scroll."""
+def test_handle_context_input_pgdn_pgup_pages_project_list():
+    """PgUp/PgDn page the Project sub-tab's list (state.project_selected) by
+    10 rows, clamped to bounds — not the shared detail-panel scroll."""
     s = axt.TuiState()
+    s.project_items = [_project_source(f"f{i}", path=f"/p/f{i}") for i in range(15)]
     axt.handle_context_input(s, curses.KEY_NPAGE)
-    assert s.context_detail_scroll == 10
+    assert s.project_selected == 10
     axt.handle_context_input(s, curses.KEY_PPAGE)
-    assert s.context_detail_scroll == 0
+    assert s.project_selected == 0
     # Already at top → PgUp clamps, no underflow.
     axt.handle_context_input(s, curses.KEY_PPAGE)
-    assert s.context_detail_scroll == 0
+    assert s.project_selected == 0
+
+
+def test_handle_context_input_pgdn_pgup_pages_sources_list():
+    """PgUp/PgDn page the Sources sub-tab's list (state.context_selected) by
+    10 rows, clamped to bounds."""
+    s = axt.TuiState()
+    s.context_sub_tab = "sources"
+    srcs = [axt.ContextSource(name=f"s{i}", category=f"cat{i}", path="", estimated_tokens=1,
+                               percentage=0.0, chars=1, actionable=True)
+            for i in range(15)]
+    s.context_analysis = axt.ContextAnalysis(
+        total_tokens=15, context_window_size=200_000, used_percent=0.0,
+        model="m", sources=srcs,
+        cost_impact=axt.CostImpact(
+            model="m", cache_write_cost=0.0, cache_read_cost_per_turn=0.0,
+            avg_turns_per_session=1, avg_sessions_per_day=1,
+            per_session_cost=0.0, monthly_cost=0.0,
+        ),
+    )
+    axt.handle_context_input(s, curses.KEY_NPAGE)
+    assert s.context_selected == 10
+    axt.handle_context_input(s, curses.KEY_PPAGE)
+    assert s.context_selected == 0
+    # Already at top → PgUp clamps, no underflow.
+    axt.handle_context_input(s, curses.KEY_PPAGE)
+    assert s.context_selected == 0
 
 
 def test_handle_context_input_nav_and_cycle_reset_detail_scroll():

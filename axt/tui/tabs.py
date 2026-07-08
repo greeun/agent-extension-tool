@@ -161,7 +161,9 @@ class TuiState:
     # the body cycle between them — mirrors the Extensions sub-tab model.
     context_sub_tab: str = "project"
     # Scroll offset for the shared bottom detail panel (mirrors the active
-    # sub-tab's selected row). PgUp/PgDn scroll it; reset on selection move.
+    # sub-tab's selected row). Reset on selection move; PgUp/PgDn page the
+    # list instead of scrolling this panel (full content is one Enter away
+    # via the preview modal).
     context_detail_scroll: int = 0
 
     # Project context files (rendered as the Context tab's "project" sub-tab).
@@ -1978,18 +1980,11 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
         state.context_detail_scroll = 0
         return f"Sub-tab: {state.context_sub_tab}"
 
-    # PgUp/PgDn scroll the shared bottom detail panel (both sub-tabs).
-    if key == curses.KEY_NPAGE:
-        state.context_detail_scroll += 10
-        return None
-    if key == curses.KEY_PPAGE:
-        state.context_detail_scroll = max(0, state.context_detail_scroll - 10)
-        return None
-
     # Project sub-tab: route navigation/actions to the project handler
-    # (j/k select, Enter previews, e edits, r reloads).
+    # (j/k select, PgUp/PgDn page, Enter previews, e edits, r reloads).
     if state.context_sub_tab == "project":
-        if key in (ord("j"), curses.KEY_DOWN, ord("k"), curses.KEY_UP):
+        if key in (ord("j"), curses.KEY_DOWN, ord("k"), curses.KEY_UP,
+                   curses.KEY_NPAGE, curses.KEY_PPAGE):
             state.context_detail_scroll = 0
         return handle_project_input(state, key)
 
@@ -2000,6 +1995,12 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
         state.context_detail_scroll = 0
     elif key in (ord("k"), curses.KEY_UP):
         state.context_selected = max(0, state.context_selected - 1)
+        state.context_detail_scroll = 0
+    elif key == curses.KEY_NPAGE:
+        state.context_selected = min(n - 1, state.context_selected + 10) if n else 0
+        state.context_detail_scroll = 0
+    elif key == curses.KEY_PPAGE:
+        state.context_selected = max(0, state.context_selected - 10)
         state.context_detail_scroll = 0
     elif key == ord("r"):
         state.context_analysis = None
@@ -2153,14 +2154,17 @@ def _render_project_files_table(stdscr, state: TuiState, y0: int, h: int, w: int
 
 
 def handle_project_input(state: TuiState, key: int) -> Optional[str]:
-    # Called only via handle_context_input on the "project" sub-tab. PgUp/PgDn
-    # (detail-panel scroll) are intercepted upstream and never reach here.
+    # Called only via handle_context_input on the "project" sub-tab.
     items = state.project_items or []
     n = len(items)
     if key in (ord("j"), curses.KEY_DOWN):
         state.project_selected = min(n - 1, state.project_selected + 1) if n else 0
     elif key in (ord("k"), curses.KEY_UP):
         state.project_selected = max(0, state.project_selected - 1)
+    elif key == curses.KEY_NPAGE:
+        state.project_selected = min(n - 1, state.project_selected + 10) if n else 0
+    elif key == curses.KEY_PPAGE:
+        state.project_selected = max(0, state.project_selected - 10)
     elif key == ord("r"):
         state.project_items = None
         state.context_analysis = None
