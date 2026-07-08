@@ -208,6 +208,87 @@ def test_plugin_check_missing_source_not_updatable(tmp_path, monkeypatch):
     assert s.available == "?"                # never the marketplace sha
 
 
+def _make_external_marketplace(tmp_path, source: dict, mk="mk", plugin="sp"):
+    """Cloned-marketplace tree whose manifest declares `plugin` as coming from
+    an external git `source` (url / git-subdir / github) — nothing on disk."""
+    mk_loc = tmp_path / "marketplaces" / mk
+    (mk_loc / ".claude-plugin").mkdir(parents=True)
+    (mk_loc / ".claude-plugin" / "marketplace.json").write_text(json.dumps(
+        {"name": mk, "plugins": [{"name": plugin, "source": source}]}))
+    km = tmp_path / "known_marketplaces.json"
+    km.write_text(json.dumps({mk: {
+        "source": {"source": "github", "repo": "o/r"},
+        "installLocation": str(mk_loc), "lastUpdated": "2026-01-01T00:00:00.000Z",
+    }}))
+    return km, mk_loc
+
+
+def _write_ip_one(ip: Path, plugin_id: str, *, version: str, sha: str) -> None:
+    ip.write_text(json.dumps({"version": 2, "plugins": {plugin_id: [{
+        "scope": "user", "installPath": "x", "version": version,
+        "installedAt": "2026-01-01T00:00:00.000Z", "lastUpdated": "2026-01-01T00:00:00.000Z",
+        "gitCommitSha": sha,
+    }]}}))
+
+
+def test_plugin_check_external_source_compares_pinned_sha(tmp_path, monkeypatch):
+    """superpowers-shaped: source is an external git repo. Updatability is the
+    marketplace's pinned sha vs the installed sha — no network, no coarse
+    marketplace-git-movement heuristic."""
+    km, _mk = _make_external_marketplace(
+        tmp_path, {"source": "url", "url": "https://x/y.git", "sha": "b" * 40})
+    ip = tmp_path / "installed_plugins.json"
+    monkeypatch.setattr("axt.PATHS", axt.Paths(known_marketplaces=km, installed_plugins=ip))
+
+    _write_ip_one(ip, "sp@mk", version="1.0.0", sha="a" * 40)   # stale
+    s = [x for x in axt.update.check_all_updates(types=["plugin"]) if x.name == "sp@mk"][0]
+    assert s.updatable is True and s.available == "b" * 7 and s.error is None
+
+    _write_ip_one(ip, "sp@mk", version="1.0.0", sha="b" * 40)   # matches pin
+    s = [x for x in axt.update.check_all_updates(types=["plugin"]) if x.name == "sp@mk"][0]
+    assert s.updatable is False and s.note == "up to date"
+
+
+def test_plugin_apply_external_clones_and_records(tmp_path, monkeypatch):
+    """Applying an external-sourced plugin clones upstream (mocked), materializes
+    into the cache, and records the resolved sha + version."""
+    km, _mk = _make_external_marketplace(
+        tmp_path, {"source": "url", "url": "https://x/y.git", "sha": "b" * 40})
+    ip = tmp_path / "installed_plugins.json"
+    _write_ip_one(ip, "sp@mk", version="1.0.0", sha="a" * 40)
+    cache = tmp_path / "cache"
+
+    staged = tmp_path / "staged"
+    (staged / ".claude-plugin").mkdir(parents=True)
+    (staged / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": "sp", "version": "2.0.0"}))
+    monkeypatch.setattr("axt.update.clone_plugin_source",
+                        lambda source, work: (staged, "b" * 40, None))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=km, installed_plugins=ip, plugin_cache=cache))
+
+    res = axt.update.apply_updates([("plugin", "sp@mk")], no_sync=True)[0]
+    assert res.updated is True and res.after == "2.0.0" and res.action == "clone"
+    entry = json.loads(ip.read_text())["plugins"]["sp@mk"][0]
+    assert entry["version"] == "2.0.0" and entry["gitCommitSha"] == "b" * 40
+    assert entry["installPath"] == str(cache / "mk" / "sp" / "2.0.0")
+    assert (cache / "mk" / "sp" / "2.0.0" / ".claude-plugin" / "plugin.json").exists()
+
+
+def test_plugin_apply_external_surfaces_clone_error(tmp_path, monkeypatch):
+    km, _mk = _make_external_marketplace(
+        tmp_path, {"source": "url", "url": "https://x/y.git", "sha": "b" * 40})
+    ip = tmp_path / "installed_plugins.json"
+    _write_ip_one(ip, "sp@mk", version="1.0.0", sha="a" * 40)
+    monkeypatch.setattr("axt.update.clone_plugin_source",
+                        lambda source, work: (None, "", "clone failed: boom"))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=km, installed_plugins=ip, plugin_cache=tmp_path / "cache"))
+    res = axt.update.apply_updates([("plugin", "sp@mk")], no_sync=True)[0]
+    assert res.updated is False and res.error == "clone failed: boom"
+    # install record untouched on failure
+    assert json.loads(ip.read_text())["plugins"]["sp@mk"][0]["version"] == "1.0.0"
+
+
 def _git_init(d: Path):
     d.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q"], cwd=d, check=True)

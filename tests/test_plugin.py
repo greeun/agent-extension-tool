@@ -171,6 +171,62 @@ def test_find_plugin_source_dir_empty_marketplace(tmp_path: Path):
     assert axt.find_plugin_source_dir(mk, "whatever") is None
 
 
+# ─── marketplace manifest `source` resolution ────────────────────────────────
+
+
+def _write_marketplace(mk: Path, plugins: list) -> None:
+    (mk / ".claude-plugin").mkdir(parents=True, exist_ok=True)
+    (mk / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": mk.name, "plugins": plugins})
+    )
+
+
+def test_get_marketplace_plugin_source_reads_manifest(tmp_path: Path):
+    mk = tmp_path / "mk"
+    _write_marketplace(mk, [
+        {"name": "rel", "source": "./external_plugins/rel"},
+        {"name": "ext", "source": {"source": "url", "url": "https://x/y.git", "sha": "abc"}},
+    ])
+    assert axt.get_marketplace_plugin_source(mk, "rel") == "./external_plugins/rel"
+    assert axt.get_marketplace_plugin_source(mk, "ext")["source"] == "url"
+    assert axt.get_marketplace_plugin_source(mk, "missing") is None
+
+
+def test_find_plugin_source_dir_resolves_relative_source(tmp_path: Path):
+    # context7-shaped: manifest points at a subdir the default candidates miss.
+    mk = tmp_path / "mk"
+    _write_marketplace(mk, [{"name": "context7", "source": "./external_plugins/context7"}])
+    target = mk / "external_plugins" / "context7"
+    (target / ".claude-plugin").mkdir(parents=True)
+    (target / ".claude-plugin" / "plugin.json").write_text("{}")
+    assert axt.find_plugin_source_dir(mk, "context7") == target
+
+
+def test_find_plugin_source_dir_external_source_is_none(tmp_path: Path):
+    # superpowers-shaped: external git source lives nowhere in the tree.
+    mk = tmp_path / "mk"
+    _write_marketplace(mk, [
+        {"name": "sp", "source": {"source": "url", "url": "https://x/y.git", "sha": "abc"}},
+    ])
+    assert axt.find_plugin_source_dir(mk, "sp") is None
+
+
+def test_source_helpers():
+    url_src = {"source": "url", "url": "https://github.com/o/r.git", "sha": "DEAD"}
+    assert axt.source_git_url(url_src) == "https://github.com/o/r.git"
+    assert axt.source_pinned_shas(url_src) == ["dead"]
+    assert axt.source_checkout_ref(url_src) == "DEAD"
+
+    gh_src = {"source": "github", "repo": "o/r", "commit": "C1", "sha": "S1"}
+    assert axt.source_git_url(gh_src) == "https://github.com/o/r.git"
+    assert axt.source_pinned_shas(gh_src) == ["s1", "c1"]
+    assert axt.source_checkout_ref(gh_src) == "S1"
+
+    subdir_src = {"source": "git-subdir", "url": "https://x/y.git", "path": "p", "ref": "v1"}
+    assert axt.source_checkout_ref(subdir_src) == "v1"  # no sha → ref
+    assert axt.source_git_url({"source": "url"}) is None
+
+
 # ─── set_plugin_enabled ──────────────────────────────────────────────────────
 
 

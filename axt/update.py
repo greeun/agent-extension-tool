@@ -21,6 +21,8 @@ from axt.core import (
     read_json, write_json_atomic, list_installed_plugins, find_plugin_source_dir,
     _read_plugin_manifest, _parse_plugin_id, is_git_repo, read_sha_file, _git,
     update_installed_plugin,
+    get_marketplace_plugin_source, clone_plugin_source,
+    source_pinned_shas, source_git_url,
     list_all_skills, list_commands, list_all_agents,
     collect_mcp_servers,
 )
@@ -144,37 +146,58 @@ def _plugin_source_version(plugin_id: str, mk_install_loc: str) -> tuple[str, Op
     return (manifest.get("version") or "unknown"), None
 
 
+def _external_plugin_status(p, source: dict) -> UpdateStatus:
+    """Update status for a plugin whose marketplace source is an external git
+    repo (url / git-subdir / github). We do NOT clone during a check — that
+    would hit the network for every plugin. Instead compare the marketplace's
+    pinned commit against the plugin's recorded install sha: if they differ,
+    the pinned upstream has moved and a re-clone would change the install."""
+    pins = source_pinned_shas(source)
+    installed_sha = (p.git_commit_sha or "").lower()
+    available = (pins[0][:7] if pins else "?")
+    if not source_git_url(source):
+        return UpdateStatus("plugin", p.id, 1, p.version, "?", False,
+                            error="external source has no url/repo")
+    if not pins or not installed_sha:
+        # Nothing to compare against — never guess "updatable" (avoids the
+        # false-positive that plagued the old marketplace-git-movement heuristic).
+        return UpdateStatus("plugin", p.id, 1, p.version, available, False,
+                            note="external (unpinned)")
+    updatable = installed_sha not in pins
+    return UpdateStatus("plugin", p.id, 1, p.version, available, updatable,
+                        note=("" if updatable else "up to date"))
+
+
 def _plugin_check_all() -> list[UpdateStatus]:
-    installed = list_installed_plugins(PATHS.installed_plugins)
+    installed = list_installed_plugins(PATHS.installed_plugins, PATHS.known_marketplaces)
     if not installed:
         return []
     km = read_json(PATHS.known_marketplaces, fallback={})
-    mkts = sorted({p.marketplace for p in installed if p.marketplace and p.marketplace != "unknown"})
-    pooled = pooled_map(mkts, lambda m: get_marketplace_version(PATHS.known_marketplaces, m)) if mkts else None
-    mk_ver = pooled.results if pooled else {}
     out: list[UpdateStatus] = []
     for p in installed:
         entry = km.get(p.marketplace) if isinstance(km, dict) else None
         loc = entry.get("installLocation", "") if isinstance(entry, dict) else ""
-        src_ver, src_err = _plugin_source_version(p.id, loc) if loc else ("?", "marketplace not registered")
-        vi = mk_ver.get(p.marketplace)
-        mk_updatable = bool(vi and vi.updatable)
+        if not loc:
+            out.append(UpdateStatus("plugin", p.id, 1, p.version, "?", False,
+                                    error="marketplace not registered"))
+            continue
+        pname, _mk = _parse_plugin_id(p.id)
+        source = get_marketplace_plugin_source(loc, pname)
+        if isinstance(source, dict):
+            out.append(_external_plugin_status(p, source))
+            continue
+        # In-tree plugin (relative-path source, or a bare plugins/<name> dir):
+        # updatability is a version comparison against the local marketplace
+        # clone. No marketplace-git-movement heuristic — a plugin is only
+        # flagged when ITS own declared version differs from what's installed.
+        src_ver, src_err = _plugin_source_version(p.id, loc)
         ver_changed = src_ver not in ("?", "unknown", p.version)
-        # A plugin whose source has vanished from the marketplace (upstream
-        # restructured, renamed, or removed it) can never be reinstalled —
-        # _plugin_apply would fail the same way. Never advertise it as updatable
-        # off the marketplace's git movement; surface the error instead.
-        updatable = (mk_updatable or ver_changed) and not src_err
-        if src_err:
-            available = "?"
-        elif src_ver not in ("?", "unknown"):
-            available = src_ver
-        else:
-            available = vi.remote if vi else "?"
+        updatable = ver_changed and not src_err
+        available = src_ver if src_ver not in ("?", "unknown") else "?"
         out.append(UpdateStatus(
             "plugin", p.id, 1, p.version, available, updatable,
             note=("up to date" if not updatable and not src_err else ""),
-            error=src_err or (vi.error if vi else None),
+            error=src_err,
         ))
     return out
 
@@ -192,22 +215,56 @@ def _plugin_apply(name: str, no_sync: bool = False) -> UpdateResult:
             sync_marketplace(PATHS.known_marketplaces, mk)
         except Exception as e:  # noqa: BLE001
             return UpdateResult("plugin", plugin_id, "?", "?", False, "error", error=f"sync failed: {e}")
+    ip = read_json(PATHS.installed_plugins, fallback={"version": 2, "plugins": {}})
+    cur_list = (ip.get("plugins", {}) if isinstance(ip, dict) else {}).get(plugin_id) or [{}]
+    cur = cur_list[0] if cur_list else {}
+    before = cur.get("version", "?")
+
+    source = get_marketplace_plugin_source(loc, pname)
+    if isinstance(source, dict):
+        return _apply_external_plugin(plugin_id, pname, mk, source, before, cur)
+
     src = find_plugin_source_dir(loc, pname)
     if src is None:
         return UpdateResult("plugin", plugin_id, "?", "?", False, "error", error="plugin source not found")
     manifest = _read_plugin_manifest(src)
     new_ver = manifest.get("version") or "unknown"
     new_sha = _full_head_sha(loc)
-    ip = read_json(PATHS.installed_plugins, fallback={"version": 2, "plugins": {}})
-    cur_list = (ip.get("plugins", {}) if isinstance(ip, dict) else {}).get(plugin_id) or [{}]
-    cur = cur_list[0] if cur_list else {}
-    before = cur.get("version", "?")
     new_path = str(Path(PATHS.plugin_cache) / mk / pname / new_ver)
     _materialize_dir(Path(src), Path(new_path))
     update_installed_plugin(PATHS.installed_plugins, plugin_id,
                             version=new_ver, git_commit_sha=new_sha, install_path=new_path)
     updated = (before != new_ver) or (cur.get("gitCommitSha") != new_sha)
     return UpdateResult("plugin", plugin_id, before, new_ver, updated, "reinstall")
+
+
+def _apply_external_plugin(plugin_id: str, pname: str, mk: str, source: dict,
+                           before: str, cur: dict) -> UpdateResult:
+    """Materialize an external-git-sourced plugin: clone the upstream repo at
+    the marketplace's pinned commit into the plugin cache, then record it. The
+    marketplace has already been synced by the caller, so `source` reflects the
+    latest pin."""
+    cache_root = Path(PATHS.plugin_cache)
+    cache_root.mkdir(parents=True, exist_ok=True)  # first-ever external apply
+    work = Path(tempfile.mkdtemp(prefix=".axt-ext-", dir=cache_root))
+    try:
+        plugin_dir, new_sha, err = clone_plugin_source(source, work)
+        if err or plugin_dir is None:
+            return UpdateResult("plugin", plugin_id, before, before, False, "error", error=err or "clone failed")
+        manifest = _read_plugin_manifest(plugin_dir)
+        new_ver = manifest.get("version") or "unknown"
+        new_path = str(Path(PATHS.plugin_cache) / mk / pname / new_ver)
+        # For a whole-repo (url) source the clone's `.git` sits at plugin_dir;
+        # drop it so the cached plugin matches Claude Code's own layout and
+        # doesn't ship a redundant working repo. (git-subdir dirs have none.)
+        shutil.rmtree(plugin_dir / ".git", ignore_errors=True)
+        _materialize_dir(plugin_dir, Path(new_path))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    update_installed_plugin(PATHS.installed_plugins, plugin_id,
+                            version=new_ver, git_commit_sha=new_sha, install_path=new_path)
+    updated = (before != new_ver) or ((cur.get("gitCommitSha") or "").lower() != new_sha.lower())
+    return UpdateResult("plugin", plugin_id, before, new_ver, updated, "clone")
 
 
 plugin_updater = Updater("plugin", 1, _plugin_check_all, _plugin_apply)

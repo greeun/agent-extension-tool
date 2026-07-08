@@ -567,16 +567,124 @@ def remove_installed_plugin(ip_path: os.PathLike[str] | str, plugin_id: str) -> 
     write_json_atomic(ip_path, data)
 
 
-def find_plugin_source_dir(marketplace_dir: os.PathLike[str] | str, plugin_name: str) -> Optional[Path]:
-    """Locate a plugin within a cloned marketplace tree."""
+def _read_marketplace_manifest(marketplace_dir: os.PathLike[str] | str) -> dict[str, Any]:
+    """Read a marketplace's `.claude-plugin/marketplace.json` (fall back to a
+    bare `marketplace.json`). Returns `{}` when absent or malformed."""
     mk = Path(marketplace_dir)
-    candidates = [mk / "plugins" / plugin_name, mk / plugin_name, mk]
+    for cand in (mk / ".claude-plugin" / "marketplace.json", mk / "marketplace.json"):
+        data = read_json(cand, fallback=None)
+        if isinstance(data, dict):
+            return data
+    return {}
+
+
+def get_marketplace_plugin_source(marketplace_dir: os.PathLike[str] | str, plugin_name: str) -> Any:
+    """The `source` field a marketplace declares for `plugin_name`, or None.
+
+    Shapes seen in the wild:
+      - a relative path string (``"./external_plugins/context7"``) — the plugin
+        lives inside the marketplace tree at that path;
+      - a dict ``{"source": "url"|"git-subdir"|"github", "url"/"repo", "sha", …}``
+        — the plugin lives in an *external* git repo, not copied into the tree.
+    """
+    man = _read_marketplace_manifest(marketplace_dir)
+    for entry in man.get("plugins") or []:
+        if isinstance(entry, dict) and entry.get("name") == plugin_name:
+            return entry.get("source")
+    return None
+
+
+def find_plugin_source_dir(marketplace_dir: os.PathLike[str] | str, plugin_name: str) -> Optional[Path]:
+    """Locate an *in-tree* plugin within a cloned marketplace tree.
+
+    Consults the marketplace manifest's declared `source` first: a relative
+    path string (e.g. ``./external_plugins/context7``) is resolved against the
+    marketplace root. External (dict) sources live outside the tree and return
+    None here — those are cloned on demand via `clone_plugin_source`.
+    """
+    mk = Path(marketplace_dir)
+    candidates: list[Path] = []
+    src = get_marketplace_plugin_source(mk, plugin_name)
+    if isinstance(src, str) and src.strip():
+        rel = Path(src)
+        candidates.append(rel if rel.is_absolute() else (mk / rel))
+    candidates += [mk / "plugins" / plugin_name, mk / plugin_name, mk]
     for d in candidates:
         if (d / ".claude-plugin" / "plugin.json").exists():
             return d
         if (d / "plugin.json").exists():
             return d
     return None
+
+
+def source_git_url(source: dict[str, Any]) -> Optional[str]:
+    """Clone URL for an external plugin `source` dict (url/git-subdir/github)."""
+    url = source.get("url")
+    if isinstance(url, str) and url.strip():
+        return url
+    repo = source.get("repo")
+    if isinstance(repo, str) and repo.strip():
+        return f"https://github.com/{repo}.git"
+    return None
+
+
+def source_pinned_shas(source: dict[str, Any]) -> list[str]:
+    """Commit identifiers a `source` dict pins to (sha / commit), lowercased.
+
+    These are the values a plugin's installed `gitCommitSha` is compared
+    against to decide whether an external plugin is stale."""
+    out: list[str] = []
+    for key in ("sha", "commit"):
+        v = source.get(key)
+        if isinstance(v, str) and v.strip():
+            out.append(v.strip().lower())
+    return out
+
+
+def source_checkout_ref(source: dict[str, Any]) -> str:
+    """Git ref to check out for an external `source`: pinned sha wins, then a
+    named ref/commit. Empty string means "leave clone at its default branch"."""
+    for key in ("sha", "ref", "commit"):
+        v = source.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def clone_plugin_source(source: dict[str, Any], work_dir: os.PathLike[str] | str) -> tuple[Optional[Path], str, Optional[str]]:
+    """Clone an external plugin `source` into `work_dir`/repo, check out its
+    pinned commit, and return ``(plugin_dir, resolved_sha, error)``.
+
+    `plugin_dir` is the directory holding the plugin manifest — for a
+    ``git-subdir`` source that is ``repo/<path>``, otherwise the clone root.
+    The caller owns `work_dir` (create + clean up). `resolved_sha` is the full
+    HEAD sha after checkout, suitable for recording as the install's
+    `gitCommitSha`."""
+    url = source_git_url(source)
+    if not url:
+        return None, "", "external source has no url/repo"
+    clone = Path(work_dir) / "repo"
+    code, _out, err = _git(["git", "clone", "--quiet", url, str(clone)])
+    if code != 0:
+        return None, "", f"clone failed: {err.strip() or url}"
+    ref = source_checkout_ref(source)
+    if ref:
+        code, _o, err = _git(["git", "-C", str(clone), "checkout", "--quiet", ref])
+        if code != 0:
+            # Pinned commit not reachable from the default-branch history the
+            # bare clone fetched — ask the server for that object explicitly,
+            # then retry the checkout.
+            _git(["git", "-C", str(clone), "fetch", "--quiet", "origin", ref])
+            code, _o, err = _git(["git", "-C", str(clone), "checkout", "--quiet", ref])
+            if code != 0:
+                return None, "", f"checkout {ref} failed: {err.strip()}"
+    code, out, _e = _git(["git", "-C", str(clone), "rev-parse", "HEAD"])
+    resolved_sha = out.strip() if code == 0 else ref
+    subpath = source.get("path")
+    plugin_dir = clone / subpath if isinstance(subpath, str) and subpath.strip() else clone
+    if not plugin_dir.is_dir():
+        return None, resolved_sha, f"path '{subpath}' not found in cloned repo"
+    return plugin_dir, resolved_sha, None
 
 
 # ─── MCP ─────────────────────────────────────────────────────────────────────
