@@ -3746,6 +3746,17 @@ def calculate_cost(usage: TokenUsage, model_id: str) -> float:
     )
 
 
+def calculate_cache_savings(usage: TokenUsage, model_id: str) -> float:
+    """USD saved by serving `usage.cache_read_tokens` from cache instead of
+    paying the full input rate for them. Cache writes cost more than plain
+    input (recouped only across later reads), so they're excluded here."""
+    p = get_model_pricing(model_id)
+    if p is None:
+        return 0.0
+    per_m = 1_000_000
+    return (usage.cache_read_tokens / per_m) * (p.input - p.cache_read)
+
+
 def find_unpriced_models(entries: Sequence[Any]) -> dict[str, int]:
     """Model id → entry count for usage entries whose model has no pricing.json
     row. Such entries contribute $0 to every cost aggregate, so callers should

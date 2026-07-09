@@ -415,6 +415,29 @@ def test_calculate_cost_each_token_type_contributes():
     assert only_cr == pytest.approx(p.cache_read)
 
 
+def test_calculate_cache_savings_uses_input_minus_cache_read_rate():
+    p = axt.get_model_pricing("claude-opus-4-7")
+    assert p is not None
+    savings = axt.calculate_cache_savings(
+        axt.TokenUsage(input_tokens=0, output_tokens=0, cache_read_tokens=1_000_000),
+        "claude-opus-4-7",
+    )
+    assert savings == pytest.approx(p.input - p.cache_read)
+
+
+def test_calculate_cache_savings_ignores_cache_write_tokens():
+    """Cache writes cost more than input, not less — only reads save money."""
+    savings = axt.calculate_cache_savings(
+        axt.TokenUsage(input_tokens=0, output_tokens=0, cache_creation_tokens=1_000_000),
+        "claude-opus-4-7",
+    )
+    assert savings == 0.0
+
+
+def test_calculate_cache_savings_unknown_model_is_zero():
+    assert axt.calculate_cache_savings(axt.TokenUsage(0, 0, 0, 1_000_000), "x") == 0.0
+
+
 # ─── billing-period month boundaries ─────────────────────────────────────────
 
 

@@ -668,6 +668,18 @@ def _entries_cost(entries: list[ClaudeUsageEntry]) -> float:
     )
 
 
+def _entries_cache_savings(entries: list[ClaudeUsageEntry]) -> float:
+    """Total USD saved across `entries` by serving cache reads instead of
+    full-price input tokens."""
+    return sum(
+        calculate_cache_savings(
+            TokenUsage(e.input_tokens, e.output_tokens, e.cache_creation_tokens, e.cache_read_tokens),
+            e.model,
+        )
+        for e in entries
+    )
+
+
 def cli_usage_today(args) -> int:
     config = load_config(AXT_CONFIG_PATH)
     tz = args.timezone or config.timezone
@@ -679,6 +691,7 @@ def cli_usage_today(args) -> int:
     daily = aggregate_daily(entries, tz)
     d = daily[0]
     cost = _entries_cost(entries)
+    savings = _entries_cache_savings(entries)
     if args.json:
         print(json.dumps({
             "date": d.date,
@@ -689,6 +702,7 @@ def cli_usage_today(args) -> int:
             "cacheCreationTokens": d.cache_creation_tokens,
             "cacheReadTokens": d.cache_read_tokens,
             "cost": {"usd": cost, "krw": round(cost * config.exchange_rate)},
+            "cacheSavings": {"usd": savings, "krw": round(savings * config.exchange_rate)},
         }, indent=2))
         return 0
     print(_bold(f"Today ({today})"))
@@ -699,6 +713,7 @@ def cli_usage_today(args) -> int:
     print(f"  Cache Write: {format_tokens(d.cache_creation_tokens)}")
     print(f"  Cache Read:  {format_tokens(d.cache_read_tokens)}")
     print(f"  Cost:        {format_cost(cost, config.exchange_rate)}")
+    print(f"  Cache Saved: {format_cost(savings, config.exchange_rate)}")
     return 0
 
 
@@ -715,23 +730,27 @@ def cli_usage_week(args) -> int:
         print(json.dumps([
             {"date": d.date, "sessions": d.sessions, "models": list(d.models),
              "inputTokens": d.input_tokens, "outputTokens": d.output_tokens,
-             "cacheCreationTokens": d.cache_creation_tokens, "cacheReadTokens": d.cache_read_tokens}
+             "cacheCreationTokens": d.cache_creation_tokens, "cacheReadTokens": d.cache_read_tokens,
+             "cacheSavingsUsd": _day_cache_savings(entries, d.date, tz)}
             for d in daily
         ], indent=2))
         return 0
     if args.csv:
-        print("date,sessions,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cost_usd,cost_krw")
+        print("date,sessions,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cost_usd,cost_krw,cache_savings_usd")
         for d in daily:
             cost = _day_cost(entries, d.date, tz)
-            print(f"{d.date},{d.sessions},{d.input_tokens},{d.output_tokens},{d.cache_creation_tokens},{d.cache_read_tokens},{cost:.2f},{round(cost * config.exchange_rate)}")
+            savings = _day_cache_savings(entries, d.date, tz)
+            print(f"{d.date},{d.sessions},{d.input_tokens},{d.output_tokens},{d.cache_creation_tokens},{d.cache_read_tokens},{cost:.2f},{round(cost * config.exchange_rate)},{savings:.2f}")
         return 0
     print(_bold(f"Week: {since} ~ {until}\n"))
     print(f" {'Date'.ljust(12)} {'Sess'.ljust(6)} {'In'.ljust(10)} {'Out'.ljust(10)} {'Cache W'.ljust(10)} {'Cache R'.ljust(10)} Cost")
     print("─" * 78)
     total_cost = 0.0
+    total_savings = 0.0
     for d in daily:
         cost = _day_cost(entries, d.date, tz)
         total_cost += cost
+        total_savings += _day_cache_savings(entries, d.date, tz)
         print(
             f" {d.date.ljust(12)} {str(d.sessions).ljust(6)} "
             f"{format_tokens(d.input_tokens).ljust(10)} {format_tokens(d.output_tokens).ljust(10)} "
@@ -740,11 +759,16 @@ def cli_usage_week(args) -> int:
         )
     print("─" * 78)
     print(f" {'Total'.ljust(58)} {format_cost(total_cost, config.exchange_rate)}")
+    print(f" {'Cache saved'.ljust(58)} {format_cost(total_savings, config.exchange_rate)}")
     return 0
 
 
 def _day_cost(entries: list[ClaudeUsageEntry], date: str, tz: str) -> float:
     return _entries_cost([e for e in entries if _date_in_tz(e.timestamp, tz) == date])
+
+
+def _day_cache_savings(entries: list[ClaudeUsageEntry], date: str, tz: str) -> float:
+    return _entries_cache_savings([e for e in entries if _date_in_tz(e.timestamp, tz) == date])
 
 
 def cli_usage_month(args) -> int:
@@ -755,11 +779,17 @@ def cli_usage_month(args) -> int:
     until = _today_in_tz(tz)
     entries = _load_usage_entries(args, since=since, until=until)
     total_cost = _entries_cost(entries)
+    total_savings = _entries_cache_savings(entries)
     sessions = {e.session_id for e in entries}
+    cache_write = sum(e.cache_creation_tokens for e in entries)
+    cache_read = sum(e.cache_read_tokens for e in entries)
     print(_bold(f"Month: {since} ~ {until}"))
     print(f"  Sessions:    {len(sessions)}")
     print(f"  Messages:    {len(entries)}")
+    print(f"  Cache Write: {format_tokens(cache_write)}")
+    print(f"  Cache Read:  {format_tokens(cache_read)}")
     print(f"  Cost:        {format_cost(total_cost, config.exchange_rate)}")
+    print(f"  Cache Saved: {format_cost(total_savings, config.exchange_rate)}")
     print()
     print(budget_bar(total_cost, config.monthly_budget))
     return 0
@@ -774,14 +804,18 @@ def cli_usage_blocks(args) -> int:
     blocks = compute_blocks(entries, tz)
     if args.active:
         blocks = [b for b in blocks if b.is_active]
-    print(_bold(f" {'Block'.ljust(30)} {'Status'.ljust(10)} {'Tokens'.ljust(12)} {'Burn Rate'.ljust(12)} Cost"))
-    print("─" * 80)
+    print(_bold(f" {'Block'.ljust(30)} {'Status'.ljust(10)} {'Tokens'.ljust(12)} {'Cache W'.ljust(10)} {'Cache R'.ljust(10)} {'Burn Rate'.ljust(12)} Cost"))
+    print("─" * 102)
     for b in reversed(blocks):
         start = b.start_time[5:16].replace("T", " ")
         end = b.end_time[11:16]
         status = _green("● active") if b.is_active else _dim("○ done")
         burn = f"{format_tokens(b.burn_rate_per_min)}/min" if b.burn_rate_per_min else "—"
-        print(f" {f'{start}~{end}'.ljust(30)} {status.ljust(19)} {format_tokens(b.total_tokens).ljust(12)} {burn.ljust(12)} ${b.cost:.2f}")
+        print(
+            f" {f'{start}~{end}'.ljust(30)} {status.ljust(19)} {format_tokens(b.total_tokens).ljust(12)} "
+            f"{format_tokens(b.cache_creation_tokens).ljust(10)} {format_tokens(b.cache_read_tokens).ljust(10)} "
+            f"{burn.ljust(12)} ${b.cost:.2f}"
+        )
     return 0
 
 
@@ -794,6 +828,7 @@ def cli_usage_session(args) -> int:
     sessions = aggregate_by_session(entries)
     s = sessions[0]
     cost = _entries_cost(entries)
+    savings = _entries_cache_savings(entries)
     print(_bold(f"Session: {s.session_id}"))
     print(f"  Project:     {s.project_path}")
     print(f"  Models:      {', '.join(s.models)}")
@@ -803,6 +838,7 @@ def cli_usage_session(args) -> int:
     print(f"  Cache Write: {format_tokens(s.cache_creation_tokens)}")
     print(f"  Cache Read:  {format_tokens(s.cache_read_tokens)}")
     print(f"  Cost:        {format_cost(cost, config.exchange_rate)}")
+    print(f"  Cache Saved: {format_cost(savings, config.exchange_rate)}")
     print(f"  Period:      {s.first_timestamp[:19]} ~ {s.last_timestamp[:19]}")
     return 0
 

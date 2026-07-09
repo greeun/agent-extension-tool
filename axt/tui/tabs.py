@@ -1350,6 +1350,18 @@ def _entry_cost(e: UnifiedUsageEntry) -> float:
     )
 
 
+def _entry_cache_savings(e: UnifiedUsageEntry) -> float:
+    return calculate_cache_savings(
+        TokenUsage(
+            input_tokens=e.input_tokens,
+            output_tokens=e.output_tokens,
+            cache_creation_tokens=e.cache_write_tokens,
+            cache_read_tokens=e.cache_read_tokens,
+        ),
+        e.model,
+    )
+
+
 def _daily_costs(entries: list[UnifiedUsageEntry], days: int, tz: str) -> list[tuple[str, float]]:
     """Per-day cost for the last `days` days. Ordered oldest → newest."""
     today = datetime.now(timezone.utc)
@@ -1495,6 +1507,7 @@ def _usage_period_card(entries: list[UnifiedUsageEntry], label: str) -> list[str
     """3-line summary card for a period (Today/Week/Month)."""
     sessions = {e.session_id for e in entries}
     cost = sum(_entry_cost(e) for e in entries)
+    savings = sum(_entry_cache_savings(e) for e in entries)
     in_t = sum(e.input_tokens for e in entries)
     out_t = sum(e.output_tokens for e in entries)
     cw_t = sum(e.cache_write_tokens for e in entries)
@@ -1503,7 +1516,7 @@ def _usage_period_card(entries: list[UnifiedUsageEntry], label: str) -> list[str
         f"  {label:7s}  sessions={len(sessions):>3d}  msgs={len(entries):>4d}",
         f"           in={format_tokens(in_t):>7s}  out={format_tokens(out_t):>7s}  "
         f"cw={format_tokens(cw_t):>7s}  cr={format_tokens(cr_t):>7s}",
-        f"           cost=${cost:.2f}",
+        f"           cost=${cost:.2f}  saved=${savings:.2f}",
     ]
 
 

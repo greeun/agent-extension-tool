@@ -872,6 +872,7 @@ def test_usage_today_with_data_renders_full_summary(tmp_path: Path, monkeypatch)
     assert "Today" in out
     assert "Sessions:" in out
     assert "Cost:" in out
+    assert "Cache Saved:" in out
 
 
 def test_usage_today_json_with_data(tmp_path: Path, monkeypatch):
@@ -881,6 +882,7 @@ def test_usage_today_json_with_data(tmp_path: Path, monkeypatch):
     data = json.loads(out)
     assert data["sessions"] >= 1
     assert "cost" in data
+    assert data["cacheSavings"]["usd"] > 0
 
 
 def test_usage_week_table_with_data(tmp_path: Path, monkeypatch):
@@ -889,6 +891,7 @@ def test_usage_week_table_with_data(tmp_path: Path, monkeypatch):
     assert code == 0
     assert "Week:" in out
     assert "Total" in out
+    assert "Cache saved" in out
 
 
 def test_usage_week_csv_with_data_has_row(tmp_path: Path, monkeypatch):
@@ -896,7 +899,7 @@ def test_usage_week_csv_with_data_has_row(tmp_path: Path, monkeypatch):
     code, out, _ = _run(["usage", "week", "--timezone", "UTC", "--csv"])
     assert code == 0
     lines = out.splitlines()
-    assert lines[0].startswith("date,sessions,")
+    assert lines[0] == "date,sessions,input_tokens,output_tokens,cache_write_tokens,cache_read_tokens,cost_usd,cost_krw,cache_savings_usd"
     assert any(line.startswith("2026-05-20") for line in lines[1:])  # a data row
 
 
@@ -905,6 +908,17 @@ def test_usage_blocks_with_data(tmp_path: Path, monkeypatch):
     code, out, _ = _run(["usage", "blocks", "--timezone", "UTC"])
     assert code == 0
     assert "Block" in out
+    assert "Cache W" in out
+    assert "Cache R" in out
+
+
+def test_usage_month_with_data_shows_cache_breakdown(tmp_path: Path, monkeypatch):
+    _stub_usage(tmp_path, monkeypatch, day="2026-05-20")
+    code, out, _ = _run(["usage", "month", "--timezone", "UTC"])
+    assert code == 0
+    assert "Cache Write:" in out
+    assert "Cache Read:" in out
+    assert "Cache Saved:" in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks/migrate unsupported on Windows")
