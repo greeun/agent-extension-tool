@@ -8353,3 +8353,37 @@ def test_project_enter_on_empty_list_is_noop():
     state.project_items = []
     assert axt.handle_project_input(state, 10) is None
     assert state.context_detail_focused is False
+
+
+def test_context_detail_panel_focus_flag_reaches_renderer(monkeypatch, tmp_path):
+    """_render_context_page forwards context_detail_focused to
+    render_detail_panel (border color) and un-focuses the table."""
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    def fake_panel(stdscr, y, x, h, w, title, fields, *, scroll=0, focused=False):
+        captured["focused"] = focused
+        return scroll
+
+    monkeypatch.setattr("axt.render_detail_panel", fake_panel)
+    scr = _make_stdscr(rows=40, cols=140)
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.context_detail_focused = True
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+    assert captured["focused"] is True
+
+    captured.clear()
+    state.context_detail_focused = False
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+    assert captured["focused"] is False
+
+
+def test_invalidate_context_resets_detail_focus():
+    state = axt.TuiState()
+    state.context_detail_focused = True
+    state.context_detail_scroll = 7
+    axt._invalidate_context(state)
+    assert state.context_detail_focused is False
+    assert state.context_detail_scroll == 0

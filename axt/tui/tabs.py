@@ -274,6 +274,8 @@ def _invalidate_context(state: TuiState) -> None:
     lazily inside ``_ensure_context_loaded`` / ``_kick_usage_reload``.
     """
     state.context_analysis = None
+    state.context_detail_focused = False
+    state.context_detail_scroll = 0
 
 
 def _refresh_ext(state: TuiState, sub: str) -> None:
@@ -1930,10 +1932,13 @@ def _render_context_page(stdscr, state: TuiState, y0: int, h: int, w: int,
     detail_h = max(0, min(detail_h, h - 2))
     table_h = max(1, h - detail_h)
 
+    table_focused = not state.context_detail_focused
     if state.context_sub_tab == "project":
-        _render_project_files_table(stdscr, state, y0, table_h, w, focused=True)
+        _render_project_files_table(stdscr, state, y0, table_h, w,
+                                    focused=table_focused)
     elif rows:
-        _render_context_sources_table(stdscr, state, y0, table_h, w, rows, focused=True)
+        _render_context_sources_table(stdscr, state, y0, table_h, w, rows,
+                                      focused=table_focused)
     else:
         safe_addnstr(stdscr, y0 + 1, 2, "No context sources detected.", w - 4, CP_DIM())
 
@@ -1941,7 +1946,8 @@ def _render_context_page(stdscr, state: TuiState, y0: int, h: int, w: int,
         title, fields = _context_detail_for(state, analysis, rows)
         state.context_detail_scroll = render_detail_panel(
             stdscr, y0 + table_h, 0, detail_h, w, title, fields,
-            scroll=state.context_detail_scroll, focused=True)
+            scroll=state.context_detail_scroll,
+            focused=state.context_detail_focused)
 
 
 def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
