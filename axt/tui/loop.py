@@ -133,8 +133,10 @@ Context
                 the body switch between them
   [ / ]         Cycle sub-tabs from the body (Sources ↔ Project)
   j / k         Move selection within the active sub-tab
-  PgUp / PgDn   Scroll the shared bottom detail panel
-  Enter         Sources: preview the category's sources with actual content
+  PgUp / PgDn   Page the list (±10 rows)
+  Enter         Focus the bottom detail panel — j/k (or PgUp/PgDn) scroll
+                it, Esc blurs back to the table
+  v             Sources: preview the category's sources with actual content
                 Project: preview the focused file's content
   e             Sources: open first source file in $EDITOR
                 Project: open the focused file in $EDITOR
@@ -249,7 +251,7 @@ def _render_frame(stdscr, state: TuiState) -> None:
     elif tab_key == "extensions":
         shortcuts = _extensions_shortcuts(state)
     elif tab_key == "context":
-        shortcuts = "1-3:tab  [/]:sub  j/k:nav  PgUp/PgDn:scroll  e:edit  d:delete(memory)  Enter:preview  r:refresh  ?:help  q:quit"
+        shortcuts = "1-3:tab  [/]:sub  j/k:nav  Enter:detail  v:preview  e:edit  d:delete(memory)  r:refresh  ?:help  q:quit"
     else:
         shortcuts = "1-3:tab  j/k:nav  r:refresh  ?:help  q:quit"
     # Color the status message by its kind so action results stand out:
@@ -337,6 +339,11 @@ def _handle_content_layer_key(stdscr, state: TuiState, key: int, tab_key: str) -
     # by handle_extensions_input) instead of climbing out. The next Esc,
     # with the panel blurred, then climbs as usual.
     if tab_key == "extensions" and state.ext_detail_focused:
+        climb = False
+    # Context detail-panel exception: same deal — while the bottom panel is
+    # focused, Esc blurs it and ↑ scrolls it (handled by
+    # handle_context_input) instead of climbing out.
+    if tab_key == "context" and state.context_detail_focused:
         climb = False
     # Marks/search exception (vault and non-vault sub-tabs alike): while
     # Space marks or an applied search filter are active, Esc peels those

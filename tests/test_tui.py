@@ -8387,3 +8387,16 @@ def test_invalidate_context_resets_detail_focus():
     axt._invalidate_context(state)
     assert state.context_detail_focused is False
     assert state.context_detail_scroll == 0
+
+
+def test_esc_with_focused_context_detail_does_not_climb():
+    """While the Context detail panel is focused, Esc must reach
+    handle_context_input (which blurs the panel) — not climb the layer."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("context")
+    state.focused_layer = "content"
+    state.context_detail_focused = True
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, axt.KEY_ESC, "context")
+    assert consumed is False
+    assert state.focused_layer == "content"
