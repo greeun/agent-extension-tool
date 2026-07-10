@@ -160,10 +160,11 @@ class TuiState:
     # sub-tabs as a persistent strip. ←/→ at the subTab focus layer or [/] in
     # the body cycle between them — mirrors the Extensions sub-tab model.
     context_sub_tab: str = "project"
-    # Scroll offset for the shared bottom detail panel (mirrors the active
-    # sub-tab's selected row). Reset on selection move; PgUp/PgDn page the
-    # list instead of scrolling this panel (full content is one Enter away
-    # via the preview modal).
+    # Shared bottom detail panel (mirrors the active sub-tab's selected row).
+    # Enter focuses it (j/k / PgUp/PgDn scroll, Esc blurs — vault pattern);
+    # `v` opens the full-content preview modal. Scroll resets on selection
+    # move, blur, and sub-tab cycle.
+    context_detail_focused: bool = False
     context_detail_scroll: int = 0
 
     # Project context files (rendered as the Context tab's "project" sub-tab).
@@ -1984,7 +1985,37 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
         w - 1), w - 1, CP_DIM())
 
 
+def _handle_context_detail_keys(state: TuiState, key: int) -> Optional[str]:
+    """Detail-panel focus mode (both Context sub-tabs): j/k (±1) and
+    PgDn/PgUp (±10) scroll; Esc blurs back to the table; [ / ] still cycle
+    the sub-tab (blurring first so the panel doesn't go stale)."""
+    if key == KEY_ESC:
+        state.context_detail_focused = False
+        state.context_detail_scroll = 0
+        return None
+    if key in (ord("["), ord("]")):
+        state.context_detail_focused = False
+        state.context_detail_scroll = 0
+        _cycle_sub_tab(state, "context", -1 if key == ord("[") else 1)
+        return f"Sub-tab: {state.context_sub_tab}"
+    if key in (ord("j"), curses.KEY_DOWN):
+        state.context_detail_scroll += 1
+    elif key in (ord("k"), curses.KEY_UP):
+        state.context_detail_scroll = max(0, state.context_detail_scroll - 1)
+    elif key == curses.KEY_NPAGE:
+        state.context_detail_scroll += 10
+    elif key == curses.KEY_PPAGE:
+        state.context_detail_scroll = max(0, state.context_detail_scroll - 10)
+    return None
+
+
 def handle_context_input(state: TuiState, key: int) -> Optional[str]:
+    # ── Detail-panel focus mode (both sub-tabs): movement keys scroll the
+    # bottom panel, Esc blurs. Sits first so list-selection keys can't move
+    # the table row underneath the focused panel.
+    if state.context_detail_focused:
+        return _handle_context_detail_keys(state, key)
+
     # [ ] cycle Context sub-tabs in the body (mirrors Extensions). Canonical
     # ←/→ navigation lives at the subTab focus layer (see loop.py); this gives
     # a keyboard shortcut without climbing out of the content layer.
@@ -2021,6 +2052,7 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
         state.context_detail_scroll = 0
     elif key == ord("r"):
         state.context_analysis = None
+        state.context_detail_scroll = 0
         return "Refreshed"
     elif key == ord("e") and state.context_analysis and state.stdscr_callbacks and 0 <= state.context_selected < n:
         # Match the detail panel's (category, scope) filter — a "project" row
@@ -2033,7 +2065,11 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
             return "No file to edit in this category"
         ok = open_in_editor(state.stdscr_callbacks["stdscr"], first.path)
         return f"Opened {first.path}" if ok else "Editor failed"
-    elif is_enter(key) and state.context_analysis and state.stdscr_callbacks and 0 <= state.context_selected < n:
+    elif is_enter(key) and 0 <= state.context_selected < n:
+        state.context_detail_focused = True
+        state.context_detail_scroll = 0
+        return "Detail focused — j/k to scroll, Esc to blur"
+    elif key == ord("v") and state.context_analysis and state.stdscr_callbacks and 0 <= state.context_selected < n:
         row = rows[state.context_selected]
         srcs = [s for s in state.context_analysis.sources
                 if s.category == row.category
@@ -2185,6 +2221,7 @@ def handle_project_input(state: TuiState, key: int) -> Optional[str]:
     elif key == ord("r"):
         state.project_items = None
         state.context_analysis = None
+        state.context_detail_scroll = 0
         return "Refreshed"
     elif key == ord("s"):
         _cycle_project_sort(state)

@@ -3199,8 +3199,8 @@ def test_project_enter_calls_preview(monkeypatch):
     assert called and called[0][1] == "hello"
 
 
-def test_context_sources_enter_previews_actual_content(monkeypatch):
-    """Sources sub-tab Enter modal includes each source's real content, not
+def test_context_sources_v_previews_actual_content(monkeypatch):
+    """Sources sub-tab `v` modal includes each source's real content, not
     just name/path/token metadata; content-less sources get a fallback note."""
     called = []
     monkeypatch.setattr("axt.preview_modal",
@@ -3220,7 +3220,7 @@ def test_context_sources_enter_previews_actual_content(monkeypatch):
         cost_impact=_make_empty_context_analysis().cost_impact)
     state.context_selected = 0
     state.stdscr_callbacks = {"stdscr": object()}
-    axt.handle_context_input(state, 10)
+    axt.handle_context_input(state, ord("v"))
     assert called
     _, body, kw = called[0]
     assert "always answer in Korean" in body
@@ -5262,7 +5262,7 @@ def test_handle_context_input_refresh_clears_analysis():
     assert s.context_analysis is None
 
 
-def test_handle_context_input_enter_opens_preview(monkeypatch):
+def test_handle_context_input_v_opens_preview(monkeypatch):
     called = []
     monkeypatch.setattr("axt.preview_modal",
                         lambda stdscr, content, title="Preview", **kw: called.append((title, content)))
@@ -5271,7 +5271,7 @@ def test_handle_context_input_enter_opens_preview(monkeypatch):
     s.context_analysis = _seed_context_analysis_with_sources()
     s.stdscr_callbacks = {"stdscr": object()}
     s.context_selected = 0
-    axt.handle_context_input(s, 10)  # Enter
+    axt.handle_context_input(s, ord("v"))
     assert called
     assert "CLAUDE.md" in called[0][1]
 
@@ -8278,3 +8278,61 @@ def test_context_detail_lists_all_members_with_tok_and_pct():
     for _label, value in fields:
         assert " tok" in value
         assert "1.5%" in value
+
+
+def test_context_sources_enter_focuses_detail_panel():
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.context_selected = 0
+    msg = axt.handle_context_input(state, 10)  # Enter
+    assert state.context_detail_focused is True
+    assert state.context_detail_scroll == 0
+    assert "Detail focused" in msg
+
+
+def test_context_sources_enter_on_empty_list_is_noop():
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _make_empty_context_analysis()
+    assert axt.handle_context_input(state, 10) is None
+    assert state.context_detail_focused is False
+
+
+def test_context_detail_focus_scrolls_and_esc_blurs():
+    state = axt.TuiState()
+    state.context_detail_focused = True
+    axt.handle_context_input(state, ord("j"))
+    assert state.context_detail_scroll == 1
+    axt.handle_context_input(state, curses.KEY_NPAGE)
+    assert state.context_detail_scroll == 11
+    axt.handle_context_input(state, ord("k"))
+    assert state.context_detail_scroll == 10
+    axt.handle_context_input(state, curses.KEY_PPAGE)
+    assert state.context_detail_scroll == 0
+    axt.handle_context_input(state, axt.KEY_ESC)
+    assert state.context_detail_focused is False
+    assert state.context_detail_scroll == 0
+
+
+def test_context_detail_focus_freezes_table_selection():
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.context_detail_focused = True
+    before = state.context_selected
+    axt.handle_context_input(state, ord("j"))
+    assert state.context_selected == before  # panel scrolled, row frozen
+    assert state.context_detail_scroll == 1
+
+
+def test_context_detail_focus_bracket_cycles_subtab_and_blurs():
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_detail_focused = True
+    state.context_detail_scroll = 5
+    msg = axt.handle_context_input(state, ord("["))
+    assert state.context_sub_tab == "project"
+    assert state.context_detail_focused is False
+    assert state.context_detail_scroll == 0
+    assert "project" in msg
