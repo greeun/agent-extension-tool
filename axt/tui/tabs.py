@@ -1994,7 +1994,8 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
 def _handle_context_detail_keys(state: TuiState, key: int) -> Optional[str]:
     """Detail-panel focus mode (both Context sub-tabs): j/k (±1) and
     PgDn/PgUp (±10) scroll; Esc blurs back to the table; [ / ] still cycle
-    the sub-tab (blurring first so the panel doesn't go stale)."""
+    the sub-tab (blurring first so the panel doesn't go stale); r refreshes
+    and blurs back to the table too."""
     if key == KEY_ESC:
         state.context_detail_focused = False
         state.context_detail_scroll = 0
@@ -2004,6 +2005,13 @@ def _handle_context_detail_keys(state: TuiState, key: int) -> Optional[str]:
         state.context_detail_scroll = 0
         _cycle_sub_tab(state, "context", -1 if key == ord("[") else 1)
         return f"Sub-tab: {state.context_sub_tab}"
+    if key == ord("r"):
+        state.context_detail_focused = False
+        state.context_detail_scroll = 0
+        state.context_analysis = None
+        if state.context_sub_tab == "project":
+            state.project_items = None
+        return "Refreshed"
     if key in (ord("j"), curses.KEY_DOWN):
         state.context_detail_scroll += 1
     elif key in (ord("k"), curses.KEY_UP):

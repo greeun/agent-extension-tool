@@ -3230,6 +3230,18 @@ def test_context_sources_v_previews_actual_content(monkeypatch):
     assert kw.get("heading_prefix") == "━━"
 
 
+def test_project_v_without_stdscr_is_noop(monkeypatch):
+    called = []
+    monkeypatch.setattr("axt.preview_modal",
+                        lambda stdscr, content, title="Preview": called.append(content))
+    state = axt.TuiState()
+    state.project_items = [_project_source("X", path="/p/X.md", content="hello")]
+    state.project_selected = 0
+    state.stdscr_callbacks = None
+    assert axt.handle_project_input(state, ord("v")) is None
+    assert not called
+
+
 def test_project_e_calls_editor(monkeypatch):
     called = []
     monkeypatch.setattr("axt.open_in_editor", lambda stdscr, path: called.append(path) or True)
@@ -8338,6 +8350,19 @@ def test_context_detail_focus_bracket_cycles_subtab_and_blurs():
     assert "project" in msg
 
 
+def test_context_detail_focus_r_refreshes_and_blurs():
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.context_detail_focused = True
+    state.context_detail_scroll = 3
+    msg = axt.handle_context_input(state, ord("r"))
+    assert state.context_detail_focused is False
+    assert state.context_detail_scroll == 0
+    assert state.context_analysis is None
+    assert msg == "Refreshed"
+
+
 def test_project_enter_focuses_detail_panel():
     state = axt.TuiState()
     state.project_items = [_project_source("X", path="/p/X.md", content="hello")]
@@ -8380,6 +8405,30 @@ def test_context_detail_panel_focus_flag_reaches_renderer(monkeypatch, tmp_path)
     assert captured["focused"] is False
 
 
+def test_context_detail_focus_flag_reaches_sources_table(monkeypatch, tmp_path):
+    """_render_context_page forwards `focused=not context_detail_focused` to
+    _render_context_sources_table, inverted from the detail panel's flag."""
+    monkeypatch.chdir(tmp_path)
+    captured = {}
+
+    def fake_table(stdscr, state, y0, h, w, rows, *, focused=False):
+        captured["focused"] = focused
+
+    monkeypatch.setattr("axt._render_context_sources_table", fake_table)
+    scr = _make_stdscr(rows=40, cols=140)
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.context_detail_focused = True
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+    assert captured["focused"] is False
+
+    captured.clear()
+    state.context_detail_focused = False
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+    assert captured["focused"] is True
+
+
 def test_invalidate_context_resets_detail_focus():
     state = axt.TuiState()
     state.context_detail_focused = True
@@ -8398,5 +8447,20 @@ def test_esc_with_focused_context_detail_does_not_climb():
     state.context_detail_focused = True
     scr = _make_stdscr()
     consumed = axt._handle_layer_key(scr, state, axt.KEY_ESC, "context")
+    assert consumed is False
+    assert state.focused_layer == "content"
+
+
+def test_up_at_top_with_focused_context_detail_does_not_climb():
+    """While the Context detail panel is focused, ↑ at the top of the table
+    must not climb the layer either — it falls through to the tab handler,
+    which scrolls the panel instead (clamped at 0)."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("context")
+    state.focused_layer = "content"
+    state.context_selected = 0
+    state.context_detail_focused = True
+    scr = _make_stdscr()
+    consumed = axt._handle_layer_key(scr, state, curses.KEY_UP, "context")
     assert consumed is False
     assert state.focused_layer == "content"
