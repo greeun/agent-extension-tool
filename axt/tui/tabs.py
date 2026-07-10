@@ -2226,7 +2226,11 @@ def handle_project_input(state: TuiState, key: int) -> Optional[str]:
     elif key == ord("s"):
         _cycle_project_sort(state)
         return f"Sort: {state.project_sort}"
-    elif is_enter(key) and state.stdscr_callbacks and items and state.project_selected < n:
+    elif is_enter(key) and items and state.project_selected < n:
+        state.context_detail_focused = True
+        state.context_detail_scroll = 0
+        return "Detail focused — j/k to scroll, Esc to blur"
+    elif key == ord("v") and state.stdscr_callbacks and items and state.project_selected < n:
         item = items[state.project_selected]
         preview_modal(state.stdscr_callbacks["stdscr"], item.content or "", title=item.name)
     elif key == ord("e") and state.stdscr_callbacks and items and state.project_selected < n:

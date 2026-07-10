@@ -3186,7 +3186,7 @@ def test_subtab_action_without_stdscr_is_noop():
 # ─── Project Enter preview & `e` editor (smoke) ──────────────────────────────
 
 
-def test_project_enter_calls_preview(monkeypatch):
+def test_project_v_calls_preview(monkeypatch):
     called = []
     monkeypatch.setattr("axt.preview_modal", lambda stdscr, content, title="Preview": called.append((title, content)))
     state = axt.TuiState()
@@ -3195,7 +3195,7 @@ def test_project_enter_calls_preview(monkeypatch):
     )]
     state.project_selected = 0
     state.stdscr_callbacks = {"stdscr": object()}
-    axt.handle_project_input(state, 10)
+    axt.handle_project_input(state, ord("v"))
     assert called and called[0][1] == "hello"
 
 
@@ -8336,3 +8336,20 @@ def test_context_detail_focus_bracket_cycles_subtab_and_blurs():
     assert state.context_detail_focused is False
     assert state.context_detail_scroll == 0
     assert "project" in msg
+
+
+def test_project_enter_focuses_detail_panel():
+    state = axt.TuiState()
+    state.project_items = [_project_source("X", path="/p/X.md", content="hello")]
+    state.project_selected = 0
+    msg = axt.handle_project_input(state, 10)  # Enter
+    assert state.context_detail_focused is True
+    assert state.context_detail_scroll == 0
+    assert "Detail focused" in msg
+
+
+def test_project_enter_on_empty_list_is_noop():
+    state = axt.TuiState()
+    state.project_items = []
+    assert axt.handle_project_input(state, 10) is None
+    assert state.context_detail_focused is False
