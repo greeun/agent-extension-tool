@@ -1905,9 +1905,13 @@ def _context_detail_for(state: TuiState, analysis: ContextAnalysis,
                 if s.category == current.category
                 and getattr(s, "scope", "global") == current.scope]
         srcs.sort(key=lambda s: s.estimated_tokens, reverse=True)
-        for s in srcs[:20]:
+        # Uncapped: the panel is focusable/scrollable (Enter → j/k), so every
+        # member is reachable. Each line carries its own usage share.
+        for s in srcs:
             hint = f" ({s.hint})" if s.hint else ""
-            fields.append((s.name, f"{format_tokens(s.estimated_tokens)} tok{hint}"))
+            fields.append((s.name,
+                           f"{format_tokens(s.estimated_tokens)} tok  "
+                           f"{s.percentage:.1f}%{hint}"))
         scope_label = "project" if current.scope == "project" else "global"
         return f"{current.label} — {scope_label}", (fields or [("(empty)", "—")])
     return "Context sources", [("(empty)", "—")]

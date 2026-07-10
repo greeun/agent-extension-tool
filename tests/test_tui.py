@@ -8255,3 +8255,26 @@ def test_act_update_shows_updating_before_apply(monkeypatch):
     state.stdscr_callbacks = {"stdscr": None, "render": lambda: None}
     axt.tui.tabs._act_update(state, None, "plugins", ord("u"))
     assert seen["status_at_apply"] == "Updating foo@mk…"
+
+
+def test_context_detail_lists_all_members_with_tok_and_pct():
+    """Sources group detail shows every member source (no 20-item cap),
+    each valued as '<tok> tok  <pct>%'."""
+    srcs = [axt.ContextSource(
+        name=f"Memory: m{i}", category="memory", path=f"/m/{i}.md",
+        chars=400, estimated_tokens=100 + i, percentage=1.5,
+        actionable=True) for i in range(25)]
+    analysis = axt.ContextAnalysis(
+        total_tokens=2500, context_window_size=200_000, used_percent=1.2,
+        model="claude-sonnet", sources=srcs,
+        cost_impact=_make_empty_context_analysis().cost_impact)
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_selected = 0
+    rows = axt._context_rows(analysis)
+    title, fields = axt._context_detail_for(state, analysis, rows)
+    assert title.startswith("Memory")
+    assert len(fields) == 25  # cap removed
+    for _label, value in fields:
+        assert " tok" in value
+        assert "1.5%" in value
