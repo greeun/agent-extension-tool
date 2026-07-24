@@ -201,6 +201,40 @@ _VAULT_SORT_MARK = {
 # Seconds after which `state.status` auto-clears so shortcut hints reappear.
 STATUS_TIMEOUT_S: float = 5.0
 
+# Empty-state guidance for the Extensions list sub-tabs (vault handled
+# separately in render_vault_tab). Shown by _render_list_with_detail when a
+# sub-tab has zero rows: a title line plus an actionable next-step hint.
+# Keys are the verbatim EXTENSION_SUB_TABS ids. Hints reference real
+# keybindings (see SUBTAB_KEYMAP): skills `a`=link path / `i`=import;
+# commands & agents `i`=import; market `a`=add. plugins/mcp/hooks have no
+# create key, so their hints point at the source of truth instead.
+_EMPTY_STATE_HINTS: dict[str, tuple[str, str]] = {
+    "plugins": ("No plugins installed yet.",
+                "Add a marketplace on the Market sub-tab; installed plugins appear here."),
+    "market": ("No marketplaces added yet.",
+               "Press `a` to add one (github:owner/repo, git:url, dir:path)."),
+    "skills": ("No skills found yet.",
+               "Add a skill under ~/.claude/skills/, or press `a` to link an external path."),
+    "commands": ("No commands found yet.",
+                 "Add .md files under ~/.claude/commands/, or press `i` to import into the vault."),
+    "agents": ("No agents found yet.",
+               "Add .md files under ~/.claude/agents/, or press `i` to import into the vault."),
+    "mcp": ("No MCP servers configured.",
+            "Configure servers in ~/.claude/settings.json or .mcp.json."),
+    "hooks": ("No hooks configured.",
+              "Add hooks under the `hooks` key in ~/.claude/settings.json."),
+}
+
+
+def _empty_state_hint(key: str) -> tuple[str, str]:
+    """(title, hint) shown when an Extensions sub-tab has no rows.
+
+    Unknown keys fall back to the historical bare message with no hint, so a
+    newly-added sub-tab never crashes the renderer.
+    """
+    return _EMPTY_STATE_HINTS.get(key, (f"No {key} found.", ""))
+
+
 # Failure markers, checked before the ok-prefixes so "Sync failed: …" lands
 # on "error" even though "sync" is also an ok-prefix.
 _STATUS_ERROR_TOKENS = (
@@ -2689,7 +2723,10 @@ def _render_list_with_detail(stdscr, state, y0, h, w, key, columns, rows, items,
     state.ext_selected.setdefault(key, 0)
     state.ext_selected[key] = max(0, min(state.ext_selected[key], max(0, len(rows) - 1)))
     if not rows:
-        safe_addnstr(stdscr, y0 + 2, 2, f"No {key} found.", w - 4, CP_DIM())
+        title, hint = _empty_state_hint(key)
+        safe_addnstr(stdscr, y0 + 2, 2, fit_cells(title, w - 4), w - 4, CP_DIM())
+        if hint:
+            safe_addnstr(stdscr, y0 + 4, 2, fit_cells(hint, w - 4), w - 4, CP_DIM())
         return
     # Detail panel claims the bottom ~40% (7–16 rows) but never starves the
     # list below a few visible rows. When it can't show everything, Tab focuses

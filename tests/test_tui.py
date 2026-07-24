@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import axt
+import axt.tui.tabs as tabs
 
 
 def _make_stdscr(rows: int = 30, cols: int = 120):
@@ -5759,7 +5760,8 @@ def test_render_extensions_skills_subtab_empty(tmp_path, monkeypatch):
     scr = _make_stdscr(rows=24, cols=120)
     axt.render_extensions_tab(scr, s, 0, 20, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    assert "No skills found." in flat
+    assert "No skills found yet." in flat
+    assert "Add a skill under ~/.claude/skills/" in flat
 
 
 def test_render_extensions_commands_subtab_with_data(tmp_path, monkeypatch):
@@ -8464,3 +8466,17 @@ def test_up_at_top_with_focused_context_detail_does_not_climb():
     consumed = axt._handle_layer_key(scr, state, curses.KEY_UP, "context")
     assert consumed is False
     assert state.focused_layer == "content"
+
+
+def test_empty_state_hint_known_keys():
+    for key in ("skills", "commands", "agents", "mcp", "hooks", "plugins", "market"):
+        title, hint = tabs._empty_state_hint(key)
+        assert title and not title.endswith(f"No {key} found.")  # customized, not the raw fallback
+        assert hint, f"{key} should have an action hint"
+    # Grammatical fixes for the two previously-awkward keys.
+    assert tabs._empty_state_hint("mcp")[0] == "No MCP servers configured."
+    assert tabs._empty_state_hint("market")[0] == "No marketplaces added yet."
+
+
+def test_empty_state_hint_unknown_key_falls_back():
+    assert tabs._empty_state_hint("mystery") == ("No mystery found.", "")
