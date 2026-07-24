@@ -1722,6 +1722,7 @@ class MigrateResult:
     moved: tuple[str, ...] = ()
     skipped: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+    broken: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2296,6 +2297,7 @@ def migrate_to_vault(
     moved: list[str] = []
     skipped: list[str] = []
     errors: list[str] = []
+    broken: list[str] = []
     gd = Path(global_dir)
     vd = Path(vault_dir)
     for sub, _item_type in LINKABLE_TYPES:
@@ -2304,6 +2306,11 @@ def migrate_to_vault(
     for sub, item_type in LINKABLE_TYPES:
         is_dir = item_type == "skill"
         for entry in _iter_item_entries(gd / sub):
+            if entry.is_symlink() and not entry.exists():
+                # Dangling symlink (e.g. vault was deleted). Report it instead
+                # of silently skipping — otherwise `m` looks like a no-op.
+                broken.append(f"{item_type}:{entry.name}")
+                continue
             if not _entry_is_item(entry, item_type):
                 continue
             dest = vd / sub / entry.name
@@ -2319,7 +2326,23 @@ def migrate_to_vault(
             except OSError as e:
                 errors.append(f"{item_type}:{entry.name}: {e}")
 
-    return MigrateResult(tuple(moved), tuple(skipped), tuple(errors))
+    return MigrateResult(tuple(moved), tuple(skipped), tuple(errors), tuple(broken))
+
+
+def find_broken_links(claude_dir: os.PathLike[str] | str) -> list[str]:
+    """Dangling symlinks under `<claude_dir>/{skills,commands,agents}`.
+
+    Returns sorted ``"{item_type}:{name}"`` labels for symlinks whose target no
+    longer exists (e.g. a vault that was deleted or moved). Missing subdirs are
+    ignored. Read-only — nothing is deleted.
+    """
+    cd = Path(claude_dir)
+    out: list[str] = []
+    for sub, item_type in LINKABLE_TYPES:
+        for entry in _iter_item_entries(cd / sub):
+            if entry.is_symlink() and not entry.exists():
+                out.append(f"{item_type}:{entry.name}")
+    return sorted(out)
 
 
 # ─── Enriched listing for the TUI ────────────────────────────────────────────

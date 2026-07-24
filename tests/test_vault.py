@@ -811,3 +811,37 @@ def test_move_path_fallback_when_rename_fails(tmp_path: Path, monkeypatch: pytes
     axt._move_path(src, dest, is_dir=False)   # falls back to copy2 + unlink
     assert not src.exists()
     assert dest.read_text() == "data"
+
+
+# ─── Broken symlink detection ────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_migrate_reports_broken_symlink_not_skipped(tmp_path: Path):
+    global_dir = tmp_path / "global"
+    (global_dir / "commands").mkdir(parents=True)
+    # Dangling symlink: target does not exist (mirrors a deleted vault).
+    link = global_dir / "commands" / "commit.md"
+    os.symlink(tmp_path / "gone" / "commit.md", link)
+    vault = tmp_path / "vault"
+
+    result = axt.migrate_to_vault(global_dir, vault)
+    assert "command:commit.md" in result.broken
+    assert "command:commit.md" not in result.moved
+    assert "command:commit.md" not in result.skipped
+    # Detection only — the broken link is left in place, not deleted.
+    assert link.is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks")
+def test_find_broken_links(tmp_path: Path):
+    claude = tmp_path / ".claude"
+    (claude / "commands").mkdir(parents=True)
+    (claude / "agents").mkdir(parents=True)
+    os.symlink(tmp_path / "missing" / "a.md", claude / "commands" / "a.md")
+    (claude / "agents" / "real.md").write_text("body")  # healthy, ignored
+    assert axt.find_broken_links(claude) == ["command:a.md"]
+
+
+def test_find_broken_links_missing_dirs(tmp_path: Path):
+    assert axt.find_broken_links(tmp_path / "nope") == []
