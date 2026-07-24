@@ -894,6 +894,11 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     if not filtered:
         safe_addnstr(stdscr, y0 + 2, 2, "Vault is empty or no items match the current filter.", w - 4, CP_DIM())
         safe_addnstr(stdscr, y0 + 4, 2, "Press `m` to migrate global extensions, or `F` to change filter.", w - 4, CP_DIM())
+        broken = find_broken_links(PATHS.claude_dir)
+        if broken:
+            warn = (f"Warning: {len(broken)} broken symlink(s) in ~/.claude "
+                    f"point to a missing vault. Press `m` for details.")
+            safe_addnstr(stdscr, y0 + 6, 2, fit_cells(warn, w - 4), w - 4, CP_DIM())
         return
 
     state.vault_selected = max(0, min(state.vault_selected, len(filtered) - 1))
@@ -1279,7 +1284,15 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
             _vault_load(state)
             if result.moved:
                 _invalidate_context(state)
-            return f"Migrated: +{len(result.moved)} skipped {len(result.skipped)} err {len(result.errors)}"
+            n_broken = len(result.broken)
+            counts = (f"+{len(result.moved)} skipped {len(result.skipped)} "
+                      f"broken {n_broken} err {len(result.errors)}")
+            if n_broken:
+                # "Warning:" prefix keeps classify_status at "info" (not a
+                # green "Migrated" success) so broken links read as a problem.
+                return (f"Warning: {n_broken} broken symlink(s) not migrated — "
+                        f"{counts}")
+            return f"Migrated: {counts}"
         except OSError as e:
             return f"Migrate failed: {e}"
     elif key == ord("S"):

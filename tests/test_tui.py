@@ -6928,6 +6928,28 @@ def test_vault_migrate_success_with_moves_invalidates_context(monkeypatch):
     assert invalidated == [True]
 
 
+def test_vault_m_reports_broken(tmp_path, monkeypatch):
+    # Claude dir with a dangling command symlink; empty vault.
+    claude = tmp_path / ".claude"
+    (claude / "commands").mkdir(parents=True)
+    os.symlink(tmp_path / "gone" / "commit.md", claude / "commands" / "commit.md")
+    vault = tmp_path / "vault"
+    monkeypatch.setattr("axt.tui.tabs.PATHS", axt.Paths(claude_dir=claude, vault=vault))
+
+    state = tabs.TuiState()
+    msg = tabs.handle_vault_input(state, ord("m"))
+    assert "broken 1" in msg
+    assert tabs.classify_status(msg) != "ok"  # not a false green success
+
+
+def test_find_broken_links_used_for_warning(tmp_path):
+    # Guard the label format the empty-state warning depends on.
+    claude = tmp_path / ".claude"
+    (claude / "agents").mkdir(parents=True)
+    os.symlink(tmp_path / "x" / "y.md", claude / "agents" / "y.md")
+    assert axt.find_broken_links(claude) == ["agent:y.md"]
+
+
 def test_vault_sync_failure(monkeypatch):
     """`S` sync raising OSError returns a 'Sync failed' message (776-777)."""
     monkeypatch.setattr("axt.tui.tabs.sync_project",

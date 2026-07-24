@@ -864,13 +864,17 @@ def cli_vault_migrate(args) -> int:
         print(_green(f"  ✓ {m}"))
     for s in result.skipped:
         print(_yellow(f"  ⊘ {s} (already in vault)"))
+    for b in result.broken:
+        print(_yellow(f"  ⚠ {b} (broken symlink — target missing, not migrated)"))
     for e in result.errors:
         print(_red(f"  ✗ {e}"))
-    total = len(result.moved) + len(result.skipped) + len(result.errors)
+    total = (len(result.moved) + len(result.skipped)
+             + len(result.broken) + len(result.errors))
     if total == 0:
         print("No extensions found in global paths.")
     else:
-        print(f"\nMoved {len(result.moved)}, skipped {len(result.skipped)}, errors {len(result.errors)}")
+        print(f"\nMoved {len(result.moved)}, skipped {len(result.skipped)}, "
+              f"broken {len(result.broken)}, errors {len(result.errors)}")
     return 0
 
 
