@@ -6950,6 +6950,29 @@ def test_find_broken_links_used_for_warning(tmp_path):
     assert axt.find_broken_links(claude) == ["agent:y.md"]
 
 
+def test_render_vault_tab_broken_symlink_warning_uses_err_bold(tmp_path, monkeypatch):
+    """The empty-state broken-symlink 'Warning:' line must render with
+    CP_ERR()|A_BOLD, not CP_DIM() (the attr shared by the two info lines above
+    it) — otherwise it never visually registers as a warning."""
+    claude = tmp_path / ".claude"
+    (claude / "commands").mkdir(parents=True)
+    os.symlink(tmp_path / "gone" / "commit.md", claude / "commands" / "commit.md")
+    vault = tmp_path / "vault"
+    monkeypatch.setattr("axt.tui.tabs.PATHS", axt.Paths(claude_dir=claude, vault=vault))
+
+    s = tabs.TuiState()
+    s.refresh_token = 1  # skip disk reload; vault_items stays empty
+    scr = _make_stdscr(rows=24, cols=120)
+    tabs.render_vault_tab(scr, s, 0, 20, 120)
+
+    warn_calls = [c for c in scr.calls
+                  if len(c) >= 5 and isinstance(c[2], str) and "broken symlink" in c[2]]
+    assert len(warn_calls) == 1
+    attr = warn_calls[0][4]
+    assert attr == (tabs.CP_ERR() | curses.A_BOLD)
+    assert attr != tabs.CP_DIM()
+
+
 def test_vault_sync_failure(monkeypatch):
     """`S` sync raising OSError returns a 'Sync failed' message (776-777)."""
     monkeypatch.setattr("axt.tui.tabs.sync_project",

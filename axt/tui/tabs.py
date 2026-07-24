@@ -898,7 +898,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         if broken:
             warn = (f"Warning: {len(broken)} broken symlink(s) in ~/.claude "
                     f"point to a missing vault. Press `m` for details.")
-            safe_addnstr(stdscr, y0 + 6, 2, fit_cells(warn, w - 4), w - 4, CP_DIM())
+            safe_addnstr(stdscr, y0 + 6, 2, fit_cells(warn, w - 4), w - 4, CP_ERR() | curses.A_BOLD)
         return
 
     state.vault_selected = max(0, min(state.vault_selected, len(filtered) - 1))
