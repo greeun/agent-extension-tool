@@ -212,7 +212,7 @@ _EMPTY_STATE_HINTS: dict[str, tuple[str, str]] = {
     "plugins": ("No plugins installed yet.",
                 "Add a marketplace on the Market sub-tab; installed plugins appear here."),
     "market": ("No marketplaces added yet.",
-               "Press `a` to add one (github:owner/repo, git:url, dir:path)."),
+               "Press `a` to add one (github:user/repo, git:url, dir:/path)."),
     "skills": ("No skills found yet.",
                "Add a skill under ~/.claude/skills/, or press `a` to link an external path."),
     "commands": ("No commands found yet.",
@@ -2723,6 +2723,11 @@ def _render_list_with_detail(stdscr, state, y0, h, w, key, columns, rows, items,
     state.ext_selected.setdefault(key, 0)
     state.ext_selected[key] = max(0, min(state.ext_selected[key], max(0, len(rows) - 1)))
     if not rows:
+        q = state.ext_search.get(key, "")
+        if q:
+            msg = f'No {key} match "{q}". Press Esc to clear the filter.'
+            safe_addnstr(stdscr, y0 + 2, 2, fit_cells(msg, w - 4), w - 4, CP_DIM())
+            return
         title, hint = _empty_state_hint(key)
         safe_addnstr(stdscr, y0 + 2, 2, fit_cells(title, w - 4), w - 4, CP_DIM())
         if hint:
@@ -3036,9 +3041,9 @@ def sub_tab_has_focusable_content(state: TuiState, tab_key: str, sub_key: str) -
     """True if the active sub-tab body has selectable rows.
 
     Mirrors tab_has_focusable_content for the second focus layer: when the
-    sub-tab body is empty (e.g. "No plugins found." or zero vault items),
-    descending from subTab into `content` would silently swallow focus, so
-    the loop keeps focus on subTab instead.
+    sub-tab body is empty (e.g. "No plugins installed yet." or zero vault
+    items), descending from subTab into `content` would silently swallow
+    focus, so the loop keeps focus on subTab instead.
     """
     if tab_key == "context":
         if sub_key == "project":

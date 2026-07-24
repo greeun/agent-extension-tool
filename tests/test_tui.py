@@ -5764,6 +5764,25 @@ def test_render_extensions_skills_subtab_empty(tmp_path, monkeypatch):
     assert "Add a skill under ~/.claude/skills/" in flat
 
 
+def test_render_extensions_skills_subtab_search_no_match(tmp_path, monkeypatch):
+    # Items exist but the active `/` filter matches none of them — the empty
+    # branch must show a "no match" message, not the create-hint (which would
+    # falsely suggest the vault/skills dir itself is empty).
+    _isolate_ext_paths(tmp_path, monkeypatch)
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name="deploy-helper", path="/skills/deploy-helper",
+                      is_symlink=False, source="user")
+    ]
+    s.ext_search["skills"] = "zzz_no_such_skill"
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 20, 120)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "no match" in flat.lower() or "no skills match" in flat.lower()
+    assert "Add a skill under" not in flat
+
+
 def test_render_extensions_commands_subtab_with_data(tmp_path, monkeypatch):
     _isolate_ext_paths(tmp_path, monkeypatch)
     s = axt.TuiState()
