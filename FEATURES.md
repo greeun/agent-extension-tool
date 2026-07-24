@@ -16,7 +16,7 @@
 `axt --help` 가 sources of truth. 변경 시 본 문서를 함께 업데이트할 것.
 
 ### 1.1 `axt` (no args) / `axt tui`
-TUI 대시보드 실행.
+TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 시 상태 메시지로 환영 안내를 1회 표시하고 마커를 생성 — 마커를 지우면 다시 표시됨.
 
 ### 1.2 `axt context` (1)
 세션 시작 컨텍스트 사용량 분석.
@@ -100,7 +100,7 @@ TUI 대시보드 실행.
 | 서브명령 | 인자 | 설명 |
 |---|---|---|
 | `list` | — | vault의 모든 확장 표 |
-| `migrate` | — | `~/.claude/skills,commands,agents` → vault 이동 |
+| `migrate` | — | `~/.claude/skills,commands,agents` → vault 이동 — 대상 없는(broken) 심볼릭 링크는 이동하지 않고 리포트만 함(삭제 안 함) |
 | `add <path>` | 경로 + `-t/--type` | vault 추가 (파일/디렉터리 복사) |
 | `install <marketplace> <name>` | 마켓 + 이름 + `-t/--type` (기본 `skill`) | 마켓→vault 직접 설치 |
 | `link-global <type> <name>` | 타입 + 이름 + `--mirror-agents` `--force-agents` | `~/.claude/{type}s/`에 symlink. `--mirror-agents`(skill 한정)로 `~/.agents/skills/`에도 vault를 직접 가리키는 symlink 병행 생성 — `.skill-lock.json`(서드파티 설치기 소유 표시)이 있으면 기본 거부, `--force-agents`로 강제 |
@@ -141,6 +141,7 @@ TUI 대시보드 실행.
 - **Hooks** — `# Event Ver Vault Proj Glob Upd Type Source Detail` (훅이 속한 설정 파일 스코프 쪽만 ●/○, 반대쪽 `─`)
 - **Plugins** — `# Plugin Ver Vault Proj Glob Upd Marketplace`
 - **Market** — `# Marketplace Ver Vault Proj Glob Upd Source Location Updated` (Proj `─`, Glob `●` — 전역 레지스트리)
+- **빈 상태 안내**: Vault를 제외한 7개 서브탭(Skills/Commands/Agents/MCP/Hooks/Plugins/Market)은 목록이 비면 제목 + 다음 행동 힌트를 표시(예: Market → "No marketplaces added yet." + "Press `a` to add one …"). `/` 검색 결과가 0건일 때는 힌트 대신 `No <탭> match "<검색어>". Press Esc to clear the filter.`를 표시
 
 ### 2.5 키바인딩 (Vault 전체)
 ```
@@ -160,6 +161,7 @@ G           skill 전용 — GLOBAL + ~/.agents/skills 미러 동시 토글 (즉
             `g`와 별개). 둘 다 링크됨 → 둘 다 해제, 아니면 없는 쪽을 링크. `.skill-lock.json`이
             있는 트리는 자동 건너뜀(강제는 CLI `--force-agents` 전용)
 ```
+- **깨진 심볼릭 링크 리포트** (`m`): 대상이 사라진 심볼릭 링크는 이동하지 않고 `broken` 항목으로만 리포트(삭제하지 않음). 브로큰 항목이 있으면 상태 메시지가 `Warning: N broken symlink(s) not migrated — …`를 표시(성공 처리가 아닌 info로 분류, 초록 표시 미적용). Vault가 비어 있고 `~/.claude`에 브로큰 심링크가 남아 있으면 Vault 빈 화면에 굵은 빨간 경고 줄이 추가로 표시됨
 
 ### 2.6 키바인딩 (서브탭별 고유)
 - **공통(모든 서브탭)**: `p` = PROJECT 스코프 토글, `g` = GLOBAL 스코프 토글 (아래 서브탭별 의미 참조)
