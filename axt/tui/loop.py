@@ -44,6 +44,12 @@ from axt.core import (  # noqa: F401 — `_`-prefixed names that wildcard skips
     _dim,
     _red,
 )
+# Called directly below (first-run welcome toast) — named explicitly for
+# clarity even though the wildcard import above already covers them.
+from axt.core import (  # noqa: F401
+    is_first_run,
+    mark_onboarded,
+)
 
 
 # ── Section 14: TUI — Main loop ──────────────────────────────────────────────
@@ -432,6 +438,10 @@ def _tui_loop(stdscr, theme: str = "dark") -> None:
     # background so the Vault `Used` column is current on launch — no manual
     # `f` needed. The poll loop redraws when the worker finishes.
     _prime_vault_scan(state)
+    if is_first_run():
+        set_status(state,
+                   "Welcome to axt! Press ? for full help. Empty tabs show how to fill them.")
+        mark_onboarded()
     _render_frame(stdscr, state)
 
     while True:

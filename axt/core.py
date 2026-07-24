@@ -131,6 +131,32 @@ AXT_CONFIG_DIR: Path = _axt_config_dir()
 AXT_CONFIG_PATH: Path = AXT_CONFIG_DIR / "config.json"
 
 
+def _onboarded_marker_path() -> Path:
+    """Marker whose presence means the first-run welcome has been shown."""
+    return AXT_CONFIG_DIR / "onboarded"
+
+
+def is_first_run() -> bool:
+    """True when axt has not yet shown its first-run welcome (marker absent).
+
+    Delete `~/.config/axt/onboarded` (or the %APPDATA% equivalent) to see the
+    welcome again.
+    """
+    return not _onboarded_marker_path().exists()
+
+
+def mark_onboarded() -> None:
+    """Record that the first-run welcome has been shown. Best-effort: a write
+    failure (e.g. read-only config dir) is swallowed, since a repeating toast
+    is harmless."""
+    try:
+        p = _onboarded_marker_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch(exist_ok=True)
+    except OSError:
+        pass
+
+
 def project_settings_path(cwd: os.PathLike[str] | str | None = None) -> Path:
     """Return `<cwd>/.claude/settings.json` for project-scoped Claude settings."""
     base = Path(cwd) if cwd is not None else Path.cwd()

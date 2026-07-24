@@ -6295,6 +6295,52 @@ def _quiet_curses(monkeypatch):
     # _tui_loop primes a background project-usage scan on launch; stub it so
     # loop tests never spawn a real daemon thread / clobber the on-disk cache.
     monkeypatch.setattr("axt.tui.loop._prime_vault_scan", lambda *a, **k: None)
+    # _tui_loop checks the real first-run marker on launch; stub it so loop
+    # tests never write `onboarded` into the user's actual AXT_CONFIG_DIR.
+    monkeypatch.setattr("axt.tui.loop.is_first_run", lambda: False)
+
+
+def test_tui_loop_shows_welcome_toast_on_first_run(monkeypatch, tmp_path):
+    """On first launch (onboarded marker absent) _tui_loop seeds a welcome
+    status via set_status and marks onboarded so the toast doesn't repeat.
+    Uses a real (tmp-path-backed) AXT_CONFIG_DIR rather than stubbing
+    is_first_run, to exercise the actual wiring end to end."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    monkeypatch.setattr("curses.set_escdelay", lambda *a: None, raising=False)
+    monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda *a, **k: None)
+    monkeypatch.setattr("axt.tui.loop._prime_vault_scan", lambda *a, **k: None)
+    config_dir = tmp_path / "config"
+    monkeypatch.setattr("axt.core.AXT_CONFIG_DIR", config_dir)
+
+    calls = []
+    monkeypatch.setattr("axt.tui.loop.set_status",
+                        lambda state, msg, kind=None: calls.append(msg))
+    scr = _loop_stdscr([ord("q")])
+    assert axt._tui_loop(scr) is None
+    assert calls and "Welcome to axt" in calls[0]
+    assert (config_dir / "onboarded").exists()
+
+
+def test_tui_loop_skips_welcome_toast_when_already_onboarded(monkeypatch, tmp_path):
+    """Once the onboarded marker exists, _tui_loop does not re-seed the
+    welcome status on a later launch."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("curses.curs_set", lambda *a: None)
+    monkeypatch.setattr("curses.set_escdelay", lambda *a: None, raising=False)
+    monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda *a, **k: None)
+    monkeypatch.setattr("axt.tui.loop._prime_vault_scan", lambda *a, **k: None)
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "onboarded").touch()
+    monkeypatch.setattr("axt.core.AXT_CONFIG_DIR", config_dir)
+
+    calls = []
+    monkeypatch.setattr("axt.tui.loop.set_status",
+                        lambda state, msg, kind=None: calls.append(msg))
+    scr = _loop_stdscr([ord("q")])
+    assert axt._tui_loop(scr) is None
+    assert calls == []
 
 
 def test_tui_loop_t_persists_theme_toggle(monkeypatch, tmp_path):
@@ -7514,6 +7560,9 @@ def test_tui_loop_set_escdelay_attributeerror_swallowed(monkeypatch, tmp_path):
     monkeypatch.setattr("curses.curs_set", lambda *a: None)
     monkeypatch.setattr("axt.tui.loop.tui_init_colors", lambda *a, **k: None)
     monkeypatch.delattr("curses.set_escdelay", raising=False)
+    # Stub the first-run check so this test never writes `onboarded` into
+    # the user's actual AXT_CONFIG_DIR (see _quiet_curses for the same seam).
+    monkeypatch.setattr("axt.tui.loop.is_first_run", lambda: False)
     scr = _loop_stdscr([ord("q")])
     assert axt._tui_loop(scr) is None
 
