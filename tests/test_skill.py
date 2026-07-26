@@ -103,6 +103,20 @@ def test_list_all_skills_falls_back_to_flat_dot_agents_layout(tmp_path: Path, mo
     assert names == ["flat-skill"]
 
 
+def test_list_all_skills_no_duplicates_when_project_is_home(tmp_path: Path, monkeypatch):
+    """Launching from HOME makes the project `.agents` scan hit the same
+    directory as the user `.agents` scan — each skill must appear once."""
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".agents" / "skills" / "wp-skill").mkdir(parents=True)
+    monkeypatch.setattr("axt.core.HOME", home)
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(skills=home / ".claude" / "skills"))
+    monkeypatch.setattr("axt.core._active_plugins", lambda: [])
+    found = axt.list_all_skills(project_dir=home)
+    names = sorted(s.name for s in found)
+    assert names == ["wp-skill"]
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only behavior")
 def test_unlink_skill_refuses_real_directory(tmp_path: Path):
     skills_dir = tmp_path / "skills"

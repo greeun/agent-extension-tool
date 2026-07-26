@@ -1061,6 +1061,16 @@ def _scan_dot_agents_skills(dot_agents_dir: os.PathLike[str] | str, source: str)
     return _scan_skills_dir(d, source)
 
 
+def _is_home_dot_agents(dot_agents_dir: Path) -> bool:
+    """True when a project-level `.agents` path is actually the user-level
+    `~/.agents` — happens when axt runs from HOME. Scanning it under both
+    the "user" and "project" sources would list every item twice."""
+    try:
+        return dot_agents_dir.resolve() == (HOME / ".agents").resolve()
+    except OSError:
+        return False
+
+
 def list_all_skills(*, project_dir: Optional[os.PathLike[str] | str] = None,
                      include_agents_dir: bool = True) -> list[SkillInfo]:
     """User (~/.claude/skills + ~/.agents) + project + enabled-plugin skills.
@@ -1078,7 +1088,9 @@ def list_all_skills(*, project_dir: Optional[os.PathLike[str] | str] = None,
         out += _scan_skills_dir(Path(project_dir) / ".claude" / "skills", "project")
     if include_agents_dir:
         # `.agents` next to the project, defaulting to cwd when project_dir missing.
-        out += _scan_dot_agents_skills(Path(project_dir or os.getcwd()) / ".agents", "project")
+        proj_agents = Path(project_dir or os.getcwd()) / ".agents"
+        if not _is_home_dot_agents(proj_agents):
+            out += _scan_dot_agents_skills(proj_agents, "project")
 
     for p in _active_plugins():
         out += _scan_skills_dir(Path(p.install_path) / "skills", "plugin", p.name)
@@ -1245,7 +1257,9 @@ def list_all_agents(*, project_dir: Optional[os.PathLike[str] | str] = None,
     if project_dir:
         out += _scan_md_dir(Path(project_dir) / ".claude" / "agents", "project", factory=_make_agent)
     if include_agents_dir:
-        out += _scan_md_dir(Path(project_dir or os.getcwd()) / ".agents", "project", factory=_make_agent)
+        proj_agents = Path(project_dir or os.getcwd()) / ".agents"
+        if not _is_home_dot_agents(proj_agents):
+            out += _scan_md_dir(proj_agents, "project", factory=_make_agent)
     for p in _active_plugins():
         out += _scan_md_dir(Path(p.install_path) / "agents", "plugin", p.name,
                              factory=_make_agent, plugin_version=p.version or "")

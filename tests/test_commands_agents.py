@@ -127,6 +127,23 @@ def test_list_all_agents_user_and_project(tmp_path: Path, monkeypatch):
     assert by_name["proj-agent"].source == "project"
 
 
+def test_list_all_agents_no_duplicates_when_project_is_home(tmp_path: Path, monkeypatch):
+    """Launching from HOME makes the project `.agents` scan hit the same
+    directory as the user `.agents` scan — each agent must appear once."""
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr("axt.HOME", fake_home)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        claude_dir=fake_home / ".claude",
+        settings=fake_home / ".claude" / "settings.json",
+        installed_plugins=fake_home / ".claude" / "plugins" / "installed_plugins.json",
+    ))
+    _write_md(fake_home / ".agents" / "dotagent.md", '---\ndescription: "dotfile"\n---\n')
+
+    agents = axt.list_all_agents(project_dir=fake_home)
+    names = [a.name for a in agents]
+    assert names.count("dotagent") == 1
+
+
 # ── _extract_md_description: frontmatter present but no description key ───────
 
 
