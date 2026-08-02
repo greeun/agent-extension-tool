@@ -33,6 +33,7 @@ from typing import Any, Callable, NamedTuple, Optional
 # Widget primitives — bring in everything from the TUI widgets layer.
 from axt.tui.widgets import *  # noqa: F401,F403
 from axt.tui.widgets import (  # noqa: F401 — wildcard skips `_`-prefixed names
+    _addstr_search_hl,
     _draw_cell,
     _safe_pair,
     _wrap_to_cells,
@@ -151,6 +152,16 @@ class TuiState:
     # Scroll keys do NOT bust this cache; they only clip the visible slice.
     usage_lines: Optional[list] = None
     usage_lines_sig: Optional[tuple] = None
+    # `/`-search over the usage line buffer. Unlike the list tabs this is a
+    # match-jump (preview_modal-style n/N navigation), not a filter — the
+    # report's structure (charts, tables) must stay intact.
+    usage_search: str = ""
+    usage_searching: bool = False   # True while typing in the `/` prompt
+    usage_match_idx: int = -1       # current position within the match list
+    # Scroll offset when `/` was pressed — the live-jump anchor: while typing,
+    # the viewport follows the first match at/after this row and falls back
+    # to it when the query stops matching (or on Esc-cancel).
+    usage_search_anchor: int = 0
 
     # Context tab.
     context_analysis: Optional[Any] = None
@@ -166,6 +177,9 @@ class TuiState:
     # move, blur, and sub-tab cycle.
     context_detail_focused: bool = False
     context_detail_scroll: int = 0
+    # `/`-search over the Context sub-tab lists (mirrors ext_search).
+    context_search: dict[str, str] = field(default_factory=dict)  # applied query per sub-tab
+    context_searching: bool = False  # True while typing in a Context `/` prompt
 
     # Project context files (rendered as the Context tab's "project" sub-tab).
     # Detail-panel scroll is owned by context_detail_scroll, not here.
@@ -879,16 +893,22 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         title_parts.append(f"search={state.vault_search!r}")
     if pending:
         title_parts.append(f"pending={pending}")
-    # Draw the full-width title/status row (+ the /search prompt when a filter
-    # is active) and take the body rect below it. render_title_bar uses
-    # CP_TITLE (the accent tier), so no full-width rule appears under the row on
-    # light. The trailing cursor (`_`) shows only while capturing input.
-    search = None
+    # `/search:` band in the uniform slot — directly under the sub-tab
+    # divider, ABOVE the title row, exactly where the other sub-tabs /
+    # Context / Usage draw theirs. The trailing cursor (`_`) shows only
+    # while capturing input.
     if state.vault_searching or state.vault_search:
         cursor = "_" if state.vault_searching else ""
-        search = f" /search: {state.vault_search}{cursor}"
+        safe_addnstr(stdscr, y0, 0,
+                     fit_cells(f" /search: {state.vault_search}{cursor}", w - 1),
+                     w - 1, CP_INFO() | curses.A_BOLD)
+        y0 += 1
+        h -= 1
+    # Draw the full-width title/status row and take the body rect below it.
+    # render_title_bar uses CP_TITLE (the accent tier), so no full-width rule
+    # appears under the row on light.
     table_y_top, table_h_full = render_title_bar(
-        stdscr, y0, h, w, "  ".join(title_parts), search=search)
+        stdscr, y0, h, w, "  ".join(title_parts))
 
     filtered = _vault_filtered(state)
     if not filtered:
@@ -1682,12 +1702,11 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # Build (or reuse) the line buffer. Scroll keys hit this path every
     # tick, so skipping the rebuild is what keeps scrolling responsive
     # on large transcripts.
+    # The tab title is a FIXED filter-bar row (vault convention) drawn below
+    # the `/search:` band — NOT part of the scrollable buffer.
     sig = (id(entries), id(config), w)
     if state.usage_lines is None or state.usage_lines_sig != sig:
         lines: list[tuple[int, str, int, int]] = []
-        lines.append((0, fit_cells(" Claude usage — this month", w - 1), w - 1, CP_TITLE()))
-        lines.append((0, "", w, 0))  # gap
-
         if entries is None:
             # Show gauges even while the first load is in flight so the
             # context / rate-limit meters appear immediately.
@@ -1701,17 +1720,49 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     else:
         lines = state.usage_lines
 
-    body_h = h
+    # `/search:` band (uniform slot, mirrors Vault): live `_` cursor while
+    # typing, cursor-less once applied. Reserves the top row of the viewport.
+    band_h = 0
+    if state.usage_searching or state.usage_search:
+        cursor = "_" if state.usage_searching else ""
+        safe_addnstr(stdscr, y0, 0,
+                     fit_cells(f" /search: {state.usage_search}{cursor}", w - 1),
+                     w - 1, CP_INFO() | curses.A_BOLD)
+        band_h = 1
+
+    # Fixed title / filter-bar row (vault convention): stays visible at any
+    # scroll offset; carries the search + match chips when a query is applied.
+    title = " Claude usage — this month"
+    if state.usage_search:
+        title += f"  search={state.usage_search!r}"
+        t_matches = _usage_matches(state)
+        if t_matches and state.usage_match_idx >= 0:
+            title += f"  match {state.usage_match_idx % len(t_matches) + 1}/{len(t_matches)}"
+    safe_addnstr(stdscr, y0 + band_h, 0, fit_cells(title, w - 1), w - 1, CP_TITLE())
+
+    body_h = h - band_h - 1
     max_scroll = max(0, len(lines) - body_h)
     if state.usage_scroll > max_scroll:
         state.usage_scroll = max_scroll
     if state.usage_scroll < 0:
         state.usage_scroll = 0
 
+    # Highlight applied-search matches (current match reversed, others marked —
+    # same palette as preview_modal's `/` search).
+    q = state.usage_search.lower()
+    matches = _usage_matches(state) if q else []
+    cur_line = (matches[state.usage_match_idx % len(matches)]
+                if matches and state.usage_match_idx >= 0 else -1)
+    body_y = y0 + band_h + 1  # below the band and the fixed title row
     visible = lines[state.usage_scroll : state.usage_scroll + body_h]
     for i, (x, text, max_w, attr) in enumerate(visible):
-        if text:
-            safe_addnstr(stdscr, y0 + i, x, text, max_w, attr)
+        if not text:
+            continue
+        if q and q in text.lower():
+            _addstr_search_hl(stdscr, body_y + i, x, text, max_w, q,
+                              current=(state.usage_scroll + i == cur_line), base=attr)
+        else:
+            safe_addnstr(stdscr, body_y + i, x, text, max_w, attr)
 
 
 def _compute_simple_insights(entries: list[ClaudeUsageEntry]) -> dict[str, Any]:
@@ -1765,7 +1816,93 @@ def _compute_simple_insights(entries: list[ClaudeUsageEntry]) -> dict[str, Any]:
     return {"large_pct": large_pct, "parallel_pct": parallel_pct, "top_model": top_model}
 
 
+def _usage_matches(state: TuiState) -> list[int]:
+    """Indices into state.usage_lines whose text contains the applied query.
+    Recomputed on demand — the line buffer rebuilds on resize/reload, so
+    cached indices would go stale."""
+    q = state.usage_search.lower()
+    if not q or not state.usage_lines:
+        return []
+    return [i for i, (_, text, _, _) in enumerate(state.usage_lines)
+            if text and q in text.lower()]
+
+
+def _usage_jump_to_match(state: TuiState, matches: list[int]) -> str:
+    state.usage_scroll = matches[state.usage_match_idx]
+    return f"match {state.usage_match_idx + 1}/{len(matches)}"
+
+
+def _usage_live_jump(state: TuiState) -> None:
+    """Follow the query while typing (Vault filters live; Usage jumps live):
+    viewport moves to the first match at/after the anchor, and falls back to
+    the anchor when the query stops matching."""
+    matches = _usage_matches(state)
+    if matches:
+        state.usage_match_idx = next(
+            (j for j, i in enumerate(matches) if i >= state.usage_search_anchor), 0)
+        state.usage_scroll = matches[state.usage_match_idx]
+    else:
+        state.usage_match_idx = -1
+        state.usage_scroll = state.usage_search_anchor
+
+
+def _handle_usage_search_keys(state: TuiState, key: int) -> Optional[str]:
+    """Usage `/`-search input mode: Esc cancels (viewport back to the anchor),
+    Enter applies; the viewport already followed the query live."""
+    if key == KEY_ESC:
+        state.usage_searching = False
+        state.usage_search = ""
+        state.usage_match_idx = -1
+        state.usage_scroll = state.usage_search_anchor
+        return "Search cleared"
+    if is_enter(key):
+        state.usage_searching = False
+        if not state.usage_search:
+            return None
+        matches = _usage_matches(state)
+        if not matches:
+            state.usage_match_idx = -1
+            return f"No match for {state.usage_search!r}"
+        if state.usage_match_idx < 0:  # lines rebuilt since the last keystroke
+            state.usage_match_idx = next(
+                (j for j, i in enumerate(matches) if i >= state.usage_search_anchor), 0)
+        return _usage_jump_to_match(state, matches)
+    if key in (curses.KEY_BACKSPACE, KEY_BACKSPACE, 8):
+        state.usage_search = state.usage_search[:-1]
+        _usage_live_jump(state)
+        return None
+    if 32 <= key < 127:  # printable ASCII
+        state.usage_search += chr(key)
+        _usage_live_jump(state)
+        return None
+    return None
+
+
 def handle_usage_input(state: TuiState, key: int) -> Optional[str]:
+    # ── `/`-search input mode: capture characters, respond only to
+    # Enter/Esc/Bksp (mirrors the list tabs' search prompts).
+    if state.usage_searching:
+        return _handle_usage_search_keys(state, key)
+    if key == ord("/"):
+        state.usage_searching = True
+        state.usage_search = ""
+        state.usage_match_idx = -1
+        state.usage_search_anchor = state.usage_scroll
+        return "/: type to search, Enter to jump, Esc to cancel"
+    if key in (ord("n"), ord("N")) and state.usage_search:
+        matches = _usage_matches(state)
+        if not matches:
+            return f"No match for {state.usage_search!r}"
+        step = 1 if key == ord("n") else -1
+        state.usage_match_idx = (state.usage_match_idx + step) % len(matches)
+        return _usage_jump_to_match(state, matches)
+    if key == KEY_ESC and state.usage_search:
+        # First Esc clears the applied search; the next one climbs the focus
+        # layer as usual (the loop defers to this handler — see
+        # _handle_content_layer_key).
+        state.usage_search = ""
+        state.usage_match_idx = -1
+        return "Search cleared"
     if key == ord("r"):
         _kick_usage_reload(state)
         # _kick_usage_reload already set state.status to the loading
@@ -1835,6 +1972,69 @@ def _context_rows(analysis: ContextAnalysis) -> list[_ContextCategoryRow]:
     return rows
 
 
+def _context_search_reset_selection(state: TuiState) -> None:
+    """Reset the active Context sub-tab's selection (query edits re-anchor
+    the cursor to row 0, mirroring the Extensions search)."""
+    if state.context_sub_tab == "project":
+        state.project_selected = 0
+    else:
+        state.context_selected = 0
+
+
+def _handle_context_search_keys(state: TuiState, key: int) -> Optional[str]:
+    """Context `/`-search input mode (mirrors _handle_ext_search_keys):
+    Esc clears, Enter applies, Bksp deletes, printable ASCII appends."""
+    sub = state.context_sub_tab
+    if key == KEY_ESC:
+        state.context_searching = False
+        state.context_search.pop(sub, None)
+        _context_search_reset_selection(state)
+        return "Search cleared"
+    if is_enter(key):
+        state.context_searching = False
+        _context_search_reset_selection(state)
+        q = state.context_search.get(sub, "")
+        return f"Searching {q!r}" if q else None
+    if key in (curses.KEY_BACKSPACE, KEY_BACKSPACE, 8):
+        state.context_search[sub] = state.context_search.get(sub, "")[:-1]
+        _context_search_reset_selection(state)
+        return None
+    if 32 <= key < 127:  # printable ASCII
+        state.context_search[sub] = state.context_search.get(sub, "") + chr(key)
+        _context_search_reset_selection(state)
+        return None
+    return None
+
+
+def _context_source_haystack(item: Any) -> str:
+    """Searchable text for a Project sub-tab row (a ContextSource)."""
+    parts = [item.name, item.category,
+             CATEGORY_LABELS.get(item.category, ""),
+             getattr(item, "scope", "global"), item.path or ""]
+    return " ".join(p for p in parts if p).lower()
+
+
+def _displayed_project_items(state: TuiState) -> list:
+    """The displayed (sorted, search-filtered) Project list — the single
+    ordering shared by render and the input handlers so selection indices
+    stay aligned (mirrors _subtab_view)."""
+    items = state.project_items or []
+    q = state.context_search.get("project", "").lower()
+    if q:
+        items = [i for i in items if q in _context_source_haystack(i)]
+    return items
+
+
+def _displayed_context_rows(state: TuiState, analysis) -> list:
+    """The displayed (search-filtered) Sources category rows."""
+    rows = _context_rows(analysis) if analysis else []
+    q = state.context_search.get("sources", "").lower()
+    if q:
+        rows = [r for r in rows
+                if q in f"{r.label} {r.category} {r.scope}".lower()]
+    return rows
+
+
 def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
     """5h/7d rate-limit quotas from ~/.claude/usage-snapshot.json, drawn on a
     single line as two color-coded segments. Returns rows used (always 1)."""
@@ -1876,6 +2076,22 @@ def _render_context_sources_table(stdscr, state: TuiState, y0: int, h: int, w: i
     the whole width. ``focused`` controls the selected-row highlight.
     """
     if h <= 0:
+        return
+    # Section header with counts — the same band Project draws, so both
+    # sub-tabs share one rhythm below the `/search:` band. With a filter
+    # applied the header shows filtered/total.
+    all_rows = _context_rows(state.context_analysis) if state.context_analysis else []
+    q = state.context_search.get("sources", "")
+    count = f"({len(rows)}/{len(all_rows)} categories)" if q else f"({len(all_rows)} categories)"
+    header = f"Context sources  {count}"
+    if q:
+        header += f"  search={q!r}"
+    render_section_header(stdscr, y0, w, header)
+    y0, h = y0 + 1, max(1, h - 1)
+    if not rows:
+        msg = (f'No sources match "{q}". Press Esc to clear the filter.'
+               if q else "No context sources detected.")
+        safe_addnstr(stdscr, y0, 2, fit_cells(msg, w - 4), w - 4, CP_DIM())
         return
     state.context_selected = max(0, min(state.context_selected, len(rows) - 1))
     columns = [
@@ -1943,7 +2159,7 @@ def _context_detail_for(state: TuiState, analysis: ContextAnalysis,
     """(title, fields) for the shared bottom detail panel — reflects the active
     Context sub-tab's selected row (Sources category or Project file)."""
     if state.context_sub_tab == "project":
-        items = state.project_items or []
+        items = _displayed_project_items(state)
         if items and 0 <= state.project_selected < len(items):
             cur = items[state.project_selected]
             return cur.name, _project_item_detail_fields(cur)
@@ -1983,11 +2199,11 @@ def _render_context_page(stdscr, state: TuiState, y0: int, h: int, w: int,
     if state.context_sub_tab == "project":
         _render_project_files_table(stdscr, state, y0, table_h, w,
                                     focused=table_focused)
-    elif rows:
+    else:
+        # Empty/no-match handling lives inside the sources table renderer so
+        # the section header row is always present (same rhythm as Project).
         _render_context_sources_table(stdscr, state, y0, table_h, w, rows,
                                       focused=table_focused)
-    else:
-        safe_addnstr(stdscr, y0 + 1, 2, "No context sources detected.", w - 4, CP_DIM())
 
     if detail_h >= 3:
         title, fields = _context_detail_for(state, analysis, rows)
@@ -2004,6 +2220,10 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
         safe_addnstr(stdscr, y0 + 2, 2, "Loading context…", w - 4, CP_DIM())
         return
 
+    # The `/search:` band and the `search='q'` chip both live down at the
+    # list (band above the section-header filter bar, chip on it) — the tab
+    # title stays free of search state.
+    q = state.context_search.get(state.context_sub_tab, "")
     body_y, _ = render_title_bar(
         stdscr, y0, h, w,
         f" Context — {format_tokens(analysis.total_tokens)} / {format_tokens(analysis.context_window_size)} "
@@ -2023,8 +2243,15 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
 
     # ── Active sub-tab body between the bar and the bottom cost line.
     content_y = bar_y + 2
+    # `/search:` band directly above the list (mirrors Vault / the Extensions
+    # sub-tabs): live `_` cursor while typing, cursor-less once applied.
+    if state.context_searching or q:
+        cursor = "_" if state.context_searching else ""
+        safe_addnstr(stdscr, content_y, 0, fit_cells(f" /search: {q}{cursor}", w - 1),
+                     w - 1, CP_INFO() | curses.A_BOLD)
+        content_y += 1
     content_bottom = y0 + h - 2  # cost line sits at h-2
-    rows = _context_rows(analysis)
+    rows = _displayed_context_rows(state, analysis)
     _render_context_page(stdscr, state, content_y, max(1, content_bottom - content_y),
                          w, analysis, rows)
 
@@ -2071,11 +2298,33 @@ def _handle_context_detail_keys(state: TuiState, key: int) -> Optional[str]:
 
 
 def handle_context_input(state: TuiState, key: int) -> Optional[str]:
+    # ── `/`-search input mode: capture characters, respond only to
+    # Enter/Esc/Bksp (mirrors the Extensions sub-tab search).
+    if state.context_searching:
+        return _handle_context_search_keys(state, key)
+
     # ── Detail-panel focus mode (both sub-tabs): movement keys scroll the
     # bottom panel, Esc blurs. Sits first so list-selection keys can't move
     # the table row underneath the focused panel.
     if state.context_detail_focused:
         return _handle_context_detail_keys(state, key)
+
+    sub = state.context_sub_tab
+    # `/` starts search-input mode (both sub-tabs). The applied query filters
+    # the active sub-tab's list the same way the Extensions search does.
+    if key == ord("/"):
+        state.context_searching = True
+        state.context_search[sub] = ""
+        _context_search_reset_selection(state)
+        state.context_detail_scroll = 0
+        return "/: type to filter, Enter to apply, Esc to cancel"
+    # First Esc clears an applied search filter; the next Esc climbs a focus
+    # layer as usual (the loop defers to this handler — see
+    # _handle_content_layer_key).
+    if key == KEY_ESC and state.context_search.get(sub):
+        state.context_search.pop(sub, None)
+        _context_search_reset_selection(state)
+        return "Search cleared"
 
     # [ ] cycle Context sub-tabs in the body (mirrors Extensions). Canonical
     # ←/→ navigation lives at the subTab focus layer (see loop.py); this gives
@@ -2097,7 +2346,7 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
             state.context_detail_scroll = 0
         return handle_project_input(state, key)
 
-    rows = _context_rows(state.context_analysis) if state.context_analysis else []
+    rows = _displayed_context_rows(state, state.context_analysis)
     n = len(rows)
     if key in (ord("j"), curses.KEY_DOWN):
         state.context_selected = min(n - 1, state.context_selected + 1) if n else 0
@@ -2233,12 +2482,21 @@ def _render_project_files_table(stdscr, state: TuiState, y0: int, h: int, w: int
     commands, agents, git-status, user-context) as a full-width table.
     Detail goes to the shared bottom panel."""
     _ensure_project_loaded(state)
-    items = state.project_items or []
-    render_section_header(stdscr, y0, w,
-        f"Project context — {Path.cwd().name}  ({len(items)} sources)")
+    all_items = state.project_items or []
+    items = _displayed_project_items(state)
+    q = state.context_search.get("project", "")
+    # Filter bar duties (vault convention): filtered/total counts + sort +
+    # search chips, so the narrowed view is never mistaken for the full list.
+    count = f"({len(items)}/{len(all_items)} sources)" if q else f"({len(all_items)} sources)"
+    header = f"Project context — {Path.cwd().name}  {count}  sort={_project_sort_spec(state)[0]}"
+    if q:
+        header += f"  search={q!r}"
+    render_section_header(stdscr, y0, w, header)
     body_y, body_h = y0 + 1, max(1, h - 1)
     if not items:
-        safe_addnstr(stdscr, body_y, 2, "No project context sources found.", w - 4, CP_DIM())
+        msg = (f'No sources match "{q}". Press Esc to clear the filter.'
+               if q else "No project context sources found.")
+        safe_addnstr(stdscr, body_y, 2, fit_cells(msg, w - 4), w - 4, CP_DIM())
         return
     state.project_selected = max(0, min(state.project_selected, len(items) - 1))
     columns = [
@@ -2268,8 +2526,10 @@ def _render_project_files_table(stdscr, state: TuiState, y0: int, h: int, w: int
 
 
 def handle_project_input(state: TuiState, key: int) -> Optional[str]:
-    # Called only via handle_context_input on the "project" sub-tab.
-    items = state.project_items or []
+    # Called only via handle_context_input on the "project" sub-tab. Operates
+    # on the displayed (search-filtered) view so the selection index stays
+    # aligned with what the table shows.
+    items = _displayed_project_items(state)
     n = len(items)
     if key in (ord("j"), curses.KEY_DOWN):
         state.project_selected = min(n - 1, state.project_selected + 1) if n else 0
@@ -2738,8 +2998,10 @@ def _render_list_with_detail(stdscr, state, y0, h, w, key, columns, rows, items,
     if not rows:
         q = state.ext_search.get(key, "")
         if q:
+            # Directly under the `/search:` band — same top/bottom rhythm as
+            # Vault/Context (the y0+2 padding below is for band-less empties).
             msg = f'No {key} match "{q}". Press Esc to clear the filter.'
-            safe_addnstr(stdscr, y0 + 2, 2, fit_cells(msg, w - 4), w - 4, CP_DIM())
+            safe_addnstr(stdscr, y0, 2, fit_cells(msg, w - 4), w - 4, CP_DIM())
             return
         title, hint = _empty_state_hint(key)
         safe_addnstr(stdscr, y0 + 2, 2, fit_cells(title, w - 4), w - 4, CP_DIM())
@@ -2791,6 +3053,35 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
     # Sorted view (state.ext_sort) — the same ordering _selected_item uses, so
     # the row the user acts on always matches the highlighted row.
     data = _subtab_view(state, sub)
+
+    # `/search:` band (uniform slot, mirrors Vault): live `_` cursor while
+    # typing, cursor-less once applied. Reserves one row above the filter bar.
+    q = state.ext_search.get(sub, "")
+    if state.ext_searching or q:
+        cursor = "_" if state.ext_searching else ""
+        safe_addnstr(stdscr, sub_y, 0, fit_cells(f" /search: {q}{cursor}", w - 1),
+                     w - 1, CP_INFO() | curses.A_BOLD)
+        sub_y += 1
+        sub_h -= 1
+
+    # Filter bar (mirrors the Vault title row): label + (filtered/total)
+    # counts + sort/search/marked chips. Always visible, like Vault's.
+    total = len(state.ext_cache.get(sub, []) or [])
+    label = dict(EXTENSION_SUB_TABS).get(sub, sub)
+    bar_parts = [f" {label}  ({len(data)}/{total} items)" if q
+                 else f" {label}  ({total} items)"]
+    sort_label = subtab_sort_label(state, sub)
+    if sort_label:
+        bar_parts.append(f"sort={sort_label}")
+    if q:
+        bar_parts.append(f"search={q!r}")
+    marks = state.ext_marked.get(sub) or set()
+    if marks:
+        bar_parts.append(f"marked={len(marks)}")
+    safe_addnstr(stdscr, sub_y, 0, fit_cells("  ".join(bar_parts), w - 1),
+                 w - 1, CP_TITLE())
+    sub_y += 1
+    sub_h -= 1
 
     # Uniform status columns (mirror Vault): the leftmost ■/□ prefix shows
     # the Space marks, `#` carries the row number, and every sub-tab but

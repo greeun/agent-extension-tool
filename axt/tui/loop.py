@@ -140,6 +140,8 @@ Context
   [ / ]         Cycle sub-tabs from the body (Sources ↔ Project)
   j / k         Move selection within the active sub-tab
   PgUp / PgDn   Page the list (±10 rows)
+  /             Search filter per sub-tab (type → Enter to apply, Esc to
+                clear) — matches name/category/scope/path
   Enter         Focus the bottom detail panel — j/k (or PgUp/PgDn) scroll
                 it, Esc blurs back to the table
   v             Sources: preview the category's sources with actual content
@@ -148,6 +150,13 @@ Context
                 Project: open the focused file in $EDITOR
   d             Project: delete the focused Memory: * file (confirm) — also
                 drops its line from the sibling MEMORY.md index
+
+Usage
+  j / k         Scroll the report (PgUp/PgDn page ±10)
+  /             Search the report (type → Enter jumps to the first match;
+                matches highlighted, Esc clears)
+  n / N         Next / previous match
+  r             Reload usage data
 
 linked vs enabled (activation mechanism)
   skill / command / agent → "linked"   = SYMLINK at .claude/<type>s/<name>
@@ -196,6 +205,34 @@ def _extensions_shortcuts(state: TuiState) -> str:
     if actions:
         parts.append(actions)
     parts += ["o:term", "r:refresh", "?:help", "q:quit"]
+    return "  ".join(parts)
+
+
+def _context_shortcuts(state: TuiState) -> str:
+    """Status-bar line for the Context tab (mirrors _extensions_shortcuts):
+    live query while the `/` prompt is open, a `search:'q'` chip while a
+    filter is applied."""
+    sub = state.context_sub_tab
+    if state.context_searching:
+        return f"/{state.context_search.get(sub, '')}█  Enter:apply  Esc:cancel"
+    parts = ["1-3:tab", "[/]:sub", "j/k:nav"]
+    q = state.context_search.get(sub, "")
+    if q:
+        parts.append(f"search:{q!r}(Esc:clear)")
+    parts += ["/:search", "Enter:detail", "v:preview", "e:edit",
+              "d:delete(memory)", "r:refresh", "?:help", "q:quit"]
+    return "  ".join(parts)
+
+
+def _usage_shortcuts(state: TuiState) -> str:
+    """Status-bar line for the Usage tab. The `/` search is a match-jump
+    (n/N), not a filter, so the chip advertises the n/N keys."""
+    if state.usage_searching:
+        return f"/{state.usage_search}█  Enter:jump  Esc:cancel"
+    parts = ["1-3:tab", "j/k:nav"]
+    if state.usage_search:
+        parts.append(f"search:{state.usage_search!r} n/N:match (Esc:clear)")
+    parts += ["/:search", "r:refresh", "?:help", "q:quit"]
     return "  ".join(parts)
 
 
@@ -257,9 +294,9 @@ def _render_frame(stdscr, state: TuiState) -> None:
     elif tab_key == "extensions":
         shortcuts = _extensions_shortcuts(state)
     elif tab_key == "context":
-        shortcuts = "1-3:tab  [/]:sub  j/k:nav  Enter:detail  v:preview  e:edit  d:delete(memory)  r:refresh  ?:help  q:quit"
+        shortcuts = _context_shortcuts(state)
     else:
-        shortcuts = "1-3:tab  j/k:nav  r:refresh  ?:help  q:quit"
+        shortcuts = _usage_shortcuts(state)
     # Color the status message by its kind so action results stand out:
     # green = state change applied, red = failure, dim = hints/progress.
     status_attr = {
@@ -368,6 +405,17 @@ def _handle_content_layer_key(stdscr, state: TuiState, key: int, tab_key: str) -
         )
     ):
         climb = False
+    # Context / Usage applied-search exception: Esc peels the filter (or the
+    # match query) back first — handled by the tab handler — before climbing.
+    if (
+        key == KEY_ESC
+        and tab_key == "context"
+        and not state.context_detail_focused
+        and state.context_search.get(state.context_sub_tab)
+    ):
+        climb = False
+    if key == KEY_ESC and tab_key == "usage" and state.usage_search:
+        climb = False
     if climb:
         state.focused_layer = "subTab" if tab_has_sub_tab(tab_key) else "mainTab"
         _render_frame(stdscr, state)
@@ -471,15 +519,23 @@ def _tui_loop(stdscr, theme: str = "dark") -> None:
         # tab handler so it can process search/pending logic without losing
         # keystrokes to the global tab-switcher.
         tab_key = MAIN_TABS[state.tab_idx][0]
-        modal = tab_key == "extensions" and (
-            state.ext_searching
-            or (
-                state.ext_sub_tab == "vault"
-                and (state.vault_searching
-                     or state.vault_pending_project
-                     or state.vault_pending_global
-                     or state.vault_detail_focused)
+        modal = (
+            tab_key == "extensions" and (
+                state.ext_searching
+                or (
+                    state.ext_sub_tab == "vault"
+                    and (state.vault_searching
+                         or state.vault_pending_project
+                         or state.vault_pending_global
+                         or state.vault_detail_focused)
+                )
             )
+        ) or (
+            # Context / Usage `/`-search prompts swallow every printable key
+            # too, so `q`, `t`, `?` and digits land in the query.
+            tab_key == "context" and state.context_searching
+        ) or (
+            tab_key == "usage" and state.usage_searching
         )
 
         # Global keys (skipped while in a modal sub-state).

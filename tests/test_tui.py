@@ -4030,22 +4030,23 @@ def test_render_usage_tab_loading_skips_summary(tmp_path, monkeypatch):
         state.usage_load_thread.join(timeout=2.0)
 
 
-def test_render_usage_tab_scroll_clips_header(tmp_path, monkeypatch):
-    """With a non-zero scroll offset, the header (which lives at line 0
-    of the buffer) must NOT appear in the drawn output."""
+def test_render_usage_tab_title_is_fixed_above_scroll(tmp_path, monkeypatch):
+    """The tab title is a FIXED filter-bar row (vault convention), no longer
+    part of the scrollable buffer — it stays visible at any scroll offset."""
     _setup_isolated_paths(tmp_path, monkeypatch)
     state = axt.TuiState()
     # Pre-seed loaded state so we render the full summary lines.
     state.usage_entries = []        # loaded, no entries
     state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
-    # Use a small body_h (4) so even a short buffer has lines beyond row 0,
-    # making scroll=3 a valid non-zero offset that clips the header.
     state.usage_scroll = 3
     scr = _make_stdscr(rows=10, cols=120)
     axt.render_usage_tab(scr, state, 0, 4, 120)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
-    # Header was at buffer-row 0; scroll==3 should clip it out.
-    assert "Claude usage — this month" not in flat
+    assert "Claude usage — this month" in flat
+    title_rows = [c[0] for c in scr.calls
+                  if len(c) >= 3 and isinstance(c[2], str)
+                  and "Claude usage — this month" in c[2]]
+    assert title_rows == [0]  # fixed at the top row, drawn exactly once
 
 
 def test_handle_usage_input_j_increments_scroll():
@@ -8593,3 +8594,496 @@ def test_empty_state_hint_known_keys():
 
 def test_empty_state_hint_unknown_key_falls_back():
     assert tabs._empty_state_hint("mystery") == ("No mystery found.", "")
+
+
+# ─── Context tab: `/` search (mirrors the Extensions sub-tab search) ─────────
+
+
+def test_context_search_slash_enters_mode_and_captures():
+    """`/` on the Project sub-tab opens the prompt; printable keys append;
+    Enter applies the query."""
+    state = axt.TuiState()
+    state.context_sub_tab = "project"
+    state.project_items = [_project_source("CLAUDE.md"), _project_source("settings")]
+    axt.handle_context_input(state, ord("/"))
+    assert state.context_searching is True
+    for ch in "cla":
+        axt.handle_context_input(state, ord(ch))
+    assert state.context_search["project"] == "cla"
+    axt.handle_context_input(state, 10)  # Enter applies
+    assert state.context_searching is False
+    assert state.context_search["project"] == "cla"
+
+
+def test_context_search_captures_r_and_digits():
+    """While the prompt is open, `r` (refresh) and `1` (tab jump) must land in
+    the query, not trigger their global/tab actions."""
+    state = axt.TuiState()
+    state.context_sub_tab = "project"
+    state.project_items = [_project_source("CLAUDE.md")]
+    state.context_analysis = _seed_context_analysis_with_sources()
+    axt.handle_context_input(state, ord("/"))
+    axt.handle_context_input(state, ord("r"))
+    axt.handle_context_input(state, ord("1"))
+    assert state.context_search["project"] == "r1"
+    assert state.context_analysis is not None  # refresh did NOT run
+
+
+def test_context_search_filters_displayed_project_items():
+    """Matches name/category/scope/path; different-category rows drop out."""
+    state = axt.TuiState()
+    state.context_sub_tab = "project"
+    state.project_items = [_project_source("CLAUDE.md"),
+                           _project_source("settings.json", category="settings")]
+    state.context_search["project"] = "cla"
+    items = tabs._displayed_project_items(state)
+    assert [i.name for i in items] == ["CLAUDE.md"]
+
+
+def test_context_search_esc_in_prompt_cancels_and_clears():
+    state = axt.TuiState()
+    state.context_sub_tab = "project"
+    state.project_items = [_project_source("CLAUDE.md")]
+    state.context_searching = True
+    state.context_search["project"] = "xyz"
+    msg = axt.handle_context_input(state, 27)
+    assert state.context_searching is False
+    assert state.context_search.get("project", "") == ""
+    assert msg == "Search cleared"
+
+
+def test_context_search_esc_on_list_clears_applied_filter():
+    """With a filter applied (prompt closed), Esc clears it before any climb."""
+    state = axt.TuiState()
+    state.context_sub_tab = "project"
+    state.project_items = [_project_source("CLAUDE.md")]
+    state.context_search["project"] = "cla"
+    msg = axt.handle_context_input(state, 27)
+    assert state.context_search.get("project", "") == ""
+    assert msg == "Search cleared"
+
+
+def test_context_sources_search_filters_rows():
+    """Sources sub-tab: the query narrows the category rows."""
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    extra = axt.ContextSource(
+        name="server", category="mcp-tools", estimated_tokens=500,
+        percentage=2.0, path="", hint="", chars=2000, actionable=False)
+    analysis = _seed_context_analysis_with_sources()
+    analysis.sources.append(extra)
+    state.context_analysis = analysis
+    assert len(tabs._displayed_context_rows(state, analysis)) == 2
+    state.context_search["sources"] = "mcp"
+    rows = tabs._displayed_context_rows(state, analysis)
+    assert len(rows) == 1
+    assert rows[0].category == "mcp-tools"
+
+
+def test_context_search_query_is_per_sub_tab():
+    """A Project query must not filter the Sources rows."""
+    state = axt.TuiState()
+    analysis = _seed_context_analysis_with_sources()
+    state.context_analysis = analysis
+    state.context_search["project"] = "zzz-no-match"
+    assert len(tabs._displayed_context_rows(state, analysis)) == 1
+
+
+def test_context_handlers_operate_on_filtered_list():
+    """j/k and the detail panel follow the filtered view, not the raw list."""
+    state = axt.TuiState()
+    state.context_sub_tab = "project"
+    state.project_items = [_project_source("alpha"), _project_source("beta"),
+                           _project_source("alpha-two")]
+    state.context_search["project"] = "alpha"
+    axt.handle_context_input(state, ord("j"))
+    assert state.project_selected == 1  # clamped to the 2 filtered rows
+    axt.handle_context_input(state, ord("j"))
+    assert state.project_selected == 1
+
+
+def test_content_layer_esc_defers_to_context_search_clear():
+    """Esc with an applied Context filter must NOT climb the focus layer —
+    it falls through to handle_context_input, which clears the filter."""
+    state = axt.TuiState()
+    state.tab_idx = _tab_idx("context")
+    state.focused_layer = "content"
+    state.context_search["project"] = "cla"
+    scr = _make_stdscr()
+    consumed = axt._handle_content_layer_key(scr, state, 27, "context")
+    assert consumed is False
+    assert state.focused_layer == "content"
+
+
+def test_render_context_tab_shows_no_match_hint(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    scr = _make_stdscr(rows=40, cols=140)
+    state = axt.TuiState()
+    state.context_sub_tab = "project"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.project_items = [_project_source("CLAUDE.md")]
+    state.context_search["project"] = "zzz"
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "No sources match" in flat
+
+
+# ─── Usage tab: `/` search with n/N match jump ───────────────────────────────
+
+
+def _usage_state_with_lines():
+    state = axt.TuiState()
+    state.usage_lines = [
+        (0, "alpha one", 40, 0),
+        (0, "beta", 40, 0),
+        (0, "", 40, 0),
+        (0, "alpha two", 40, 0),
+    ]
+    state.usage_lines_sig = ("t",)
+    return state
+
+
+def test_usage_search_slash_enters_mode_and_captures():
+    state = _usage_state_with_lines()
+    axt.handle_usage_input(state, ord("/"))
+    assert state.usage_searching is True
+    for ch in "alpha":
+        axt.handle_usage_input(state, ord(ch))
+    assert state.usage_search == "alpha"
+
+
+def test_usage_search_captures_r_and_j():
+    """While the prompt is open, `r` (reload) and `j` (scroll) must be typed
+    into the query — no reload kick, no scroll."""
+    state = _usage_state_with_lines()
+    state.usage_entries = []
+    axt.handle_usage_input(state, ord("/"))
+    axt.handle_usage_input(state, ord("r"))
+    axt.handle_usage_input(state, ord("j"))
+    assert state.usage_search == "rj"
+    assert state.usage_scroll == 0
+    assert state.usage_loading is False
+
+
+def test_usage_search_enter_jumps_to_first_match():
+    state = _usage_state_with_lines()
+    axt.handle_usage_input(state, ord("/"))
+    for ch in "alpha":
+        axt.handle_usage_input(state, ord(ch))
+    msg = axt.handle_usage_input(state, 10)  # Enter
+    assert state.usage_searching is False
+    assert state.usage_scroll == 0
+    assert "1/2" in msg
+
+
+def test_usage_search_n_cycles_matches():
+    state = _usage_state_with_lines()
+    state.usage_search = "alpha"
+    state.usage_match_idx = 0  # as set by Enter-apply on the first match
+    msg = axt.handle_usage_input(state, ord("n"))
+    assert state.usage_scroll == 3
+    assert "2/2" in msg
+    msg = axt.handle_usage_input(state, ord("n"))  # wraps
+    assert state.usage_scroll == 0
+    assert "1/2" in msg
+    msg = axt.handle_usage_input(state, ord("N"))  # backwards, wraps
+    assert state.usage_scroll == 3
+    assert "2/2" in msg
+
+
+def test_usage_search_no_match_reports():
+    state = _usage_state_with_lines()
+    axt.handle_usage_input(state, ord("/"))
+    for ch in "zzz":
+        axt.handle_usage_input(state, ord(ch))
+    msg = axt.handle_usage_input(state, 10)
+    assert "No match" in msg
+    assert state.usage_scroll == 0
+
+
+def test_usage_search_esc_clears_applied():
+    state = _usage_state_with_lines()
+    state.usage_search = "alpha"
+    msg = axt.handle_usage_input(state, 27)
+    assert state.usage_search == ""
+    assert msg == "Search cleared"
+
+
+def test_content_layer_esc_defers_to_usage_search_clear():
+    state = _usage_state_with_lines()
+    state.tab_idx = _tab_idx("usage")
+    state.focused_layer = "content"
+    state.usage_search = "alpha"
+    scr = _make_stdscr()
+    consumed = axt._handle_content_layer_key(scr, state, 27, "usage")
+    assert consumed is False
+    assert state.focused_layer == "content"
+
+
+def test_help_text_documents_context_and_usage_search():
+    assert "n / N" in axt.HELP_TEXT or "n/N" in axt.HELP_TEXT
+    # Context block documents the `/` filter; Usage block documents match jump.
+    assert axt.HELP_TEXT.count("/             Search") >= 2
+
+
+# ─── Vault-parity search UI: `/search:` band + live behavior ────────────────
+
+
+def _mcp_cache_entry(name="alpha"):
+    from types import SimpleNamespace
+    return SimpleNamespace(name=name, scope="user", transport="stdio",
+                           disabled=False, plugin_id="", version="", url="",
+                           command="node", args_list=[], env_dict={})
+
+
+def test_ext_subtab_search_band_renders_like_vault():
+    """Non-vault sub-tabs show the same `/search:` band as Vault — with a
+    `_` cursor while typing, without it once applied."""
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [_mcp_cache_entry()]
+    state.ext_searching = True
+    state.ext_search["mcp"] = "al"
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 0, 28, 120)
+    assert "/search: al_" in _flat(scr)
+
+    state.ext_searching = False  # applied → band stays, cursor gone
+    scr2 = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr2, state, 0, 28, 120)
+    flat2 = _flat(scr2)
+    assert "/search: al" in flat2
+    assert "/search: al_" not in flat2
+
+
+def test_ext_subtab_no_band_without_search():
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [_mcp_cache_entry()]
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 0, 28, 120)
+    assert "/search:" not in _flat(scr)
+
+
+def test_usage_search_band_renders_like_vault(tmp_path, monkeypatch):
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    state.usage_entries = []
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+    state.usage_searching = True
+    state.usage_search = "ab"
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+    assert "/search: ab_" in _flat(scr)
+
+
+def test_context_title_shows_search_chip(monkeypatch, tmp_path):
+    """Applied Context query appears as a `search='q'` chip on the filter-bar
+    row (the section header), not on the tab title."""
+    monkeypatch.chdir(tmp_path)
+    state = axt.TuiState()
+    state.context_sub_tab = "project"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.project_items = [_project_source("CLAUDE.md")]
+    state.context_search["project"] = "cla"
+    scr = _make_stdscr(rows=40, cols=140)
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+
+    def row_of(substr):
+        return next(c[0] for c in scr.calls
+                    if len(c) >= 3 and isinstance(c[2], str) and substr in c[2])
+
+    assert row_of("search='cla'") == row_of("Project context")
+    assert row_of("sort=tokens") == row_of("Project context")
+
+
+def test_usage_search_live_jump_while_typing():
+    """Vault filters live per keystroke; Usage mirrors that with a live jump
+    to the first match at/after the anchor (scroll when `/` was pressed)."""
+    state = _usage_state_with_lines()
+    state.usage_scroll = 1
+    axt.handle_usage_input(state, ord("/"))
+    for ch in "alpha":
+        axt.handle_usage_input(state, ord(ch))
+    assert state.usage_scroll == 3  # first match at/after anchor row 1
+    # Query stops matching → viewport returns to the anchor.
+    for ch in "zz":
+        axt.handle_usage_input(state, ord(ch))
+    assert state.usage_scroll == 1
+
+
+def test_usage_search_esc_while_typing_restores_anchor():
+    state = _usage_state_with_lines()
+    state.usage_scroll = 1
+    axt.handle_usage_input(state, ord("/"))
+    for ch in "alpha":
+        axt.handle_usage_input(state, ord(ch))
+    assert state.usage_scroll == 3
+    axt.handle_usage_input(state, 27)  # Esc cancels → back to anchor
+    assert state.usage_search == ""
+    assert state.usage_scroll == 1
+
+
+def test_context_search_band_sits_above_list_not_title(monkeypatch, tmp_path):
+    """The `/search:` band belongs directly above the active sub-tab's list
+    (vault convention) — below the Rate limits strip and sub-tab bar, not
+    glued to the tab title."""
+    monkeypatch.chdir(tmp_path)
+    state = axt.TuiState()
+    state.context_sub_tab = "project"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.project_items = [_project_source("CLAUDE.md")]
+    state.context_searching = True
+    state.context_search["project"] = "cla"
+    scr = _make_stdscr(rows=40, cols=140)
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+
+    def row_of(substr):
+        return next(c[0] for c in scr.calls
+                    if len(c) >= 3 and isinstance(c[2], str) and substr in c[2])
+
+    band_y = row_of("/search: cla_")
+    assert band_y > row_of("Rate limits")
+    assert band_y > row_of("Sub:")
+    assert band_y < row_of("Project context")
+
+
+def test_ext_no_match_message_sits_directly_under_filter_bar():
+    """Search-no-match message renders right below the band + filter bar —
+    no stray blank gap."""
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [_mcp_cache_entry()]
+    state.ext_searching = True
+    state.ext_search["mcp"] = "zzz"
+    state.update_statuses = {}
+    state.update_check_loading = True
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 0, 28, 120)
+
+    def row_of(substr):
+        return next(c[0] for c in scr.calls
+                    if len(c) >= 3 and isinstance(c[2], str) and substr in c[2])
+
+    assert row_of("(0/1 items)") == row_of("/search: zzz_") + 1  # filter bar
+    assert row_of("No mcp match") == row_of("/search: zzz_") + 2
+
+
+def test_context_sources_has_section_header_like_project(monkeypatch, tmp_path):
+    """Both Context sub-tabs share the same rhythm below the `/search:` band:
+    band → section header (with counts) → table. Sources previously jumped
+    straight to the table header."""
+    monkeypatch.chdir(tmp_path)
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.context_searching = True
+    state.context_search["sources"] = "mem"
+    scr = _make_stdscr(rows=40, cols=140)
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+
+    def row_of(substr):
+        return next(c[0] for c in scr.calls
+                    if len(c) >= 3 and isinstance(c[2], str) and substr in c[2])
+
+    flat = _flat(scr)
+    assert "Context sources" in flat
+    assert "(1/1 categories)" in flat
+    assert row_of("Context sources") == row_of("/search: mem_") + 1
+
+
+def test_context_sources_no_match_sits_under_header(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _seed_context_analysis_with_sources()
+    state.context_search["sources"] = "zzz"
+    scr = _make_stdscr(rows=40, cols=140)
+    axt.render_context_tab(scr, state, y0=3, h=30, w=140)
+
+    def row_of(substr):
+        return next(c[0] for c in scr.calls
+                    if len(c) >= 3 and isinstance(c[2], str) and substr in c[2])
+
+    assert row_of("No sources match") == row_of("Context sources") + 1
+
+
+def test_vault_search_band_sits_directly_under_divider():
+    """Uniform band slot across every tab: the `/search:` band renders on the
+    row right below the sub-tab divider — ABOVE the Vault title row, exactly
+    where the other sub-tabs / Context / Usage draw theirs."""
+    state = axt.TuiState()
+    state.ext_sub_tab = "vault"
+    state.vault_items = [axt.VaultItem(name="alpha-skill", type="skill",
+                                       path="/tmp/x", description="d")]
+    state.vault_searching = True
+    state.vault_search = "al"
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 2, 28, 120)
+
+    def row_of(substr):
+        return next(c[0] for c in scr.calls
+                    if len(c) >= 3 and isinstance(c[2], str) and substr in c[2])
+
+    band_y = row_of("/search: al_")
+    assert band_y == row_of("Sub:") + 2          # bar, divider, band
+    assert band_y == row_of("(1 items)") - 1     # title row right below the band
+
+
+# ─── Filter bar on every tab (vault convention) ─────────────────────────────
+
+
+def test_ext_subtab_has_filter_bar_like_vault():
+    """Non-vault sub-tabs get the Vault-style filter-bar row below the band:
+    label + (filtered/total) counts + sort + search chips."""
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [_mcp_cache_entry("alpha"), _mcp_cache_entry("beta")]
+    state.ext_search["mcp"] = "al"
+    state.update_statuses = {}
+    state.update_check_loading = True
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 2, 28, 120)
+
+    def row_of(substr):
+        return next(c[0] for c in scr.calls
+                    if len(c) >= 3 and isinstance(c[2], str) and substr in c[2])
+
+    flat = _flat(scr)
+    assert " MCP  (1/2 items)" in flat
+    assert "sort=name" in flat
+    assert "search='al'" in flat
+    assert row_of("(1/2 items)") == row_of("/search: al") + 1   # band → filter bar
+    assert row_of("Server") == row_of("(1/2 items)") + 1        # filter bar → table
+
+
+def test_ext_filter_bar_without_search_shows_totals():
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [_mcp_cache_entry("alpha"), _mcp_cache_entry("beta")]
+    state.update_statuses = {}
+    state.update_check_loading = True
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_extensions_tab(scr, state, 2, 28, 120)
+    flat = _flat(scr)
+    assert " MCP  (2 items)" in flat
+    assert "search=" not in flat
+
+
+def test_usage_filter_bar_shows_search_chip(tmp_path, monkeypatch):
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    state = axt.TuiState()
+    state.usage_entries = []
+    state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+    state.usage_search = "plan"
+    scr = _make_stdscr(rows=30, cols=120)
+    axt.render_usage_tab(scr, state, 0, 28, 120)
+
+    def row_of(substr):
+        return next(c[0] for c in scr.calls
+                    if len(c) >= 3 and isinstance(c[2], str) and substr in c[2])
+
+    flat = _flat(scr)
+    assert "search='plan'" in flat
+    # band(0) → title/filter row(1) → report body
+    assert row_of("Claude usage — this month") == row_of("/search: plan") + 1

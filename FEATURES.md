@@ -167,7 +167,8 @@ G           skill 전용 — GLOBAL + ~/.agents/skills 미러 동시 토글 (즉
 - **공통(모든 서브탭)**: `p` = PROJECT 스코프 토글, `g` = GLOBAL 스코프 토글 (아래 서브탭별 의미 참조)
 - **공통(모든 서브탭)**: `Space` = 포커스 항목 마크/해제 (좌측 체크박스 ■/□). 마크가 있으면 `p`/`g`가 마크된 전체 항목에 일괄 적용 (확인 모달), `Esc`가 마크 해제 → 검색 해제 → 포커스 상승 순으로 동작
 - **공통(모든 서브탭)**: `o` 포커스된 항목의 저장 경로에서 새 터미널 열기 (cst 방식 — TERM_PROGRAM 매칭, cmux 안에서는 workspace/window 선택 모달)
-- **공통(모든 서브탭)**: `/` 검색 필터 (입력 중 Esc 취소, 적용 후 Esc 해제 — 서브탭별로 독립 유지)
+- **공통(모든 서브탭)**: `/` 검색 필터 (입력 중 Esc 취소, 적용 후 Esc 해제 — 서브탭별로 독립 유지). Vault와 동일한 `/search:` 입력 밴드가 필터바 위에 표시됨 (입력 중 `_` 커서, 적용 후 커서 없이 유지)
+- **공통(모든 서브탭)**: Vault 타이틀 행과 동일한 **필터바**가 항상 표시됨 — `<라벨> (건수)` + `sort=<key>` + 검색 적용 시 `(필터/전체 items)` `search='q'` + 마크 시 `marked=N`. 배치는 전 탭 공통: `구분선 → /search: 밴드(검색 시) → 필터바 → 테이블`
 - **공통(모든 서브탭)**: `s` 정렬 순환 (Vault와 동일 방식 — 활성 정렬 컬럼 헤더에 ▲/▼ 표시, 상태바에 `s:sort(<key>)` 노출). 서브탭별 순환 키:
   - **Plugins**: Name→Version→Marketplace
   - **Skills**: Name→Source→Type
@@ -189,10 +190,10 @@ G           skill 전용 — GLOBAL + ~/.agents/skills 미러 동시 토글 (즉
 - **Project** (기본) — cwd 기준, axt 실행 시 이 프로젝트 세션을 차지하는 모든 개별 소스를 **카테고리로 묶지 않고 낱개로** 나열 (`collect_context_sources`의 flat 결과 그대로: system prompt 1행, CLAUDE.md/settings/memory 파일별 1행씩, skill/command/agent/mcp 서버/hook/plugin 각각 1행씩, git-status 1행, user-context 1행). Name/Category/Scope/Tokens/% 컬럼. 전체폭 테이블 + 하단 공유 detail 패널. `d`로 memory 소스 삭제. `s` 정렬 순환(Tokens→Name→Category→Scope, 기본 Tokens 내림차순), 활성 컬럼 헤더 ▲/▼(`%`는 Tokens와 순서가 항상 같아 순환에서 제외).
 - **Sources** — 컨텍스트 윈도우 분석, `categories → sources`로 카테고리별 롤업(전체 세션 12개 카테고리 합계). 전체폭 테이블 + 하단 공유 detail 패널.
 
-키: `← →`(서브탭 바에서) 또는 `[ / ]`(본문에서) 서브탭 전환, `j/k` 선택, `PgUp/PgDn` 리스트 페이지(±10행), `Enter` 하단 detail 패널 포커스(`j/k`·`PgUp/PgDn` 스크롤, `Esc` 복귀), `v` (Sources: 카테고리 소스 모달 / Project: 파일 내용 미리보기), `e` (Sources: 첫 소스를 에디터로 / Project: 파일을 에디터로), `d` (Project: 선택 항목이 memory 파일일 때만 — 확인 모달 후 삭제 + `MEMORY.md` 인덱스에서 해당 줄 제거; `delete_memory_file`), `s` (Project: 컬럼 정렬 순환), `r` 새로고침.
+키: `← →`(서브탭 바에서) 또는 `[ / ]`(본문에서) 서브탭 전환, `j/k` 선택, `PgUp/PgDn` 리스트 페이지(±10행), `/` 검색 필터(서브탭별 독립 — Extensions와 동일한 입력 방식: 타이핑 → Enter 적용, Esc 해제; name/category/scope/path 매칭, 0건이면 `No sources match "…"` 안내). 섹션 헤더가 필터바 역할: 필터/전체 건수 + Project는 `sort=<key>` + 검색 적용 시 `search='q'` 칩 표시, 배치는 `구분선 → /search: 밴드 → 섹션 헤더 → 테이블`, `Enter` 하단 detail 패널 포커스(`j/k`·`PgUp/PgDn` 스크롤, `Esc` 복귀), `v` (Sources: 카테고리 소스 모달 / Project: 파일 내용 미리보기), `e` (Sources: 첫 소스를 에디터로 / Project: 파일을 에디터로), `d` (Project: 선택 항목이 memory 파일일 때만 — 확인 모달 후 삭제 + `MEMORY.md` 인덱스에서 해당 줄 제거; `delete_memory_file`), `s` (Project: 컬럼 정렬 순환), `r` 새로고침.
 
 ### 2.8 Usage 탭
-Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) + 미등록 모델 경고(`pricing.json`에 없는 모델의 엔트리가 있으면 `⚠ N entries from unpriced models (…)` — 비용 합계에서 제외됨을 표시) + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarChart + Active Block + Insights(large-context %, parallel %, top model) + plan rate-limit(5h/7d) 라인. 키: `r` 새로고침. (v0.2.x의 platform/cursor 서브탭은 제거. 별도였던 Dashboard 탭은 이 탭의 상단(Plan/Budget 블록)으로 흡수됨.)
+Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) + 미등록 모델 경고(`pricing.json`에 없는 모델의 엔트리가 있으면 `⚠ N entries from unpriced models (…)` — 비용 합계에서 제외됨을 표시) + 월간 예산 progress bar + Today/Week/Month 카드 + 14일 BarChart + Active Block + Insights(large-context %, parallel %, top model) + plan rate-limit(5h/7d) 라인. 키: `r` 새로고침, `/` 리포트 검색(목록 필터가 아닌 매칭 점프 — vault와 동일한 `/search:` 입력 밴드가 상단에 표시되고, 타이핑하는 동안 앵커(`/` 누른 시점의 스크롤) 이후 첫 매칭 라인으로 라이브 점프, 매칭이 없어지면 앵커로 복귀. Enter 적용 후 `n`/`N` 다음/이전 매칭 순환, 매칭 라인 하이라이트(현재 매칭은 reverse), 상태바에 `match i/N`, 입력 중 Esc는 취소+앵커 복귀, 적용 후 Esc는 해제). 타이틀 행(`Claude usage — this month`)은 스크롤 버퍼 밖의 **고정 필터바** — 항상 표시되며 검색 적용 시 `search='q'`·`match i/N` 칩을 담음. 배치는 `구분선 → /search: 밴드 → 타이틀/필터바 → 리포트`. (v0.2.x의 platform/cursor 서브탭은 제거. 별도였던 Dashboard 탭은 이 탭의 상단(Plan/Budget 블록)으로 흡수됨.)
 
 ### 2.10 공통 위젯
 - **Table**: prefix 4셀(`▸/space + ■/□` 또는 `▸/space + 번호`), 마지막 컬럼 자동 확장, selected는 cyan+bold (inverse 회피)
