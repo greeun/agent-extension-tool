@@ -4073,7 +4073,72 @@ def _settle_update_status(state: Optional[TuiState], itype: str, name: str, vers
         pass  # cache write is best-effort; in-memory state is already correct
 
 
+def _act_update_marked(state: TuiState, stdscr: Any, sub: str,
+                       marks: set[str]) -> Optional[str]:
+    """`u` with Space marks: bulk check + apply for every marked item
+    (confirmed), mirroring the p/g bulk-toggle path. One item's failure
+    doesn't abort the rest; the status line carries the tally."""
+    items = [i for i in state.ext_cache.get(sub, []) if _item_key(sub, i) in marks]
+    if not items:
+        return "No marked item found (press r to refresh)"
+    targets: list[tuple[str, str]] = []
+    not_updatable = 0
+    for item in items:
+        t = _update_target_for(sub, item)
+        if t is None:
+            not_updatable += 1
+        else:
+            targets.append(t)
+    if not targets:
+        return "No marked item is updatable here"
+    if stdscr is not None and not confirm_modal(
+            stdscr, f"Update {len(targets)} marked item(s)? (check + apply)",
+            title="Confirm bulk update"):
+        return "Cancelled"
+    flash_status(state, f"Checking {len(targets)} marked item(s)…")
+    types = sorted({t for t, _ in targets})
+    try:
+        statuses = {(s.item_type, s.name): s
+                    for s in check_all_updates(types=types)}
+    except Exception as exc:  # noqa: BLE001 — surface as status, never crash the TUI
+        return f"Update check failed: {exc}"
+    to_apply, uptodate = [], 0
+    for t in targets:
+        st = statuses.get(t)
+        if st is not None and st.tier == 1 and st.updatable:
+            to_apply.append(t)
+        else:
+            uptodate += 1
+    updated, failed, first_err = 0, 0, ""
+    # One apply_updates call per item (not one batch) so the status bar can
+    # name the item currently updating — each git fetch/pull is slow enough
+    # that a single "Updating N items…" reads as a freeze.
+    for i, target in enumerate(to_apply, start=1):
+        flash_status(state, f"Updating {target[1]} ({i}/{len(to_apply)})…")
+        res = apply_updates([target])[0]
+        if res.error:
+            failed += 1
+            first_err = first_err or f"{res.name}: {res.error}"
+        elif res.updated:
+            updated += 1
+            _settle_update_status(state, res.item_type, res.name, res.after)
+        else:
+            uptodate += 1
+    marks.clear()
+    _refresh_ext(state, sub)
+    parts = [f"{updated} updated", f"{uptodate} up to date"]
+    if failed:
+        parts.append(f"{failed} failed ({first_err})")
+    if not_updatable:
+        parts.append(f"{not_updatable} not updatable")
+    return "Marked update: " + ", ".join(parts)
+
+
 def _act_update(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    # Space marks present → bulk update the whole marked set.
+    marks = (state.ext_marked.get(sub) if state is not None else None) or set()
+    if marks:
+        return _act_update_marked(state, stdscr, sub, marks)
     item = _selected_item(state, sub)
     target = _update_target_for(sub, item)
     if target is None:
@@ -4128,7 +4193,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("x"),), "x:uninstall",
                       "x=uninstall (confirm)",
                       True, _act_plugin_uninstall),
-        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply; Space marks → bulk)", True, _act_update),
     ),
     "mcp": (
         SubtabBinding((ord("p"),), "p:on",
@@ -4152,7 +4217,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("i"),), "i:import",
                       "i=import into vault (move + leave symlink)",
                       False, _act_import_to_vault),
-        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply; Space marks → bulk)", True, _act_update),
     ),
     "market": (
         SubtabBinding((ord("p"), ord("g")), "", "", False, _act_market_scope_note),
@@ -4165,7 +4230,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("x"),), "x:remove",
                       "x=remove (confirm)",
                       True, _act_market_remove),
-        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply; Space marks → bulk)", True, _act_update),
     ),
     "hooks": (
         SubtabBinding((ord("p"),), "p:project",
@@ -4191,7 +4256,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("i"),), "i:import",
                       "i=import into vault (move + leave symlink)",
                       False, _act_import_to_vault),
-        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply; Space marks → bulk)", True, _act_update),
     ),
     "agents": (
         SubtabBinding((ord("p"),), "p:project",
@@ -4206,7 +4271,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("i"),), "i:import",
                       "i=import into vault (move + leave symlink)",
                       False, _act_import_to_vault),
-        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply)", True, _act_update),
+        SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply; Space marks → bulk)", True, _act_update),
     ),
 }
 

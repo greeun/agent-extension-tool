@@ -112,8 +112,8 @@ Extensions sub-tab actions
   All sub-tabs: p=toggle PROJECT activation  g=toggle GLOBAL activation
                 (per-sub-tab semantics below)
   All sub-tabs: Space=mark/unmark the focused item (left checkbox ■/□);
-                with marks set, p/g toggle every marked item at once
-                (confirm) and Esc clears the marks
+                with marks set, p/g toggle and u updates every marked item
+                at once (confirm) and Esc clears the marks
   All sub-tabs: o=open a new terminal at the item's directory
                 (matches your terminal via TERM_PROGRAM; inside cmux a
                  workspace/window chooser appears first)

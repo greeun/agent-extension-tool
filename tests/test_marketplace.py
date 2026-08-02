@@ -822,7 +822,9 @@ def test_sync_marketplace_directory_noop(tmp_path: Path):
     assert json.loads(km.read_text())["x"]["lastUpdated"] != "old"
 
 
-def test_sync_marketplace_git_pull_updates(tmp_path: Path, monkeypatch):
+def test_sync_marketplace_git_hard_syncs_to_upstream(tmp_path: Path, monkeypatch):
+    """Git installs sync via fetch + reset --hard @{u} (NOT pull --ff-only):
+    the install dir is a managed cache Claude Code's own updater dirties."""
     install = tmp_path / "install"
     (install / ".git").mkdir(parents=True)
     _seed_github_entry(tmp_path / "km.json", install)
@@ -832,9 +834,12 @@ def test_sync_marketplace_git_pull_updates(tmp_path: Path, monkeypatch):
     def fake_git(args, cwd=None):
         if "rev-parse" in args:
             return (0, state["hash"] + "\n", "")
-        if "pull" in args:
-            state["hash"] = "after22"  # pull advances HEAD
-            return (0, "Updating...\n", "")
+        if "fetch" in args:
+            return (0, "", "")
+        if "reset" in args:
+            assert "--hard" in args and "@{u}" in args
+            state["hash"] = "after22"  # reset moves HEAD to upstream
+            return (0, "HEAD is now at after22\n", "")
         return (1, "", "unexpected")
 
     monkeypatch.setattr(axt, "_git", fake_git)
@@ -844,7 +849,7 @@ def test_sync_marketplace_git_pull_updates(tmp_path: Path, monkeypatch):
     assert result.updated is True
 
 
-def test_sync_marketplace_git_pull_failure(tmp_path: Path, monkeypatch):
+def test_sync_marketplace_git_fetch_failure(tmp_path: Path, monkeypatch):
     install = tmp_path / "install"
     (install / ".git").mkdir(parents=True)
     _seed_github_entry(tmp_path / "km.json", install)
@@ -852,15 +857,51 @@ def test_sync_marketplace_git_pull_failure(tmp_path: Path, monkeypatch):
     def fake_git(args, cwd=None):
         if "rev-parse" in args:
             return (0, "before1\n", "")
-        if "pull" in args:
-            return (1, "", "fatal: not fast-forward")
+        if "fetch" in args:
+            return (1, "", "fatal: could not read from remote")
         return (0, "", "")
 
     monkeypatch.setattr(axt, "_git", fake_git)
-    with pytest.raises(RuntimeError, match="git pull failed"):
+    with pytest.raises(RuntimeError, match="git fetch failed"):
         axt.sync_marketplace(tmp_path / "km.json", "x")
     # lastUpdated NOT bumped on failure (write never reached).
     assert json.loads((tmp_path / "km.json").read_text())["x"]["lastUpdated"] == ""
+
+
+def test_sync_marketplace_git_dirty_tree_hard_syncs(tmp_path: Path):
+    """Regression (claude-hud): Claude Code's updater overwrites marketplace
+    files in place WITHOUT committing, so the git tree is dirty and
+    `pull --ff-only` refused to merge. Sync must discard those updater
+    artifacts and hard-sync the tree to upstream."""
+    import subprocess
+
+    def run(*args, cwd):
+        subprocess.run(args, cwd=cwd, check=True, capture_output=True)
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    run("git", "init", "-q", cwd=origin)
+    run("git", "config", "user.email", "t@t", cwd=origin)
+    run("git", "config", "user.name", "t", cwd=origin)
+    (origin / "f.txt").write_text("v1\n")
+    run("git", "add", "f.txt", cwd=origin)
+    run("git", "commit", "-q", "-m", "v1", cwd=origin)
+
+    install = tmp_path / "install"
+    run("git", "clone", "-q", str(origin), str(install), cwd=tmp_path)
+    run("git", "config", "user.email", "t@t", cwd=install)
+    run("git", "config", "user.name", "t", cwd=install)
+
+    # Upstream advances…
+    (origin / "f.txt").write_text("v2\n")
+    run("git", "commit", "-q", "-am", "v2", cwd=origin)
+    # …while Claude Code's updater dirties the local tree (no commit).
+    (install / "f.txt").write_text("overwritten-in-place\n")
+
+    _seed_github_entry(tmp_path / "km.json", install)
+    result = axt.sync_marketplace(tmp_path / "km.json", "x")
+    assert result.updated is True
+    assert (install / "f.txt").read_text() == "v2\n"
 
 
 def test_sync_marketplace_github_tarball(tmp_path: Path, monkeypatch):

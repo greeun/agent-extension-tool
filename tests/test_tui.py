@@ -9087,3 +9087,111 @@ def test_usage_filter_bar_shows_search_chip(tmp_path, monkeypatch):
     assert "search='plan'" in flat
     # band(0) → title/filter row(1) → report body
     assert row_of("Claude usage — this month") == row_of("/search: plan") + 1
+
+
+# ─── Extensions "u" bulk update over Space marks ────────────────────────────
+
+
+def _mk_plugin(pid):
+    from axt.core import PluginInfo
+    return PluginInfo(id=pid, name=pid.split("@")[0], marketplace="mk",
+                      version="1", install_path="", scope="user",
+                      installed_at="", last_updated="")
+
+
+def test_act_update_bulk_marked(monkeypatch):
+    """With Space marks set, `u` checks + applies every marked item, reports
+    a summary, and clears the marks (mirrors the p/g bulk path)."""
+    import axt
+    from axt.tui.tabs import _item_key
+    p1, p2, p3 = _mk_plugin("a@mk"), _mk_plugin("b@mk"), _mk_plugin("c@mk")
+    state = axt.TuiState()
+    state.ext_sub_tab = "plugins"
+    state.ext_cache["plugins"] = [p1, p2, p3]
+    state.ext_marked["plugins"] = {_item_key("plugins", p1), _item_key("plugins", p2)}
+
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates", lambda types=None: [
+        axt.update.UpdateStatus("plugin", "a@mk", 1, "1", "2", True),
+        axt.update.UpdateStatus("plugin", "b@mk", 1, "1", "1", False, note="up to date"),
+    ])
+    applied = {}
+    monkeypatch.setattr("axt.tui.tabs.apply_updates",
+        lambda targets: (applied.setdefault("t", targets),
+            [axt.update.UpdateResult("plugin", "a@mk", "1", "2", True, "reinstall")])[1])
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    monkeypatch.setattr("axt.tui.tabs._settle_update_status", lambda *a: None)
+
+    msg = axt.tui.tabs._act_update(state, None, "plugins", ord("u"))
+    assert applied["t"] == [("plugin", "a@mk")]   # only the updatable one applied
+    assert "1 updated" in msg
+    assert "1 up to date" in msg
+    assert not state.ext_marked["plugins"]        # marks consumed
+
+
+def test_act_update_bulk_reports_failure(monkeypatch):
+    import axt
+    from axt.tui.tabs import _item_key
+    p1 = _mk_plugin("a@mk")
+    state = axt.TuiState()
+    state.ext_sub_tab = "plugins"
+    state.ext_cache["plugins"] = [p1]
+    state.ext_marked["plugins"] = {_item_key("plugins", p1)}
+
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates", lambda types=None: [
+        axt.update.UpdateStatus("plugin", "a@mk", 1, "1", "2", True),
+    ])
+    monkeypatch.setattr("axt.tui.tabs.apply_updates", lambda targets: [
+        axt.update.UpdateResult("plugin", "a@mk", "?", "?", False, "error",
+                                error="git fetch failed"),
+    ])
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+
+    msg = axt.tui.tabs._act_update(state, None, "plugins", ord("u"))
+    assert "1 failed" in msg
+    assert "git fetch failed" in msg
+
+
+def test_act_update_single_path_unaffected_without_marks(monkeypatch):
+    """No marks → the existing focused-item path runs (regression guard)."""
+    import axt
+    plugin = _mk_plugin("foo@mk")
+    state = axt.TuiState()
+    state.ext_sub_tab = "plugins"
+    monkeypatch.setattr("axt.tui.tabs._selected_item", lambda state, sub: plugin)
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates",
+        lambda types=None: [axt.update.UpdateStatus("plugin", "foo@mk", 1, "1", "2", True)])
+    monkeypatch.setattr("axt.tui.tabs.apply_updates",
+        lambda targets: [axt.update.UpdateResult("plugin", "foo@mk", "1", "2", True, "reinstall")])
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    monkeypatch.setattr("axt.tui.tabs._settle_update_status", lambda *a: None)
+    msg = axt.tui.tabs._act_update(state, None, "plugins", ord("u"))
+    assert "Updated foo@mk" in msg
+
+
+def test_act_update_bulk_flashes_current_item(monkeypatch):
+    """During a bulk update the status bar names the item being updated,
+    with (i/N) progress."""
+    import axt
+    from axt.tui.tabs import _item_key
+    p1, p2 = _mk_plugin("a@mk"), _mk_plugin("b@mk")
+    state = axt.TuiState()
+    state.ext_sub_tab = "plugins"
+    state.ext_cache["plugins"] = [p1, p2]
+    state.ext_marked["plugins"] = {_item_key("plugins", p1), _item_key("plugins", p2)}
+
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates", lambda types=None: [
+        axt.update.UpdateStatus("plugin", "a@mk", 1, "1", "2", True),
+        axt.update.UpdateStatus("plugin", "b@mk", 1, "1", "2", True),
+    ])
+    monkeypatch.setattr("axt.tui.tabs.apply_updates", lambda targets: [
+        axt.update.UpdateResult("plugin", n, "1", "2", True, "reinstall")
+        for _, n in targets])
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext", lambda state, sub: None)
+    monkeypatch.setattr("axt.tui.tabs._settle_update_status", lambda *a: None)
+    flashes = []
+    monkeypatch.setattr("axt.tui.tabs.flash_status",
+                        lambda state, msg, kind="info": flashes.append(msg))
+
+    axt.tui.tabs._act_update(state, None, "plugins", ord("u"))
+    assert any("a@mk" in m and "(1/2)" in m for m in flashes)
+    assert any("b@mk" in m and "(2/2)" in m for m in flashes)

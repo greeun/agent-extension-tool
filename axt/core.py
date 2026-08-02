@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.10.0"
+__version__ = "1.11.0"
 
 T = TypeVar("T")
 
@@ -2802,9 +2802,17 @@ def sync_marketplace(km_path: os.PathLike[str] | str, name: str) -> SyncMarketpl
         before = after = "local"
     elif is_git_repo(install):
         before = _git_short_hash(install)
-        code, _, err = _git(["git", "-C", install, "pull", "--ff-only"])
+        # The install dir is a managed cache: Claude Code's own updater
+        # overwrites files in place WITHOUT committing, so the tree is
+        # routinely dirty and `pull --ff-only` refuses to merge. Hard-sync
+        # to the upstream head instead — local edits here are updater
+        # artifacts, not user work.
+        code, _, err = _git(["git", "-C", install, "fetch", "--quiet"])
         if code != 0:
-            raise RuntimeError(f'git pull failed for "{name}" (exit {code}): {err.strip()}')
+            raise RuntimeError(f'git fetch failed for "{name}" (exit {code}): {err.strip()}')
+        code, _, err = _git(["git", "-C", install, "reset", "--hard", "@{u}"])
+        if code != 0:
+            raise RuntimeError(f'git reset failed for "{name}" (exit {code}): {err.strip()}')
         after = _git_short_hash(install)
     elif src.kind == "github" and src.repo:
         local_sha = read_sha_file(install)
