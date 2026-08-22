@@ -32,10 +32,17 @@ def test_build_parser_returns_axt_program():
 
 
 def test_version_string_is_declared_once_per_place_and_they_agree():
-    """The version literal is repeated in pyproject.toml and in three modules
-    (the wildcard-import layering gives each one its own `__version__`). A
-    bump that misses one ships a CLI or tab bar showing the old number, so
-    pin them together here rather than finding out at release time."""
+    """The version literal is repeated in pyproject.toml, in three modules
+    (the wildcard-import layering gives each one its own `__version__`), and
+    in the SKILL.md frontmatter. A bump that misses one ships a CLI or tab bar
+    showing the old number, so pin them together here rather than finding out
+    at release time.
+
+    SKILL.md is not decoration: axt reads a skill's `version:` frontmatter
+    (parse_yaml_version) for the Ver column, so a stale value there makes axt
+    misreport its own version in `axt skill list` and the Skills tab — which
+    is exactly what happened between 1.6.0 and 1.14.0.
+    """
     root = Path(axt.__file__).resolve().parent.parent
     declared = {}
     for rel, pattern in (
@@ -43,6 +50,7 @@ def test_version_string_is_declared_once_per_place_and_they_agree():
         ("axt/__init__.py", r'^__version__ = "([^"]+)"'),
         ("axt/core.py", r'^__version__ = "([^"]+)"'),
         ("axt/tui/widgets.py", r'^__version__ = "([^"]+)"'),
+        ("SKILL.md", r'^version: (\S+)'),
     ):
         text = (root / rel).read_text(encoding="utf-8")
         m = re.search(pattern, text, re.MULTILINE)

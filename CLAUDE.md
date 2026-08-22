@@ -117,6 +117,27 @@ Full subcommand inventory: see `FEATURES.md`.
 
 `SKILL.md` at the repo root exposes `axt` as a Claude Code skill. Trigger phrases cover plugin/skill/MCP/hook/usage/marketplace/vault/context operations in both English and Korean. Symlink or install this directory under `~/.claude/skills/agent-extension-tool` to activate.
 
+## Versioning
+
+The version literal lives in **five** places and they must all move together:
+
+| File | Literal |
+|------|---------|
+| `pyproject.toml` | `version = "X.Y.Z"` |
+| `axt/__init__.py` | `__version__ = "X.Y.Z"` |
+| `axt/core.py` | `__version__ = "X.Y.Z"` |
+| `axt/tui/widgets.py` | `__version__ = "X.Y.Z"` (duplicated to avoid a circular import) |
+| `SKILL.md` | `version: X.Y.Z` (frontmatter) |
+
+`SKILL.md` is not decoration: `axt` reads a skill's `version:` frontmatter
+(`parse_yaml_version`) for the Ver column, so a stale value there makes `axt`
+misreport its own version in `axt skill list` and the Skills tab.
+`test_version_string_is_declared_once_per_place_and_they_agree`
+(`tests/test_cli.py`) fails on any drift — run `pytest` after a bump.
+
+Branching: day-to-day work goes on `develop`; `main` is release-only and is
+fast-forwarded from `develop` at release time.
+
 ## Working in this repo
 
 - Edit per-section modules inside `axt/` directly:
