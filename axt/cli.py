@@ -278,7 +278,10 @@ def cli_mcp_info(args) -> int:
     if server.transport == "stdio":
         print(f"Command: {server.command} {' '.join(server.args_list)}".rstrip())
         if server.env_dict:
-            print(f"Env: {json.dumps(server.env_dict)}")
+            # Values are redacted: this block routinely holds API tokens and
+            # `mcp info` is exactly what gets screen-shared and pasted into
+            # issues. Key names stay so the user can still see what is wired up.
+            print(f"Env: {json.dumps(mask_env(server.env_dict))}")
     elif server.url:
         print(f"URL: {server.url}")
     if server.disabled:
@@ -939,7 +942,12 @@ def cli_vault_unlink_global(args) -> int:
     item = next(
         (i for i in list_vault_items(PATHS.vault) if i.name == args.name and i.type == args.type),
         None,
-    ) or VaultItem(name=args.name, type=args.type, path="", description="")
+    )
+    if item is None:
+        # Falling back to a synthetic item reported success for a name that
+        # does not exist, so a typo looked like a completed unlink.
+        print(_red(f'✗ {args.type} "{args.name}" not found in the vault.'), file=sys.stderr)
+        return 1
     unlink_from_global(PATHS.claude_dir, item)
     print(_green(f'✓ Unlinked {args.type} "{args.name}" from global'))
     if getattr(args, "mirror_agents", False):

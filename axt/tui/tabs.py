@@ -2697,7 +2697,10 @@ def _mcp_detail_fields(server) -> tuple[str, list[tuple[str, str]]]:
     if server.transport == "stdio":
         fields.append(("Command", " ".join([server.command, *server.args_list]).strip() or "—"))
         if server.env_dict:
-            fields.append(("Env", ", ".join(f"{k}={v}" for k, v in server.env_dict.items())))
+            # Redacted for the same reason as `mcp info`: the detail panel is
+            # what is on screen during a demo or a pairing session.
+            fields.append(("Env", ", ".join(
+                f"{k}={v}" for k, v in mask_env(server.env_dict).items())))
     elif server.url:
         fields.append(("URL", server.url))
     return server.name, fields

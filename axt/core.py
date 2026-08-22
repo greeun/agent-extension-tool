@@ -39,12 +39,14 @@ Python 3.9+ (macOS/Linux). Windows needs `windows-curses`.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
+import stat
 import sys
 import tempfile
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
 __version__ = "1.12.0"
@@ -221,6 +223,11 @@ def write_json_atomic(
         try:
             backup = p.with_suffix(p.suffix + ".bak")
             backup.write_bytes(p.read_bytes())
+            # The backup is a full second copy of the same content. Created
+            # fresh it lands at the umask default, so a 0600 credential file
+            # would leave a 0644 twin next to it.
+            if not IS_WINDOWS:
+                os.chmod(backup, stat.S_IMODE(p.stat().st_mode))
         except OSError:
             # Backup is best-effort; don't fail the write if it can't happen
             # (e.g. permission glitch on a network mount).
@@ -231,10 +238,24 @@ def write_json_atomic(
     dump_kwargs: dict[str, Any] = (
         {"separators": (",", ":")} if compact else {"indent": 2}
     )
+    # A fresh tmp file gets default permissions; replacing an existing file
+    # with it would silently widen a deliberately restrictive mode (e.g. a
+    # 0600 `~/.claude.json` holding MCP credentials becoming world-readable).
+    prior_mode = None
+    if not IS_WINDOWS:
+        try:
+            prior_mode = stat.S_IMODE(p.stat().st_mode)
+        except OSError:
+            prior_mode = None
     try:
         with tmp_path.open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, **dump_kwargs)
             f.write("\n")
+        if prior_mode is not None:
+            try:
+                os.chmod(tmp_path, prior_mode)
+            except OSError:
+                pass
         os.replace(tmp_path, p)
     finally:
         # Cleanup the tmp file if rename didn't consume it (e.g. on error).
@@ -1106,16 +1127,20 @@ def link_skill(skills_dir: os.PathLike[str] | str, target_path: os.PathLike[str]
     if IS_WINDOWS:
         raise OSError("Skill linking via symlink is not supported on Windows.")
     target = Path(target_path)
+    if not target.exists():
+        # Without this a typo plants a dangling symlink that `axt` itself later
+        # reports as a broken link, while `skill link` claims success.
+        raise ValueError(f"Path does not exist: {target}")
     skill_name = name or target.name
-    link_path = Path(skills_dir) / skill_name
     Path(skills_dir).mkdir(parents=True, exist_ok=True)
+    link_path = safe_child(skills_dir, skill_name)
     os.symlink(str(target), str(link_path))
 
 
 def unlink_skill(skills_dir: os.PathLike[str] | str, name: str) -> None:
     if IS_WINDOWS:
         raise OSError("Skill unlinking is not supported on Windows.")
-    full_path = Path(skills_dir) / name
+    full_path = safe_child(skills_dir, name)
     if not full_path.is_symlink():
         raise ValueError(f'"{name}" is not a symlink. Use rm to remove directories.')
     full_path.unlink()
@@ -2093,7 +2118,7 @@ def link_to_project(project_dir: os.PathLike[str] | str, item: VaultItem) -> Non
     sub = _type_to_dir(item.type)
     target_dir = Path(project_dir) / ".claude" / sub
     target_dir.mkdir(parents=True, exist_ok=True)
-    link_path = target_dir / item.name
+    link_path = safe_child(target_dir, item.name)
     _ensure_no_real_file(link_path, target_dir)
     os.symlink(item.path, link_path)
 
@@ -2108,7 +2133,7 @@ def unlink_from_project(project_dir: os.PathLike[str] | str, item: VaultItem) ->
     if item.type == "plugin":
         raise ValueError("Plugins use enabledPlugins, not symlinks.")
     sub = _type_to_dir(item.type)
-    link_path = Path(project_dir) / ".claude" / sub / item.name
+    link_path = safe_child(Path(project_dir) / ".claude" / sub, item.name)
     try:
         if link_path.is_symlink():
             link_path.unlink()
@@ -2127,7 +2152,7 @@ def link_to_global(global_dir: os.PathLike[str] | str, item: VaultItem) -> None:
     sub = _type_to_dir(item.type)
     target_dir = Path(global_dir) / sub
     target_dir.mkdir(parents=True, exist_ok=True)
-    link_path = target_dir / item.name
+    link_path = safe_child(target_dir, item.name)
     _ensure_no_real_file(link_path, target_dir)
     os.symlink(item.path, link_path)
 
@@ -2138,7 +2163,7 @@ def unlink_from_global(global_dir: os.PathLike[str] | str, item: VaultItem) -> N
     if item.type == "plugin":
         raise ValueError("Plugins use enabledPlugins, not symlinks.")
     sub = _type_to_dir(item.type)
-    link_path = Path(global_dir) / sub / item.name
+    link_path = safe_child(Path(global_dir) / sub, item.name)
     try:
         if link_path.is_symlink():
             link_path.unlink()
@@ -2610,6 +2635,45 @@ def _is_within_dir(path: Path, base: Path) -> bool:
         return False
 
 
+def mask_env(env: dict) -> dict[str, str]:
+    """Return `env` with every value replaced by a fixed redaction marker.
+
+    MCP server env blocks routinely hold API tokens. `mcp info` and the TUI
+    detail panel are exactly the surfaces shown during screen shares and pasted
+    into issues, so the values never belong on screen. Key names are kept —
+    knowing that `GITHUB_TOKEN` is configured is the diagnostic value; knowing
+    its contents is not.
+    """
+    return {str(k): "••••••" for k in (env or {})}
+
+
+def safe_child(base: os.PathLike[str] | str, name: str) -> Path:
+    """Return `<base>/<name>`, refusing any `name` that is not a plain child.
+
+    Extension names arrive from CLI flags (`skill link -n`), from
+    `.axt-profile.json`, and from vault items — all of which a user can hand-
+    edit. `Path(base) / name` happily accepts `../../pwn` or an absolute path
+    and silently escapes the directory axt manages, turning link/unlink into an
+    arbitrary symlink-drop and symlink-delete primitive (CWE-22).
+
+    A name is a single path component: no separators, no `.`/`..`, not
+    absolute, and it must land directly inside `base`.
+    """
+    if not name or name in (".", ".."):
+        raise ValueError(f"Invalid name: {name!r}")
+    if os.sep in name or (os.altsep and os.altsep in name) or "/" in name:
+        raise ValueError(f"Name must not contain a path separator: {name!r}")
+    if Path(name).is_absolute() or Path(name).anchor:
+        raise ValueError(f"Name must not be an absolute path: {name!r}")
+    base_path = Path(base)
+    child = base_path / name
+    # Compare parents, not the child itself: the child may be a symlink whose
+    # target is legitimately elsewhere (that is the whole point of the vault).
+    if child.parent.resolve() != base_path.resolve():
+        raise ValueError(f"Name escapes {base_path}: {name!r}")
+    return child
+
+
 def _safe_tar_extractall(tf, dest: Path) -> None:
     """Extract every member of `tf` into `dest`, refusing any member whose
     resolved path — or symlink/hardlink target — escapes `dest`. Guards against
@@ -2619,6 +2683,24 @@ def _safe_tar_extractall(tf, dest: Path) -> None:
     import tarfile
 
     dest = dest.resolve()
+    # Validate first, on every interpreter. The stdlib `data` filter keeps the
+    # extraction inside `dest`, but it *sanitizes* rather than refuses — an
+    # absolute member like `/abs/evil.txt` silently becomes `dest/abs/evil.txt`
+    # on 3.12+ while 3.9–3.11 rejects it. Same input, two behaviours. Checking
+    # up front makes a hostile archive an error everywhere; a legitimate
+    # GitHub tarball never carries absolute or escaping members.
+    for member in tf.getmembers():
+        name = member.name
+        if PurePosixPath(name).is_absolute() or ntpath.isabs(name):
+            raise RuntimeError(f"Unsafe path in tarball: {name!r}")
+        if not _is_within_dir(dest / name, dest):
+            raise RuntimeError(f"Unsafe path in tarball: {name!r}")
+        if member.issym() or member.islnk():
+            link_dest = (dest / name).parent / member.linkname
+            if not _is_within_dir(link_dest, dest):
+                raise RuntimeError(
+                    f"Unsafe link in tarball: {name!r} -> {member.linkname!r}"
+                )
     if getattr(tarfile, "data_filter", None) is not None:  # Python 3.12+
         try:
             tf.extractall(dest, filter="data")
@@ -2786,7 +2868,10 @@ def remove_marketplace(
     install_location = str(data[name].get("installLocation", ""))
     del data[name]
     write_json_atomic(km_path, data)
-    if install_location.startswith(str(marketplaces_dir)):
+    # `startswith` made `.../marketplaces-backup` look like a child of
+    # `.../marketplaces` and rmtree'd the user's sibling directory. Ownership is
+    # a path containment question, not a string-prefix one.
+    if install_location and _is_within_dir(Path(install_location), Path(marketplaces_dir)):
         shutil.rmtree(install_location, ignore_errors=True)
 
 
