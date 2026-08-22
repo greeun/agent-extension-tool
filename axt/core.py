@@ -2056,10 +2056,22 @@ def empty_profile() -> AxtProfile:
 
 
 def read_profile(project_dir: os.PathLike[str] | str) -> Optional[AxtProfile]:
+    """Parse `.axt-profile.json`, or None when the project has no profile.
+
+    A corrupt profile must NOT read as an empty one. The profile is the
+    declared set that `sync_project` reconciles against, so an empty read means
+    "nothing is declared" and every existing link is treated as an orphan and
+    removed. `None` (no file) and `{}` (broken file) have to stay distinct.
+    """
     p = Path(project_dir) / VAULT_PROFILE_NAME
     if not p.exists():
         return None
-    data = read_json(p, fallback={})
+    data, corrupt = read_json_checked(p, fallback={})
+    if corrupt:
+        raise CorruptSettingsError(
+            f"{p} is not valid JSON — refusing to act on it. "
+            f"Fix or remove the file, then retry."
+        )
     return AxtProfile.from_json(data)
 
 

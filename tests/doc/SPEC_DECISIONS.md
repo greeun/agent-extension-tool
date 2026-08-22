@@ -45,3 +45,30 @@ Phase B Agent 3 이 TC-CHAOS-018 을 `BLOCKED` 으로 표시하고 임의 판정
 ### 영향받은 TC
 - `TC-CHAOS-018` — BLOCKED 해제. 방향을 뒤집어 "dirty 트리에서도 upstream 정렬 성공 +
   실패 시 레지스트리 무손상"으로 작성한다
+
+---
+
+## SD-002 — `vault migrate` 는 원위치에 심볼릭 링크를 남기지 않는다
+
+**상태**: 결정 완료 (스토리 정정) · 2026-08-22
+
+### 충돌
+`tests/doc/user-stories.md` US-VLT01 AC1(정정 전)은 *"실체를 vault로 이동하고 원위치에 vault를 가리키는
+symlink를 만든다"* 고 규정했다. 구현은 `_move_path` 로 옮기기만 하고 심볼릭 링크를 만들지 않는다.
+
+### 조사 결과
+- `FEATURES.md` §1.10 은 *"`~/.claude/skills,commands,agents` → vault **이동**"* 이라고만 적는다.
+  심볼릭 링크를 남긴다는 서술은 어디에도 없다 — **AC1 은 내가 추론해 넣은 것**이다.
+- 기존 테스트 `test_migrate_to_vault_moves_global_items` 가
+  `assert not (global_dir / "skills" / "alpha").exists()` 로 **원위치에 아무것도 남지 않음**을
+  의도된 계약으로 고정하고 있다.
+- 설계도 일관된다: **vault = 보관, 링크 = 활성화**. 이주 후 활성화는 `link-global`(TUI `g`)이 담당한다.
+  `import`(TUI `i`)가 "원본 이동 + 원위치 symlink"인 것과 역할이 다르다 — 그 둘을 내가 뭉뚱그렸다.
+
+### 판정
+**구현이 옳고 내 스토리가 틀렸다.** US-VLT01 AC1 을 정정하고, 해당 chaos TC 의 단언을 뒤집는다.
+migrate 후 확장이 비활성이 되는 것은 버그가 아니라 의도된 2단계 워크플로다.
+
+### 영향받은 TC
+- `TC-CHAOS-011` — "이주 후 원위치 심링크" 단언 제거. 이 TC 의 실제 가치인
+  **"깨진 심링크 하나가 나머지 이주를 막지 않는다"** 는 그대로 유지한다.

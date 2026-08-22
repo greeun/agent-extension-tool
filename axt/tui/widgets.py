@@ -234,10 +234,24 @@ def fit_cells(text: str, width: int) -> str:
     return "".join(out_chars) + " " * max(0, width - used)
 
 
+# C0 controls + DEL, flattened to a space. A `\n` or `\r` inside drawn data
+# moves the cursor and shears every column to its right; `\t` jumps to a tab
+# stop the layout never accounted for. This data is not ours — it comes from
+# skill descriptions, hook commands, MCP argv and file paths — so the single
+# place every draw funnels through is where it gets neutralised.
+_CTRL_TRANSLATION = {c: " " for c in range(0x20)}
+_CTRL_TRANSLATION[0x7F] = " "
+
+
 def safe_addnstr(stdscr, y: int, x: int, text: str, max_w: int, attr: int = 0) -> None:
-    """addnstr that swallows boundary errors (cell at (h-1, w-1) raises in curses)."""
+    """addnstr that swallows boundary errors (cell at (h-1, w-1) raises in
+    curses) and strips row-breaking control characters from `text`."""
     if y < 0 or x < 0 or max_w <= 0:
         return
+    # Fast path: every glyph the TUI draws (box drawing, ●○▲▼, CJK) is
+    # printable, so the translate only runs on genuinely dirty data.
+    if not text.isprintable() and text != "":
+        text = text.translate(_CTRL_TRANSLATION)
     try:
         stdscr.addnstr(y, x, text, max_w, attr)
     except curses.error:

@@ -117,22 +117,29 @@ def _seed_git_marketplace(tmp_path: Path, km: Path, name: str = "x"):
 # ─── SC-CHAOS-001 — corrupt JSON ─────────────────────────────────────────────
 
 
-def test_truncated_settings_json_reads_empty_and_stays_writable(tmp_path):
-    """A half-written settings.json reads as {} and does not block later writes.
+def test_truncated_settings_json_reads_empty_and_refuses_to_overwrite(tmp_path):
+    """A half-written settings.json reads as {} but is not rewritten from it.
 
-    Prevents: a crash mid-write by another process permanently bricking every
-    axt command that touches settings. `read_json` is the single JSON entry
-    point, so this one fault is the root cause behind TC-CHAOS-003/004/005 too
+    Prevents: a crash mid-write by another process bricking every axt command
+    that touches settings — reads degrade so listing keeps working. Prevents
+    equally: the repair silently replacing the user's real settings with a
+    one-key document, since the write path cannot tell what was lost
     (US-SYS05 AC1).
     """
     # TC-CHAOS-002
     settings = tmp_path / "settings.json"
-    settings.write_text('{"enabledPlugins": {"alpha": tr')
+    original = '{"enabledPlugins": {"alpha": tr'
+    settings.write_text(original)
 
     assert axt.read_enabled_plugins(settings) == {}
 
-    axt.set_plugin_enabled(settings, "beta", True)
-    assert json.loads(settings.read_text()) == {"enabledPlugins": {"beta": True}}
+    # Fixed: this expected the write to succeed and yield
+    # {"enabledPlugins": {"beta": True}} — i.e. to discard whatever the file
+    # held. The confirmed contract is reads degrade / writes refuse; see
+    # tests/doc/TRIAGE_REPORT.md C-1.
+    with pytest.raises(axt.CorruptSettingsError):
+        axt.set_plugin_enabled(settings, "beta", True)
+    assert settings.read_text() == original, "the damaged file must stay recoverable"
 
 
 def test_corrupt_installed_plugins_lists_empty_and_tui_still_renders(tmp_path, monkeypatch):
@@ -209,8 +216,12 @@ def test_corrupt_project_profile_is_not_mistaken_for_an_empty_one(tmp_path, monk
     os.symlink(vault_skill, link)
     (proj / ".axt-profile.json").write_text('{"skills": [')
 
-    profile = axt.read_profile(proj)
-    assert profile in (None, axt.empty_profile())
+    # Fixed: this asserted read_profile may return None/empty for a corrupt
+    # file — the very confusion the test name forbids, since sync_project reads
+    # an empty profile as "nothing declared" and unlinks everything. The
+    # contract is that a corrupt profile is a distinct, loud signal.
+    with pytest.raises(axt.CorruptSettingsError):
+        axt.read_profile(proj)
 
     rc_status = axt.main(["project", "status"])
     capsys.readouterr()
@@ -313,16 +324,13 @@ def test_broken_symlinks_do_not_stop_the_rest_of_a_migration(tmp_path, monkeypat
         assert (vault / "commands" / name).is_file()
     assert (vault / "skills" / "dup-skill" / "SKILL.md").is_file()
 
-    # US-VLT01 AC1 also requires a symlink back to the vault at the original
-    # location. NOTE: this contradicts the existing
-    # tests/test_vault.py::test_migrate_to_vault_moves_global_items, which
-    # asserts the original path no longer exists. Story and regression test
-    # disagree — one of them has to move (cf. SPEC_DECISIONS SD-001).
-    left_behind = [n for n in ("ok-skill-a", "ok-skill-b")
-                   if not (claude_dir / "skills" / n).is_symlink()]
-    assert left_behind == [], (
-        f"migrate moved {left_behind} into the vault without leaving a symlink behind; "
-        "Claude Code stops finding them (US-VLT01 AC1)")
+    # Fixed: this asserted migrate leaves a symlink at the original path. It
+    # does not, by design — vault is storage and `link-global` is the separate
+    # activation step (leaving a symlink is `import`'s job, not migrate's). See
+    # tests/doc/SPEC_DECISIONS.md SD-002; the story was wrong, not the code.
+    for name in ("ok-skill-a", "ok-skill-b"):
+        assert not (claude_dir / "skills" / name).exists(), (
+            f"{name} should have been moved out of ~/.claude, not copied")
 
 
 # ─── SC-CHAOS-003 — missing ~/.claude ────────────────────────────────────────
@@ -369,7 +377,7 @@ def _empty_home(tmp_path: Path, monkeypatch) -> Path:
 
 
 def test_every_read_command_survives_a_missing_claude_dir(tmp_path, monkeypatch, capsys):
-    """All ten read-only commands exit 0 with an empty-state message.
+    """All ten read-only commands survive with an empty-state message.
 
     Prevents: a brand-new user's very first `axt <anything>` ending in a
     traceback, because `~/.claude` does not exist yet (US-SYS05 AC3).
@@ -385,7 +393,13 @@ def test_every_read_command_survives_a_missing_claude_dir(tmp_path, monkeypatch,
             failures.append(f"{' '.join(argv)}: raised {type(exc).__name__}: {exc}")
             continue
         cap = capsys.readouterr()
-        if rc != 0:
+        # Fixed: this required exit 0 from every command. `project status`
+        # deliberately exits 1 for "this project has no .axt-profile.json yet"
+        # — a distinct state a script can branch on, printed with the exact
+        # next step. That is surviving, which is what this test is about; the
+        # blanket exit-0 rule was the wrong way to express it.
+        allowed_rc = (0, 1) if argv == ["project", "status"] else (0,)
+        if rc not in allowed_rc:
             failures.append(f"{' '.join(argv)}: exit {rc} (stderr={cap.err.strip()!r})")
         if "Traceback" in cap.err:
             failures.append(f"{' '.join(argv)}: traceback on stderr")

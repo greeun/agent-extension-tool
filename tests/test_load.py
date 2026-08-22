@@ -861,9 +861,18 @@ def test_two_thousand_character_fields_do_not_break_the_layout(tmp_path, monkeyp
     by_y: dict[int, list[int]] = {}
     for y, x, *_ in scr.calls:
         by_y.setdefault(y, []).append(x)
-    row_shapes = [tuple(v) for v in by_y.values() if len(v) > 5]
-    assert len(set(row_shapes)) == 1, (
-        f"long values shifted later columns: {sorted(set(row_shapes))[:2]}")
+    # Fixed: this compared every row with >5 draws, which swept in the tab bar
+    # (its version badge is drawn first, at x=127), the filter bar and the
+    # detail panel — rows that legitimately have their own shapes. The property
+    # under test is that the *table body* keeps its column x positions
+    # regardless of how long a cell's content is, so compare the rows that
+    # share the table's column count.
+    from collections import Counter
+    shapes = [tuple(v) for v in by_y.values() if len(v) > 5]
+    body_len = Counter(len(sh) for sh in shapes).most_common(1)[0][0]
+    body_shapes = {sh for sh in shapes if len(sh) == body_len}
+    assert len(body_shapes) == 1, (
+        f"long values shifted later columns: {sorted(body_shapes)[:2]}")
 
     # Detail panel + search stay well behaved on the oversized row.
     axt.handle_extensions_input(state, ord("\t"))

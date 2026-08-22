@@ -565,7 +565,14 @@ def cli_project_remove(args) -> int:
 
 
 def cli_project_sync(args) -> int:
-    result = sync_project(Path.cwd(), PATHS.vault)
+    try:
+        result = sync_project(Path.cwd(), PATHS.vault)
+    except CorruptSettingsError as e:
+        # sync reconciles links against the profile's declared set. An
+        # unreadable profile would read as "nothing declared" and unlink every
+        # existing link as an orphan, so refuse and leave the tree alone.
+        print(_red(f"✗ {e}"))
+        return 1
     for entry in result.linked:
         print(_green(f"  + {entry}"))
     for entry in result.unlinked:
@@ -579,7 +586,13 @@ def cli_project_sync(args) -> int:
 
 def cli_project_status(args) -> int:
     cwd = Path.cwd()
-    profile = read_profile(cwd)
+    try:
+        profile = read_profile(cwd)
+    except CorruptSettingsError as e:
+        # `status` reports state; a broken profile IS the state worth reporting,
+        # so say so and still succeed rather than failing the read-only command.
+        print(_red(f"✗ {e}"))
+        return 0
     if profile is None:
         print("No .axt-profile.json found. Run `axt project init` first.")
         return 1
@@ -1129,9 +1142,13 @@ def cli_update(args) -> int:
             print(_dim("Aborted."))
             return 1
     results = apply_updates(targets, no_sync=args.no_sync)
+    # An apply that failed must not exit 0. Per-item failures still do not stop
+    # the rest (bulk update keeps going), but a CI step running `axt update
+    # --apply` has to be able to tell that something did not update.
+    failed = [r for r in results if r.error]
     if args.json:
         print(json.dumps([_result_json(r) for r in results], indent=2))
-        return 0
+        return 1 if failed else 0
     for r in results:
         if r.error:
             print(_red(f"✗ {r.item_type}:{r.name} — {r.error}"))
@@ -1139,7 +1156,9 @@ def cli_update(args) -> int:
             print(_green(f"✓ {r.item_type}:{r.name}") + _dim(f" {r.before} → ") + _cyan(r.after))
         else:
             print(_green(f"✓ {r.item_type}:{r.name}") + _dim(f" {r.after} ({r.action})"))
-    return 0
+    if failed:
+        print(_red(f"{len(failed)} of {len(results)} failed."), file=sys.stderr)
+    return 1 if failed else 0
 
 
 # ─── Argparse wiring ─────────────────────────────────────────────────────────

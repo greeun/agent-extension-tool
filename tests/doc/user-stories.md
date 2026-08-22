@@ -45,7 +45,9 @@ axt(Agent eXtension Tool)가 제공해야 할 가치를 사용자 관점에서 �
 - **I want** `~/.claude/{skills,commands,agents}` 에 흩어진 실체를 `~/.axt/vault/` 로 옮기고 원위치에 심볼릭 링크를 남기고
 - **So that** Claude Code 동작을 깨지 않으면서 확장을 한곳에서 버전 관리할 수 있다
 - **인수 조건**
-  - AC1 `axt vault migrate` 는 실체를 vault로 **이동**하고 원위치에 vault를 가리키는 symlink를 만든다
+  - AC1 `axt vault migrate` 는 실체를 vault로 **이동**한다. 원위치에는 아무것도 남기지 않는다 —
+    vault는 보관소이고 활성화는 `link-global`(TUI `g`)이 담당하는 별도 단계다
+    (원위치 symlink를 남기는 것은 `import`/TUI `i` 쪽이다. 경위는 [[SPEC_DECISIONS]] SD-002)
   - AC2 대상이 사라진 broken symlink는 **이동하지 않고** `broken` 으로만 리포트하며 **삭제하지 않는다**
   - AC3 결과는 moved / skipped / broken / errors 건수로 보고된다
   - AC4 이미 vault에 있는 항목은 skipped로 분류되며 중복 이동하지 않는다
