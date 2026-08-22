@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
@@ -28,6 +29,27 @@ def _run(argv: list[str]) -> tuple[int, str, str]:
 def test_build_parser_returns_axt_program():
     parser = axt.build_parser()
     assert parser.prog == "axt"
+
+
+def test_version_string_is_declared_once_per_place_and_they_agree():
+    """The version literal is repeated in pyproject.toml and in three modules
+    (the wildcard-import layering gives each one its own `__version__`). A
+    bump that misses one ships a CLI or tab bar showing the old number, so
+    pin them together here rather than finding out at release time."""
+    root = Path(axt.__file__).resolve().parent.parent
+    declared = {}
+    for rel, pattern in (
+        ("pyproject.toml", r'^version = "([^"]+)"'),
+        ("axt/__init__.py", r'^__version__ = "([^"]+)"'),
+        ("axt/core.py", r'^__version__ = "([^"]+)"'),
+        ("axt/tui/widgets.py", r'^__version__ = "([^"]+)"'),
+    ):
+        text = (root / rel).read_text(encoding="utf-8")
+        m = re.search(pattern, text, re.MULTILINE)
+        assert m, f"{rel}: no version literal found"
+        declared[rel] = m.group(1)
+    assert len(set(declared.values())) == 1, f"version drift: {declared}"
+    assert declared["axt/__init__.py"] == axt.__version__
 
 
 def test_version_flag():
