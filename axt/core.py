@@ -1106,6 +1106,11 @@ class SkillInfo:
     target: Optional[str] = None
     plugin: Optional[str] = None
     version: str = ""
+    # Captured by the same frontmatter read that yields `version`, so the
+    # context collector does not have to open SKILL.md a second time.
+    description: str = ""
+    # Frontmatter `name:`, which may differ from the directory name.
+    frontmatter_name: str = ""
 
 
 def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Optional[str] = None) -> list[SkillInfo]:
@@ -1140,7 +1145,9 @@ def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Op
             skill_root = entry.resolve() if is_symlink else entry
         except OSError:
             skill_root = entry
-        version = _read_version_for_item(skill_root, "skill") if skill_root.is_dir() else ""
+        version, fm_name, fm_desc = (
+            _read_item_frontmatter(skill_root, "skill") if skill_root.is_dir()
+            else ("", "", ""))
         out.append(
             SkillInfo(
                 name=display_name,
@@ -1150,6 +1157,8 @@ def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Op
                 target=target,
                 plugin=plugin,
                 version=version,
+                description=fm_desc,
+                frontmatter_name=fm_name,
             )
         )
     return out
@@ -2057,28 +2066,49 @@ def parse_yaml_version(frontmatter: str) -> str:
     return ""
 
 
-def _read_version(file_path: os.PathLike[str] | str) -> str:
+def _read_frontmatter_fields(file_path: os.PathLike[str] | str) -> tuple[str, str, str]:
+    """Return (version, name, description) from one read of `file_path`.
+
+    The frontmatter block is already parsed here to get the version, so
+    handing back the other two fields costs nothing. Keeping only the version
+    is what forced `collect_context_sources` to open every SKILL.md a second
+    time just to recover the description.
+    """
     p = Path(file_path)
     try:
         content = p.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return ""
+        return "", "", ""
     content = content.replace("\r\n", "\n").replace("\r", "\n")
     m = _FRONTMATTER_BLOCK_RE.match(content)
     if not m:
-        return ""
-    return parse_yaml_version(m.group(1))
+        return "", "", ""
+    body = m.group(1)
+    nm = _FM_NAME_RE.search(body)
+    return (parse_yaml_version(body),
+            nm.group(1).strip().strip('"') if nm else "",
+            parse_yaml_description(body))
+
+
+def _read_version(file_path: os.PathLike[str] | str) -> str:
+    return _read_frontmatter_fields(file_path)[0]
+
+
+def _read_item_frontmatter(full_path: Path, item_type: str) -> tuple[str, str, str]:
+    """Skills probe `index.md` then `SKILL.md`; commands/agents read the file
+    itself. Returns (version, name, description)."""
+    if item_type == "skill":
+        for candidate in ("index.md", "SKILL.md"):
+            fields = _read_frontmatter_fields(full_path / candidate)
+            if any(fields):
+                return fields
+        return "", "", ""
+    return _read_frontmatter_fields(full_path)
 
 
 def _read_version_for_item(full_path: Path, item_type: str) -> str:
     """Skills probe `index.md` then `SKILL.md`; commands/agents read the file itself."""
-    if item_type == "skill":
-        for candidate in ("index.md", "SKILL.md"):
-            v = _read_version(full_path / candidate)
-            if v:
-                return v
-        return ""
-    return _read_version(full_path)
+    return _read_item_frontmatter(full_path, item_type)[0]
 
 
 # ─── Profile read/write ──────────────────────────────────────────────────────
@@ -4725,17 +4755,11 @@ def collect_context_sources(
             if skill_root in seen_skill_roots:
                 continue
             seen_skill_roots.add(skill_root)
-            skill_md = _safe_read_text(Path(skill.path) / "SKILL.md")
-            name = skill.name
-            description = ""
-            if skill_md:
-                fm = _FRONTMATTER_BLOCK_RE.match(skill_md.replace("\r\n", "\n"))
-                if fm:
-                    body = fm.group(1)
-                    nm = _FM_NAME_RE.search(body)
-                    if nm:
-                        name = nm.group(1).strip().strip('"')
-                    description = parse_yaml_description(body)
+            # Both fields came from the frontmatter read `list_all_skills`
+            # already did; re-opening SKILL.md here doubled the I/O of the
+            # Context tab's first paint (400 reads at 200 skills).
+            name = skill.frontmatter_name or skill.name
+            description = skill.description
             text = f"- {name}: {description}"
             sources.append(_make_src(skill.name, "skills", skill.path, text, actionable=True,
                                      scope=_scope_of_source(skill.source)))
