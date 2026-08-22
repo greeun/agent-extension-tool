@@ -1027,19 +1027,48 @@ def test_market_sync_unknown_name_errors_via_main(tmp_path: Path, monkeypatch):
     assert "✗" in err
 
 
-def test_plan_overview_over_budget_warns(tmp_path: Path, monkeypatch):
-    """When projected cost exceeds the plan budget, overview shows the overage
-    warning branch."""
-    big = axt.UnifiedUsageEntry(
+def _plan_overview_out(tmp_path: Path, monkeypatch, *, output_tokens: int,
+                       elapsed: int, total: int) -> str:
+    """Run `plan overview` over one synthetic usage entry with the billing
+    period pinned.
+
+    The projection is `cost / elapsed * total`, so leaving the real clock in
+    play makes the over/under-budget branch depend on today's day of month —
+    and on the first day of a cycle `elapsed` is 0 and the projection
+    collapses to $0. Pinning the period is what makes these assertions mean
+    what they say."""
+    entry = axt.UnifiedUsageEntry(
         platform="claude", model="claude-opus-4-7", timestamp="2026-05-01T00:00:00Z",
-        session_id="s", project_path="p", input_tokens=0, output_tokens=5_000_000,
+        session_id="s", project_path="p", input_tokens=0, output_tokens=output_tokens,
         cache_write_tokens=0, cache_read_tokens=0)
-    monkeypatch.setattr("axt.load_unified_usage", lambda **kw: [big])
+    monkeypatch.setattr("axt.load_unified_usage", lambda **kw: [entry])
     monkeypatch.setattr("axt.AXT_CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr("axt.PATHS", axt.Paths(projects=tmp_path / "projects"))
+    monkeypatch.setattr("axt.cli.get_days_in_billing_period",
+                        lambda start, now=None: (elapsed, total))
     code, out, _ = _run(["plan", "overview"])
     assert code == 0
+    return out
+
+
+def test_plan_overview_over_budget_warns(tmp_path: Path, monkeypatch):
+    """When projected cost exceeds the plan budget, overview shows the overage
+    warning branch. 5M opus output tokens = $125 over 10 of 30 days, so the
+    projection is $375 against the $200 max-20x budget."""
+    out = _plan_overview_out(tmp_path, monkeypatch,
+                             output_tokens=5_000_000, elapsed=10, total=30)
     assert "초과" in out  # over-budget warning
+    assert "$375" in out
+    assert "(10일 경과)" in out
+
+
+def test_plan_overview_under_budget_has_no_warning(tmp_path: Path, monkeypatch):
+    """The other side of the same branch: the same $125 spread over 25 of 30
+    days projects to $150, under budget, so no overage marker."""
+    out = _plan_overview_out(tmp_path, monkeypatch,
+                             output_tokens=5_000_000, elapsed=25, total=30)
+    assert "초과" not in out
+    assert "$150" in out
 
 
 def test_plugin_info_enabled_and_disabled_states(tmp_path: Path, monkeypatch):
