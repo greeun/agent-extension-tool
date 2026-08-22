@@ -252,7 +252,11 @@ Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) 
 - 타입: `MarketplaceSource` (github/git/directory union), `MarketplaceInfo`, `SyncResult`, `VersionInfo`
 - `parse_marketplace_source`, `list_marketplaces`, `add_marketplace`, `remove_marketplace`, `sync_marketplace`
 - 버전: `get_local_version`, `get_marketplace_version`, `read_sha_file`, `download_and_extract_tarball`
-- 외부: `git clone --depth 1`, `git pull --ff-only`, `git fetch`, `git rev-parse`, `tar xzf`
+- 외부: `git clone --depth 1`, `git fetch`, `git reset --hard @{u}`, `git rev-parse`, `tar xzf`
+  - sync는 `pull --ff-only`가 아니라 **fetch + reset --hard**를 쓴다. 설치 디렉터리는 사용자
+    작업 공간이 아니라 **관리 대상 캐시**이며, Claude Code 자체 업데이터가 커밋 없이 파일을
+    덮어써 트리가 상시 dirty가 된다 → `--ff-only`가 머지를 거부해 sync가 깨졌던 회귀 대응
+    (v1.11.0, `test_sync_marketplace_git_dirty_tree_hard_syncs`). **로컬 수정은 보존되지 않는다.**
 - 데이터: `known_marketplaces.json`, `.gcs-sha` (GitHub SHA)
 
 ### 3.6 plugin (Section 4)
