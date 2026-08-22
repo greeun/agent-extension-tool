@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "axt"
-version = "1.12.0"
+version = "1.13.0"
 description = "Agent eXtension Tool — CLI + TUI for Claude Code extensions, plugins, skills, MCP servers, hooks, agents, and usage tracking"
 readme = "README.md"
 requires-python = ">=3.9"
