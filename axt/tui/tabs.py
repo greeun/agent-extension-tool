@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import curses
 import os
+import re
 import sys
 import threading
 import time
@@ -94,7 +95,11 @@ class TuiState:
     vault_items: list[VaultItem] = field(default_factory=list)
     vault_selected: int = 0
     vault_filter: str = "all"        # "all" | "skill" | "command" | "agent"
-    vault_sort: str = "name"         # "name" | "type" | "added" | "updated" | "project" | "global"
+    vault_sort: str = "name"         # active column key — see _SORT_COLUMNS["vault"]
+    # Sort direction for `vault_sort`. None = that column's natural direction
+    # (`desc_first` in _SORT_COLUMNS), so setting only the key still yields the
+    # sensible order. `s` / `S` write an explicit bool.
+    vault_sort_desc: Optional[bool] = None
     vault_search: str = ""
     vault_searching: bool = False    # True while user is typing in the `/` prompt
     vault_pending_project: set[str] = field(default_factory=set)   # item names toggled but not applied
@@ -117,8 +122,11 @@ class TuiState:
     ext_cache: dict[str, Any] = field(default_factory=dict)
     ext_selected: dict[str, int] = field(default_factory=dict)
     # Active sort key per non-vault sub-tab (mirrors `vault_sort`). Empty →
-    # the first entry of that sub-tab's `_SUBTAB_SORT_SPECS` is the default.
+    # the first column of that sub-tab's `_SORT_COLUMNS` is the default.
     ext_sort: dict[str, str] = field(default_factory=dict)
+    # Sort direction per non-vault sub-tab. A missing entry means "this
+    # column's natural direction" (mirrors `vault_sort_desc`).
+    ext_sort_desc: dict[str, bool] = field(default_factory=dict)
     ext_detail_focused: bool = False  # Tab → focus the bottom detail panel (plugins/mcp/hooks)
     ext_detail_scroll: int = 0
     ext_search: dict[str, str] = field(default_factory=dict)  # applied `/` query per sub-tab
@@ -196,21 +204,8 @@ class TuiState:
 
 
 _VAULT_FILTERS = ("all", "skill", "command", "agent")
-# Cycle order follows the table column layout (Name → Type → Proj → Glob →
-# Used), then the two column-less timestamp sorts last.
-_VAULT_SORTS = ("name", "type", "project", "global", "used", "added", "updated")
-
-# Active sort key → (table column it annotates, direction glyph ▲ asc / ▼ desc).
-# Lets the Vault table header show which column the list is sorted by. The two
-# timestamp sorts ("added"/"updated") have no dedicated column, so they mark
-# nothing here — the title bar's `sort=` text still names them.
-_VAULT_SORT_MARK = {
-    "name": ("name", "▲"),
-    "type": ("type", "▲"),
-    "project": ("project", "▲"),
-    "global": ("global", "▲"),
-    "used": ("used", "▼"),
-}
+# Vault's sort cycle and its per-column ▲/▼ mark live in _SORT_COLUMNS["vault"]
+# alongside every other sub-tab's (see `_VAULT_SORTS` there for the key order).
 
 # Seconds after which `state.status` auto-clears so shortcut hints reappear.
 STATUS_TIMEOUT_S: float = 5.0
@@ -805,26 +800,7 @@ def _vault_filtered(state: TuiState) -> list[VaultItem]:
     if state.vault_search:
         q = state.vault_search.lower()
         items = [i for i in items if q in i.name.lower()]
-    # Sort.
-    if state.vault_sort == "name":
-        items = sorted(items, key=lambda i: i.name)
-    elif state.vault_sort == "type":
-        items = sorted(items, key=lambda i: (i.type, i.name))
-    elif state.vault_sort == "added":
-        items = sorted(items, key=lambda i: i.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    elif state.vault_sort == "updated":
-        items = sorted(items, key=lambda i: i.updated_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    elif state.vault_sort == "project":
-        items = sorted(items, key=lambda i: (not i.is_linked, i.name))
-    elif state.vault_sort == "global":
-        items = sorted(items, key=lambda i: (not i.is_global_linked, i.name))
-    elif state.vault_sort == "used":
-        # Most-used first (descending). Items with no scan data tie at 0.
-        def _used_count(it: VaultItem) -> int:
-            entry = state.vault_usage_index.get(f"{it.type}:{it.name}")
-            return len(entry.projects) if entry else 0
-        items = sorted(items, key=lambda i: (-_used_count(i), i.name))
-    return items
+    return _apply_sort(state, "vault", items)
 
 
 def _fmt_date(d: Optional[datetime]) -> str:
@@ -886,7 +862,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     title_parts = [
         f" Vault  ({len(state.vault_items)} items)",
         f"filter={state.vault_filter}",
-        f"sort={state.vault_sort}",
+        f"sort={subtab_sort_label(state, 'vault')}",
         scan_label,
     ]
     if state.vault_search:
@@ -955,22 +931,18 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # subtract a few more cells of safety so wrap can't eat the last column.
     cols_fixed = no_w + ver_w + type_w + proj_w + glob_w + used_w
     name_w = max(10, table_w - cols_fixed - (4 + 2 * 7) - 4)
-    # Append a direction arrow to the header of the column the list is sorted by
-    # (each fixed column has +2 cells of slack, so the glyph never shifts data).
-    mark_col, mark_glyph = _VAULT_SORT_MARK.get(state.vault_sort, (None, ""))
-
-    def _lbl(key: str, text: str) -> str:
-        return f"{text} {mark_glyph}" if key == mark_col else text
-
     columns = [
         TableColumn("no", "#", no_w),
-        TableColumn("name", _lbl("name", "Name"), name_w),
+        TableColumn("name", "Name", name_w),
         TableColumn("ver", "Ver", ver_w),
-        TableColumn("type", _lbl("type", "Type"), type_w),
-        TableColumn("project", _lbl("project", "Proj"), proj_w),
-        TableColumn("global", _lbl("global", "Glob"), glob_w),
-        TableColumn("used", _lbl("used", "Used"), used_w),
+        TableColumn("type", "Type", type_w),
+        TableColumn("project", "Proj", proj_w),
+        TableColumn("global", "Glob", glob_w),
+        TableColumn("used", "Used", used_w),
     ]
+    # Append a direction arrow to the header of the column the list is sorted by
+    # (each fixed column has +2 cells of slack, so the glyph never shifts data).
+    columns = _mark_sorted_column(state, "vault", columns)
     rows: list[dict[str, str]] = []
     # The leftmost ■/□ prefix = Space selection (bulk-unlink marks). Project
     # link state lives in the Proj column (●/○ + pending *), not here.
@@ -1167,9 +1139,13 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         state.vault_filter = _VAULT_FILTERS[(i + 1) % len(_VAULT_FILTERS)]
         state.vault_selected = 0
     elif key == ord("s"):
-        i = _VAULT_SORTS.index(state.vault_sort)
-        state.vault_sort = _VAULT_SORTS[(i + 1) % len(_VAULT_SORTS)]
-        state.vault_selected = 0
+        # Next sort column, in table order plus the column-less Added/Updated.
+        _cycle_sort_column(state, "vault")
+        return f"Sort: {subtab_sort_label(state, 'vault')}"
+    elif key == ord("S"):
+        # Flip the active column ▲ ↔ ▼.
+        _toggle_sort_direction(state, "vault")
+        return f"Sort: {subtab_sort_label(state, 'vault')}"
     elif key == ord("/"):
         # Enter search-input mode.
         state.vault_searching = True
@@ -1315,7 +1291,7 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
             return f"Migrated: {counts}"
         except OSError as e:
             return f"Migrate failed: {e}"
-    elif key == ord("S"):
+    elif key == ord("y"):
         try:
             result = sync_project(Path.cwd(), PATHS.vault)
             _vault_load(state)
@@ -2408,7 +2384,7 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
 
 
 # `s`-cycle sort definitions for the Project sub-tab's column headers, mirroring
-# the Extensions sub-tabs' _SUBTAB_SORT_SPECS (same (key, keyfunc, reverse,
+# the Extensions sub-tabs' _SORT_COLUMNS (same (key, keyfunc, reverse,
 # marked_col, glyph) shape — see that comment for the field meanings). "tokens"
 # is the default so the list opens biggest-consumer-first; "pct" is omitted
 # because percentage is a fixed linear scaling of tokens (same total for every
@@ -2844,65 +2820,290 @@ def _lc(v: Any) -> str:
 #   (key, keyfunc, reverse, marked_col, glyph)
 # where `marked_col` is the TableColumn.key whose header gets the ▲/▼ `glyph`
 # (the visible "sorted by this column" cue), or None for no column mark.
-_SortSpec = tuple[str, Callable[[Any], Any], bool, Optional[str], str]
-_SUBTAB_SORT_SPECS: dict[str, tuple[_SortSpec, ...]] = {
-    "plugins": (
-        ("name",    lambda p: _lc(p.name),                    False, "name",    "▲"),
-        ("version", lambda p: (_lc(p.version), _lc(p.name)),  False, "version", "▲"),
-        ("market",  lambda p: (_lc(p.marketplace), _lc(p.name)), False, "market", "▲"),
+# ─── Per-column sort (shared by every Extensions sub-tab) ────────────────────
+
+# `_SORT_COLUMNS` is the single source of truth for the `s` / `S` sort cycle,
+# the ▲/▼ header mark, and the status-bar label. Each entry is
+#
+#   (key, marked_col, desc_first, keybuilder)
+#
+#   key         stable id for the column — equal to the TableColumn.key when
+#               the column is rendered ("added"/"updated" on Vault sort real
+#               data that has no column of its own),
+#   marked_col  TableColumn.key whose header carries the ▲/▼ glyph, or None,
+#   desc_first  the column's natural first direction: False for text columns
+#               (A→Z), True for recency/count columns (newest / most first),
+#   keybuilder  (state, sub, data) -> keyfunc(item). Handing the builder the
+#               whole list up front lets the state- and filesystem-backed
+#               columns (Vault / Proj / Glob / Upd) resolve each row's cell
+#               exactly once instead of once per comparison.
+#
+# Entries follow the rendered column order, so `s` walks the table left to
+# right. The `#` column is deliberately absent: it holds the row's position in
+# the current order, so sorting by it could never reorder anything. Columns
+# that are constant for a whole sub-tab are omitted for the same reason (see
+# the Vault-column note on plugins/mcp/hooks below).
+_SortCol = tuple[str, Optional[str], bool, Callable[..., Callable[[Any], Any]]]
+
+_DATE_MIN = datetime.min.replace(tzinfo=timezone.utc)
+
+# Rendered glyph → ascending rank, so a status column sorts by what the row
+# actually shows and "on" states come first.
+_ON_RANK = {"●": 0, "✓": 0, "○": 1, "·": 2, "─": 3}
+_UPD_RANK = {"↑": 0, "!": 1, "…": 2, "·": 3, "─": 4}
+
+
+def _ver_key(v: Optional[str]) -> tuple:
+    """Numeric-aware version key so 1.10.0 sorts after 1.9.0 (plain text
+    comparison gets that backwards). Non-numeric segments fall back to their
+    lowercase text, and a missing version sorts last in ascending order."""
+    text = (v or "").strip().lstrip("vV")
+    if not text or text in ("—", "─"):
+        return (1,)
+    parts = [
+        (0, int(chunk), "") if chunk.isdigit() else (1, 0, chunk.lower())
+        for chunk in re.split(r"[._\-+]", text)
+    ]
+    return (0, tuple(parts))
+
+
+def _by(fn: Callable[[Any], Any]):
+    """Keybuilder for a column whose value comes straight off the item."""
+    return lambda state, sub, data: fn
+
+
+def _by_state(make: Callable[[TuiState, str], Callable[[Any], Any]]):
+    """Keybuilder for a column that needs `state`. `make` runs once per sort,
+    so any lookup table it builds is shared by every comparison."""
+    return lambda state, sub, data: make(state, sub)
+
+
+def _by_glyph(cellfn: Callable[[TuiState, str, Any], str], ranks: dict[str, int]):
+    """Keybuilder for a status column: rank each row by the glyph the renderer
+    would draw for it. `cellfn` runs once per item (some cells stat the
+    filesystem or read settings), never inside the comparison."""
+    def build(state: TuiState, sub: str, data: list):
+        rank = {id(i): ranks.get(cellfn(state, sub, i), 99) for i in data}
+        return lambda item: rank.get(id(item), 99)
+    return build
+
+
+def _by_scope_glyph(scope: str):
+    """Keybuilder for the Proj / Glob columns. Shares `_scope_cell` with the
+    renderer, so the order can never drift from the glyphs on screen."""
+    def build(state: TuiState, sub: str, data: list):
+        ctx = _scope_ctx(state, sub)
+        rank = {id(i): _ON_RANK.get(_scope_cell(sub, i, scope, ctx), 99) for i in data}
+        return lambda item: rank.get(id(item), 99)
+    return build
+
+
+# Thin indirections so the spec table below can name cell functions that this
+# module defines further down (the table is built at import time; these defer
+# the lookup to call time).
+def _vault_glyph(state: TuiState, sub: str, item: Any) -> str:
+    return _vault_cell(sub, item)
+
+
+def _upd_glyph(state: TuiState, sub: str, item: Any) -> str:
+    return _upd_cell(state, sub, item)
+
+
+def _vault_used_key(state: TuiState, sub: str):
+    """Project count backing the Vault `Used` column (0 when unscanned)."""
+    index = state.vault_usage_index
+
+    def keyfn(item: Any) -> int:
+        entry = index.get(f"{item.type}:{item.name}") if index else None
+        return len(entry.projects) if entry else 0
+    return keyfn
+
+
+_SORT_COLUMNS: dict[str, tuple[_SortCol, ...]] = {
+    "vault": (
+        ("name",    "name",    False, _by(lambda i: _lc(i.name))),
+        ("ver",     "ver",     False, _by(lambda i: _ver_key(i.version))),
+        ("type",    "type",    False, _by(lambda i: _lc(i.type))),
+        ("project", "project", False, _by(lambda i: not i.is_linked)),
+        ("global",  "global",  False, _by(lambda i: not i.is_global_linked)),
+        ("used",    "used",    True,  _by_state(_vault_used_key)),
+        # No column of their own — the title bar's `sort=` text names them.
+        ("added",   None,      True,  _by(lambda i: i.created_at or _DATE_MIN)),
+        ("updated", None,      True,  _by(lambda i: i.updated_at or _DATE_MIN)),
     ),
     "skills": (
-        ("name",   lambda s: _lc(s.name),                     False, "name",   "▲"),
-        ("source", lambda s: (_lc(s.source), _lc(s.name)),    False, "source", "▲"),
-        ("type",   lambda s: (s.is_symlink, _lc(s.name)),     False, "type",   "▲"),
+        ("name",   "name",   False, _by(lambda s: _lc(s.name))),
+        ("ver",    "ver",    False, _by(lambda s: _ver_key(s.version))),
+        ("vault",  "vault",  False, _by_glyph(_vault_glyph, _ON_RANK)),
+        ("proj",   "proj",   False, _by_scope_glyph("proj")),
+        ("glob",   "glob",   False, _by_scope_glyph("glob")),
+        ("upd",    "upd",    False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("source", "source", False, _by(lambda s: _lc(s.source))),
+        ("type",   "type",   False, _by(lambda s: s.is_symlink)),   # dir before symlink
+        ("path",   "path",   False, _by(lambda s: _lc(s.target or s.path))),
     ),
     "commands": (
-        ("name",   lambda c: _lc(c.name),                     False, "name",   "▲"),
-        ("source", lambda c: (_lc(c.source), _lc(c.name)),    False, "source", "▲"),
+        ("name",   "name",   False, _by(lambda c: _lc(c.name))),
+        ("ver",    "ver",    False, _by(lambda c: _ver_key(c.version))),
+        ("vault",  "vault",  False, _by_glyph(_vault_glyph, _ON_RANK)),
+        ("proj",   "proj",   False, _by_scope_glyph("proj")),
+        ("glob",   "glob",   False, _by_scope_glyph("glob")),
+        ("upd",    "upd",    False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("source", "source", False, _by(lambda c: _lc(c.source))),
+        ("desc",   "desc",   False, _by(lambda c: _lc(c.description))),
     ),
     "agents": (
-        ("name",   lambda a: _lc(a.name),                     False, "name",   "▲"),
-        ("source", lambda a: (_lc(a.source), _lc(a.name)),    False, "source", "▲"),
+        ("name",   "name",   False, _by(lambda a: _lc(a.name))),
+        ("ver",    "ver",    False, _by(lambda a: _ver_key(a.version))),
+        ("vault",  "vault",  False, _by_glyph(_vault_glyph, _ON_RANK)),
+        ("proj",   "proj",   False, _by_scope_glyph("proj")),
+        ("glob",   "glob",   False, _by_scope_glyph("glob")),
+        ("upd",    "upd",    False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("source", "source", False, _by(lambda a: _lc(a.source))),
+        ("desc",   "desc",   False, _by(lambda a: _lc(a.description))),
     ),
     "mcp": (
-        ("name",      lambda s: _lc(s.name),                       False, "name",      "▲"),
-        ("scope",     lambda s: (_lc(s.scope), _lc(s.name)),       False, "scope",     "▲"),
-        ("transport", lambda s: (_lc(s.transport), _lc(s.name)),   False, "transport", "▲"),
+        # The Vault column is `─` for every MCP row (the vault stores only
+        # skills/commands/agents), so it is left out of the cycle rather than
+        # spending two `s` presses on an order that cannot change.
+        ("name",      "name",      False, _by(lambda s: _lc(s.name))),
+        ("ver",       "ver",       False, _by(lambda s: _ver_key(getattr(s, "version", "")))),
+        ("proj",      "proj",      False, _by_scope_glyph("proj")),
+        ("glob",      "glob",      False, _by_scope_glyph("glob")),
+        ("upd",       "upd",       False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("on",        "on",        False, _by(lambda s: bool(s.disabled))),
+        ("scope",     "scope",     False, _by(lambda s: _lc(s.scope))),
+        ("transport", "transport", False, _by(lambda s: _lc(s.transport))),
+        ("detail",    "detail",    False, _by(lambda s: _lc(_mcp_detail_text(s)))),
     ),
     "hooks": (
-        ("event",  lambda h: (_lc(h.event), _lc(h.type)),     False, "event",  "▲"),
-        ("type",   lambda h: (_lc(h.type), _lc(h.event)),     False, "type",   "▲"),
-        ("source", lambda h: (_lc(h.source), _lc(h.event)),   False, "source", "▲"),
+        # Vault column omitted for the same reason as MCP (always `─`).
+        ("event",  "event",  False, _by(lambda h: _lc(h.event))),
+        ("ver",    "ver",    False, _by(lambda h: _ver_key(h.version))),
+        ("proj",   "proj",   False, _by_scope_glyph("proj")),
+        ("glob",   "glob",   False, _by_scope_glyph("glob")),
+        ("upd",    "upd",    False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("type",   "type",   False, _by(lambda h: _lc(h.type))),
+        ("source", "source", False, _by(lambda h: _lc(h.source))),
+        ("detail", "detail", False, _by(lambda h: _lc(get_hook_detail(h)))),
+    ),
+    "plugins": (
+        # Vault column omitted for the same reason as MCP (always `─`).
+        ("name",    "name",    False, _by(lambda p: _lc(p.name))),
+        ("version", "version", False, _by(lambda p: _ver_key(p.version))),
+        ("proj",    "proj",    False, _by_scope_glyph("proj")),
+        ("glob",    "glob",    False, _by_scope_glyph("glob")),
+        ("upd",     "upd",     False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("market",  "market",  False, _by(lambda p: _lc(p.marketplace))),
     ),
     "market": (
-        ("name",    lambda m: _lc(m.name),                        False, "name",    "▲"),
-        ("kind",    lambda m: (_lc(m.source.kind), _lc(m.name)),  False, "kind",    "▲"),
-        ("updated", lambda m: m.last_updated or "",               True,  "updated", "▼"),
+        ("name",    "name",    False, _by(lambda m: _lc(m.name))),
+        ("upd",     "upd",     False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("kind",    "kind",    False, _by(lambda m: _lc(m.source.kind))),
+        ("loc",     "loc",     False, _by(lambda m: _lc(m.install_location))),
+        ("updated", "updated", True,  _by(lambda m: m.last_updated or "")),
     ),
 }
 
+# Vault's sort key order, kept as a name of its own because the Vault tab's
+# title bar and its tests speak in terms of the key list rather than the specs.
+_VAULT_SORTS: tuple[str, ...] = tuple(c[0] for c in _SORT_COLUMNS["vault"])
 
-def _subtab_sort_spec(state: TuiState, sub: str) -> Optional[_SortSpec]:
-    """Active sort spec for `sub`, or None if the sub-tab has no sort cycle."""
-    specs = _SUBTAB_SORT_SPECS.get(sub)
-    if not specs:
+# Secondary ordering applied before the column sort. Python's sort is stable,
+# so rows tying on the chosen column keep this order — every column therefore
+# gets a predictable within-group order without repeating a tiebreak in each
+# keyfunc.
+_SORT_TIEBREAK: dict[str, Callable[[Any], Any]] = {
+    "hooks": lambda h: (_lc(h.event), _lc(h.type)),
+}
+
+
+def _sort_tiebreak(sub: str) -> Callable[[Any], Any]:
+    return _SORT_TIEBREAK.get(sub, lambda i: _lc(getattr(i, "name", "")))
+
+
+def _sort_state(state: TuiState, sub: str) -> tuple[str, bool]:
+    """Active (column key, descending) for an Extensions sub-tab.
+
+    Vault keeps its own `vault_sort` / `vault_sort_desc` fields (its title bar
+    reads them directly); the other sub-tabs share the `ext_sort` /
+    `ext_sort_desc` dicts. An unset direction means "this column's natural
+    direction", so assigning just the key still yields the sensible order.
+    An unknown key falls back to the first column."""
+    cols = _SORT_COLUMNS.get(sub)
+    if not cols:
+        return "", False
+    if sub == "vault":
+        key, desc = state.vault_sort, state.vault_sort_desc
+    else:
+        key, desc = state.ext_sort.get(sub, ""), state.ext_sort_desc.get(sub)
+    spec = next((c for c in cols if c[0] == key), cols[0])
+    return spec[0], spec[2] if desc is None else bool(desc)
+
+
+def _set_sort_state(state: TuiState, sub: str, key: str, desc: bool) -> None:
+    """Write the active sort back and send the selection to the top row (the
+    row under the cursor is about to move somewhere else)."""
+    if sub == "vault":
+        state.vault_sort = key
+        state.vault_sort_desc = desc
+        state.vault_selected = 0
+    else:
+        state.ext_sort[sub] = key
+        state.ext_sort_desc[sub] = desc
+        state.ext_selected[sub] = 0
+
+
+def _cycle_sort_column(state: TuiState, sub: str) -> None:
+    """`s` — move the sort one column to the right, wrapping at the end.
+
+    The new column arrives in its own natural direction (`desc_first`), so
+    Updated / Used open newest-and-most-first while text columns open A→Z;
+    `S` flips whichever column you land on."""
+    cols = _SORT_COLUMNS.get(sub)
+    if not cols:
+        return
+    keys = [c[0] for c in cols]
+    cur, _desc = _sort_state(state, sub)
+    i = keys.index(cur) if cur in keys else 0
+    nxt = cols[(i + 1) % len(cols)]
+    _set_sort_state(state, sub, nxt[0], nxt[2])
+
+
+def _toggle_sort_direction(state: TuiState, sub: str) -> None:
+    """`S` — flip the active column between ascending (▲) and descending (▼),
+    leaving the column itself alone."""
+    cols = _SORT_COLUMNS.get(sub)
+    if not cols:
+        return
+    key, desc = _sort_state(state, sub)
+    _set_sort_state(state, sub, key, not desc)
+
+
+def _sort_column_spec(state: TuiState, sub: str) -> Optional[_SortCol]:
+    """The active column's spec, or None if the sub-tab has no sort cycle."""
+    cols = _SORT_COLUMNS.get(sub)
+    if not cols:
         return None
-    cur = state.ext_sort.get(sub, specs[0][0])
-    return next((s for s in specs if s[0] == cur), specs[0])
+    key, _desc = _sort_state(state, sub)
+    return next((c for c in cols if c[0] == key), cols[0])
 
 
-def _subtab_sorted(state: TuiState, sub: str, data: list) -> list:
-    """Return `data` sorted by the sub-tab's active sort key (stable).
+def _apply_sort(state: TuiState, sub: str, data: list) -> list:
+    """Return `data` ordered by the sub-tab's active column and direction.
 
     Falls back to the original order if the data lacks an expected attribute
     (defensive — keeps a malformed cache from blanking the list)."""
-    spec = _subtab_sort_spec(state, sub)
-    if spec is None or not data:
+    cols = _SORT_COLUMNS.get(sub)
+    if not cols or not data:
         return data
-    _, keyfunc, reverse, _, _ = spec
+    key, desc = _sort_state(state, sub)
+    spec = next((c for c in cols if c[0] == key), cols[0])
     try:
-        return sorted(data, key=keyfunc, reverse=reverse)
-    except (TypeError, AttributeError):
+        keyfn = spec[3](state, sub, data)
+        base = sorted(data, key=_sort_tiebreak(sub))
+        return sorted(base, key=keyfn, reverse=desc)
+    except (TypeError, AttributeError, OSError):
         return data
 
 
@@ -2927,7 +3128,7 @@ def _subtab_view(state: TuiState, sub: str) -> list:
     """The displayed (sorted, search-filtered) item list for `sub` — the single
     ordering shared by render and the input handlers so selection indices stay
     aligned."""
-    data = _subtab_sorted(state, sub, state.ext_cache.get(sub, []))
+    data = _apply_sort(state, sub, state.ext_cache.get(sub, []))
     q = state.ext_search.get(sub, "").lower()
     if q:
         data = [item for item in data if q in _subtab_search_haystack(item)]
@@ -2935,35 +3136,32 @@ def _subtab_view(state: TuiState, sub: str) -> list:
 
 
 def _mark_sorted_column(state: TuiState, sub: str, cols: list) -> list:
-    """Append the ▲/▼ glyph to the header of the column the list is sorted by."""
-    spec = _subtab_sort_spec(state, sub)
-    if spec is None:
+    """Annotate the sorted column's header with ▲ (ascending) / ▼ (descending)
+    — the on-screen cue for where the `s` / `S` cycle currently sits."""
+    spec = _sort_column_spec(state, sub)
+    if spec is None or not spec[1]:
         return cols
-    _, _, _, marked_col, glyph = spec
-    if not marked_col or not glyph:
-        return cols
+    marked_col = spec[1]
+    glyph = "▼" if _sort_state(state, sub)[1] else "▲"
     return [
         TableColumn(c.key, f"{c.label} {glyph}", c.width) if c.key == marked_col else c
         for c in cols
     ]
 
 
-def _cycle_subtab_sort(state: TuiState, sub: str) -> None:
-    """Advance the active sort key for `sub` to the next entry in its cycle."""
-    specs = _SUBTAB_SORT_SPECS.get(sub)
-    if not specs:
-        return
-    keys = [s[0] for s in specs]
-    cur = state.ext_sort.get(sub, keys[0])
-    i = keys.index(cur) if cur in keys else 0
-    state.ext_sort[sub] = keys[(i + 1) % len(keys)]
-    state.ext_selected[sub] = 0
-
-
 def subtab_sort_label(state: TuiState, sub: str) -> str:
-    """Active sort key name for `sub` (for status hints), or "" if no cycle."""
-    spec = _subtab_sort_spec(state, sub)
-    return spec[0] if spec else ""
+    """Active sort as `<column> ▲/▼` for the status bar, or "" when the
+    sub-tab has no sort cycle."""
+    if sub not in _SORT_COLUMNS:
+        return ""
+    key, desc = _sort_state(state, sub)
+    return f"{key} {'▼' if desc else '▲'}"
+
+
+def sort_cycle_help(sub: str) -> str:
+    """`name→ver→…` listing of a sub-tab's sortable columns, so the `?` help
+    is generated from _SORT_COLUMNS instead of drifting from it."""
+    return "→".join(c[0] for c in _SORT_COLUMNS.get(sub, ()))
 
 
 def _blur_ext_detail(state: TuiState) -> None:
@@ -3101,30 +3299,22 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             TableColumn("upd", "Upd", 3),
             TableColumn("market", "Marketplace", 24),
         ]
-        enabled_g = read_enabled_plugins(PATHS.settings)
-        enabled_p = read_enabled_plugins(project_settings_path())
-
-        def _glyph(v):
-            if v is True:
-                return "●"
-            if v is False:
-                return "○"
-            return "·"
+        ctx = _scope_ctx(state, sub)
+        enabled_g, enabled_p = ctx["glob"], ctx["proj"]
 
         rows = [{
             "no": str(i + 1),
             "name": p.name,
             "version": p.version or "—",
             "vault": _vault_cell(sub, p),
-            "proj": _glyph(enabled_p.get(p.id)),
-            "glob": _glyph(enabled_g.get(p.id)),
+            "proj": _scope_cell(sub, p, "proj", ctx),
+            "glob": _scope_cell(sub, p, "glob", ctx),
             "upd": _upd_cell(state, sub, p),
             "market": p.marketplace or "—",
         } for i, p in enumerate(data)]
 
     elif sub == "skills":
-        proj_names = _scope_link_names(state, sub, "project")
-        glob_names = _scope_link_names(state, sub, "global")
+        ctx = _scope_ctx(state, sub)
         cols = [
             TableColumn("no", "#", 3),
             TableColumn("name", "Skill", max(20, w - 96)),
@@ -3142,8 +3332,8 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "name": s.name,
             "ver": s.version or "─",
             "vault": _vault_cell(sub, s),
-            "proj": "●" if _item_base_name(sub, s) in proj_names else "○",
-            "glob": "●" if _item_base_name(sub, s) in glob_names else "○",
+            "proj": _scope_cell(sub, s, "proj", ctx),
+            "glob": _scope_cell(sub, s, "glob", ctx),
             "upd": _upd_cell(state, sub, s),
             "source": s.source,
             "type": "symlink" if s.is_symlink else "dir",
@@ -3151,8 +3341,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         } for i, s in enumerate(data)]
 
     elif sub == "commands":
-        proj_names = _scope_link_names(state, sub, "project")
-        glob_names = _scope_link_names(state, sub, "global")
+        ctx = _scope_ctx(state, sub)
         cols = [
             TableColumn("no", "#", 3),
             TableColumn("name", "Command", max(20, w - 97)),
@@ -3169,16 +3358,15 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "name": f"/{c.name}",
             "ver": c.version or "─",
             "vault": _vault_cell(sub, c),
-            "proj": "●" if _item_base_name(sub, c) in proj_names else "○",
-            "glob": "●" if _item_base_name(sub, c) in glob_names else "○",
+            "proj": _scope_cell(sub, c, "proj", ctx),
+            "glob": _scope_cell(sub, c, "glob", ctx),
             "upd": _upd_cell(state, sub, c),
             "source": c.source,
             "desc": (c.description or "")[:80],
         } for i, c in enumerate(data)]
 
     elif sub == "agents":
-        proj_names = _scope_link_names(state, sub, "project")
-        glob_names = _scope_link_names(state, sub, "global")
+        ctx = _scope_ctx(state, sub)
         cols = [
             TableColumn("no", "#", 3),
             TableColumn("name", "Agent", max(20, w - 97)),
@@ -3195,8 +3383,8 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "name": a.name,
             "ver": a.version or "─",
             "vault": _vault_cell(sub, a),
-            "proj": "●" if _item_base_name(sub, a) in proj_names else "○",
-            "glob": "●" if _item_base_name(sub, a) in glob_names else "○",
+            "proj": _scope_cell(sub, a, "proj", ctx),
+            "glob": _scope_cell(sub, a, "glob", ctx),
             "upd": _upd_cell(state, sub, a),
             "source": a.source,
             "desc": (a.description or "")[:80],
@@ -3221,18 +3409,19 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             TableColumn("transport", "Transport", 10),
             TableColumn("detail", "Detail", 30),
         ]
+        ctx = _scope_ctx(state, sub)
         rows = [{
             "no": str(i + 1),
             "name": s.name,
             "ver": getattr(s, "version", "") or "─",  # plugin-sourced servers only
             "vault": _vault_cell(sub, s),
-            "proj": "●" if s.scope in ("project", "project-file") else "─",
-            "glob": "●" if s.scope == "user" else "─",
+            "proj": _scope_cell(sub, s, "proj", ctx),
+            "glob": _scope_cell(sub, s, "glob", ctx),
             "upd": _upd_cell(state, sub, s),
             "on": "○" if s.disabled else "●",
             "scope": s.scope,
             "transport": s.transport,
-            "detail": (s.url or " ".join([s.command, *s.args_list]).strip())[:60],
+            "detail": _mcp_detail_text(s)[:60],
         } for i, s in enumerate(data)]
 
     elif sub == "hooks":
@@ -3249,15 +3438,11 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             TableColumn("detail", "Detail", max(20, w - 107)),
         ]
 
-        def _hook_cells(h) -> tuple[str, str]:
-            own = _hook_scope(h)
-            on = "○" if h.disabled else "●"
-            return (on if own == "project" else "─",
-                    on if own == "global" else "─")
-
+        ctx = _scope_ctx(state, sub)
         rows = []
         for i, h in enumerate(data):
-            proj_cell, glob_cell = _hook_cells(h)
+            proj_cell = _scope_cell(sub, h, "proj", ctx)
+            glob_cell = _scope_cell(sub, h, "glob", ctx)
             rows.append({
                 "no": str(i + 1),
                 "event": h.event,
@@ -3433,12 +3618,15 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
         state.ext_selected[sub] = 0
         return "/: type to filter, Enter to apply, Esc to cancel"
 
-    # `s` cycles the active sub-tab's sort (mirrors Vault). Handled here, ahead
-    # of detail-focus and list nav, so it works regardless of focus. Sub-tabs
-    # without a sort cycle ignore it. (Market's old `s`=sync moved to `S`.)
-    if key == ord("s") and sub in _SUBTAB_SORT_SPECS:
-        _cycle_subtab_sort(state, sub)
-        return f"Sort: {state.ext_sort.get(sub)}"
+    # Sort keys (mirror Vault): `s` moves to the next column, `S` flips that
+    # column between ▲ and ▼. Handled here, ahead of detail-focus and list
+    # nav, so they work regardless of focus. (Market's `S`=sync moved to `y`.)
+    if key == ord("s") and sub in _SORT_COLUMNS:
+        _cycle_sort_column(state, sub)
+        return f"Sort: {subtab_sort_label(state, sub)}"
+    if key == ord("S") and sub in _SORT_COLUMNS:
+        _toggle_sort_direction(state, sub)
+        return f"Sort: {subtab_sort_label(state, sub)}"
 
     # Space = select: toggle the focused item's bulk mark (mirrors Vault).
     # Marks accumulate across sort/search changes; the next p/g applies to
@@ -3666,6 +3854,49 @@ def _scope_link_names(state: TuiState, sub: str, scope: str) -> set[str]:
         for i in state.ext_cache.get(sub, [])
         if i.source == src
     }
+
+
+def _scope_ctx(state: TuiState, sub: str) -> dict:
+    """Precomputed lookups backing a sub-tab's Proj / Glob cells.
+
+    Built once per render (and once per sort) so the settings files behind the
+    plugin columns are read a single time instead of once per row."""
+    if sub == "plugins":
+        return {"proj": read_enabled_plugins(project_settings_path()),
+                "glob": read_enabled_plugins(PATHS.settings)}
+    if sub in ("skills", "commands", "agents"):
+        return {"proj": _scope_link_names(state, sub, "project"),
+                "glob": _scope_link_names(state, sub, "global")}
+    return {}
+
+
+def _scope_cell(sub: str, item: Any, scope: str, ctx: dict) -> str:
+    """The Proj (`scope="proj"`) or Glob (`scope="glob"`) glyph for one row.
+
+    Shared by the renderer and the column sort so the on-screen glyphs and the
+    sort order can never disagree. `ctx` comes from `_scope_ctx`."""
+    if sub == "plugins":
+        v = ctx.get(scope, {}).get(item.id)
+        return "●" if v is True else ("○" if v is False else "·")
+    if sub in ("skills", "commands", "agents"):
+        return "●" if _item_base_name(sub, item) in ctx.get(scope, set()) else "○"
+    if sub == "mcp":
+        # Registration scope, not activation — the On column carries that.
+        if scope == "proj":
+            return "●" if item.scope in ("project", "project-file") else "─"
+        return "●" if item.scope == "user" else "─"
+    if sub == "hooks":
+        # A hook toggles only in the scope its settings file belongs to.
+        own = _hook_scope(item)
+        on = "○" if item.disabled else "●"
+        return on if own == ("project" if scope == "proj" else "global") else "─"
+    return "─"
+
+
+def _mcp_detail_text(server: Any) -> str:
+    """The MCP `Detail` cell's full text: the URL for remote transports, the
+    resolved command line for stdio ones."""
+    return server.url or " ".join([server.command, *server.args_list]).strip()
 
 
 def _vault_cell(sub: str, item: Any) -> str:
@@ -4224,8 +4455,8 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
         SubtabBinding((ord("a"),), "a:add",
                       "a=add (source+name input)",
                       True, _act_market_add),
-        SubtabBinding((ord("S"),), "S:sync",
-                      "S=sync (selected)",
+        SubtabBinding((ord("y"),), "y:sync",
+                      "y=sync (selected)",
                       True, _act_market_sync),
         SubtabBinding((ord("x"),), "x:remove",
                       "x=remove (confirm)",

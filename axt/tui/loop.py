@@ -33,6 +33,7 @@ from axt.tui.tabs import (  # noqa: F401 — `_`-prefixed names that wildcard sk
     _cycle_sub_tab,
     _prime_vault_scan,
     sub_tab_has_focusable_content,
+    sort_cycle_help,
     subtab_sort_label,
     tab_has_focusable_content,
     tab_has_sub_tab,
@@ -88,12 +89,19 @@ Vault
   Tab           Toggle list ↔ detail panel focus
   /             Search input (type → Enter to apply, Esc to clear)
   c             Cycle filter (all/skill/command/agent)
-  s             Cycle sort (Name→Type→Proj→Glob→Used→Added→Updated); active column header marked ▲/▼
+  s             Sort by the next column (wraps). Every column is sortable;
+                each arrives in its natural direction — text A→Z, Used and
+                Updated most/newest-first.
+                  Cycle: {sort_cycle_help("vault")}
+  S             Flip the active column between ascending ▲ and descending ▼.
+                The sorted column's header carries the arrow, and the title
+                bar's sort= text names the active one (Added and Updated sort
+                real data but have no column of their own)
   f             Re-scan ALL projects to refresh `Used` (auto-runs on launch in
                 the background; cached to disk; title shows scan age / scanning…)
   F             Toggle scan mode (default ↔ full) and re-scan (f's full variant)
   m             Migrate ~/.claude/skills,commands,agents → vault
-  S             Sync .claude/<sub>/ symlinks with .axt-profile.json
+  y             Sync .claude/<sub>/ symlinks with .axt-profile.json
   r             Refresh (cheap, no cross-project walk)
   o             Open a new terminal at the item's storage path
 
@@ -117,14 +125,21 @@ Extensions sub-tab actions
   All sub-tabs: o=open a new terminal at the item's directory
                 (matches your terminal via TERM_PROGRAM; inside cmux a
                  workspace/window chooser appears first)
-  All sub-tabs: s=cycle sort (the sorted column's header is marked ▲/▼;
-                active key shown as s:sort(<key>) in the status bar)
-                  Plugins  Name→Version→Marketplace
-                  Skills   Name→Source→Type
-                  Commands Name→Source     Agents  Name→Source
-                  MCP      Name→Scope→Transport
-                  Hooks    Event→Type→Source
-                  Market   Name→Source→Updated
+  All sub-tabs: s=sort by the next column (wraps), S=flip that column
+                between ascending ▲ and descending ▼. Every column is
+                sortable. A column arrives in its natural direction — text
+                A→Z, Updated / Used newest-and-most-first. The sorted
+                column's header is marked ▲/▼ and the status bar shows
+                s:col/S:dir sort(<column> ▲/▼).
+                  Plugins  {sort_cycle_help("plugins")}
+                  Skills   {sort_cycle_help("skills")}
+                  Commands {sort_cycle_help("commands")}
+                  Agents   {sort_cycle_help("agents")}
+                  MCP      {sort_cycle_help("mcp")}
+                  Hooks    {sort_cycle_help("hooks")}
+                  Market   {sort_cycle_help("market")}
+                (`#` is the row number in the current order, so it has no
+                 sort; columns that never vary on a sub-tab are skipped too)
 {subtab_help_block()}
   Notes:        Hooks toggle only in their own scope: a hook in the user
                 settings file is global (g), one in project/local settings
@@ -198,7 +213,9 @@ def _extensions_shortcuts(state: TuiState) -> str:
         parts.append(f"{len(marks)} marked(p/g:bulk Esc:clear)")
     sort_label = subtab_sort_label(state, sub)
     if sort_label:
-        parts.append(f"s:sort({sort_label})")
+        # `s` picks the column, `S` flips its direction — named in one chip
+        # so the already-crowded status line does not grow another entry.
+        parts.append(f"s:col/S:dir sort({sort_label})")
     parts.append("/:search")
     parts.append("Space:mark")
     actions = subtab_shortcuts(sub)
@@ -289,7 +306,8 @@ def _render_frame(stdscr, state: TuiState) -> None:
         else:
             shortcuts = (
                 "1-3:tab  [/]:sub  j/k:nav  Space:mark  p:project  g:global  G:global+agents  u:update  U:unlink-all  "
-                "Enter:apply  c:filter  s:sort  /:search  f:scan  F:scan+mode  m:migrate  S:sync  o:term  r:refresh  ?:help  q:quit"
+                f"Enter:apply  c:filter  s:col/S:dir sort({subtab_sort_label(state, 'vault')})  /:search  f:scan  F:scan+mode  "
+                "m:migrate  y:sync  o:term  r:refresh  ?:help  q:quit"
             )
     elif tab_key == "extensions":
         shortcuts = _extensions_shortcuts(state)

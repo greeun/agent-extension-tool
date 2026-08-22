@@ -140,19 +140,19 @@ TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 
 - **MCP** — `# Server Ver Vault Proj Glob Upd On Scope Transport Detail` (Ver는 plugin 소속 서버만. Proj `●` = project/`.mcp.json` 등록, Glob `●` = user(`~/.claude.json` 최상위) 등록, plugin/claude.ai/built-in은 둘 다 `─`. On = 현재 프로젝트 활성 상태 — MCP 활성화는 등록 스코프와 무관하게 항상 프로젝트 단위)
 - **Hooks** — `# Event Ver Vault Proj Glob Upd Type Source Detail` (훅이 속한 설정 파일 스코프 쪽만 ●/○, 반대쪽 `─`)
 - **Plugins** — `# Plugin Ver Vault Proj Glob Upd Marketplace`
-- **Market** — `# Marketplace Ver Vault Proj Glob Upd Source Location Updated` (Proj `─`, Glob `●` — 전역 레지스트리)
+- **Market** — `# Marketplace Upd Source Location Updated` (전역 레지스트리라 per-source 버전도 vault/project/global 스코프도 없어 Ver/Vault/Proj/Glob 4개 컬럼을 생략)
 - **빈 상태 안내**: Vault를 제외한 7개 서브탭(Skills/Commands/Agents/MCP/Hooks/Plugins/Market)은 목록이 비면 제목 + 다음 행동 힌트를 표시(예: Market → "No marketplaces added yet." + "Press `a` to add one …"). `/` 검색 결과가 0건일 때는 힌트 대신 `No <탭> match "<검색어>". Press Esc to clear the filter.`를 표시
 
 ### 2.5 키바인딩 (Vault 전체)
 ```
 j/k ↓/↑     이동             g           global 토글 (pending; 마크 있으면 일괄)
 PgUp/PgDn   페이지           c           필터(all/skill/command/agent)
-p           project 토글 (pending; 마크 있으면 일괄)   s   정렬 순환(Name→Type→Proj→Glob→Used→Added→Updated), 활성 컬럼 헤더 ▲/▼
+p           project 토글 (pending; 마크 있으면 일괄)   s   정렬 컬럼 이동   S   오름/내림 토글
 Enter       적용 또는 detail
 Esc         폐기/뒤로        f           프로젝트 재스캔(실행 시 백그라운드 자동, Used 갱신)
 /           검색             F           scan mode toggle (default/full) + 재스캔 (f의 확장)
 Tab         리스트↔detail포커스 m         migrate (글로벌→vault)
-o           터미널 열기       S           sync project
+o           터미널 열기       y           sync project
 Space       포커스 항목 선택/해제 — 일괄 액션 마킹 (좌측 체크박스 ■/□, 필터/검색 넘어 유지)
             마크가 있으면 p/g가 마크 전체의 pending 토글, U가 일괄 unlink로 동작
 U           모든 프로젝트에서 unlink: 선택된 항목 있으면 일괄, 없으면 포커스 항목 (스캔 인덱스 기준, 확인 모달)
@@ -169,19 +169,21 @@ G           skill 전용 — GLOBAL + ~/.agents/skills 미러 동시 토글 (즉
 - **공통(모든 서브탭)**: `o` 포커스된 항목의 저장 경로에서 새 터미널 열기 (cst 방식 — TERM_PROGRAM 매칭, cmux 안에서는 workspace/window 선택 모달)
 - **공통(모든 서브탭)**: `/` 검색 필터 (입력 중 Esc 취소, 적용 후 Esc 해제 — 서브탭별로 독립 유지). Vault와 동일한 `/search:` 입력 밴드가 필터바 위에 표시됨 (입력 중 `_` 커서, 적용 후 커서 없이 유지)
 - **공통(모든 서브탭)**: Vault 타이틀 행과 동일한 **필터바**가 항상 표시됨 — `<라벨> (건수)` + `sort=<key>` + 검색 적용 시 `(필터/전체 items)` `search='q'` + 마크 시 `marked=N`. 배치는 전 탭 공통: `구분선 → /search: 밴드(검색 시) → 필터바 → 테이블`
-- **공통(모든 서브탭)**: `s` 정렬 순환 (Vault와 동일 방식 — 활성 정렬 컬럼 헤더에 ▲/▼ 표시, 상태바에 `s:sort(<key>)` 노출). 서브탭별 순환 키:
-  - **Plugins**: Name→Version→Marketplace
-  - **Skills**: Name→Source→Type
-  - **Commands** / **Agents**: Name→Source
-  - **MCP**: Name→Scope→Transport
-  - **Hooks**: Event→Type→Source
-  - **Market**: Name→Source→Updated
-- **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열, `i` = vault로 import(원본 이동 + 원위치 symlink; Skills/Commands/Agents), `u` = 선택 항목 업데이트(check+apply) — Vault 포함 모든 서브탭 동일 (Vault의 `U`는 unlink-all)
+- **공통(모든 서브탭 + Vault)**: `s` = **정렬 컬럼을 오른쪽으로 한 칸 이동**(끝에서 순환), `S` = **활성 컬럼의 오름차순 ▲ ↔ 내림차순 ▼ 토글**. **`#`(행 번호)을 제외한 모든 컬럼이 정렬 대상**이다. 활성 정렬 컬럼 헤더에 ▲/▼ 표시, 상태바에 `s:col/S:dir sort(<컬럼> ▲/▼)` 노출. `s`로 도착한 컬럼은 그 컬럼의 기본 방향으로 진입한다 — 텍스트 컬럼은 A→Z(▲), `Updated`/`Used`는 최신·최다 순(▼). 즉 `S`로 뒤집은 방향은 `s`로 다음 컬럼에 넘어갈 때 초기화된다. `Ver`는 숫자 인식 비교(1.10.0 > 1.9.0, 값 없음은 마지막). `Vault`/`Proj`/`Glob`/`Upd`/`On` 같은 글리프 컬럼은 화면에 그려지는 글리프 기준으로 정렬(●/✓ → ○ → · → ─). 정렬 상태는 세션 내에서만 유지된다(재실행 시 기본값 복귀). 서브탭별 순환 순서:
+  - **Vault**: Name→Ver→Type→Project→Global→Used→Added→Updated (Added/Updated는 전용 컬럼이 없어 타이틀바 `sort=`로만 표시)
+  - **Plugins**: Name→Version→Proj→Glob→Upd→Market
+  - **Skills**: Name→Ver→Vault→Proj→Glob→Upd→Source→Type→Path
+  - **Commands** / **Agents**: Name→Ver→Vault→Proj→Glob→Upd→Source→Desc
+  - **MCP**: Name→Ver→Proj→Glob→Upd→On→Scope→Transport→Detail
+  - **Hooks**: Event→Ver→Proj→Glob→Upd→Type→Source→Detail
+  - **Market**: Name→Upd→Kind→Loc→Updated
+  - 해당 서브탭에서 값이 항상 동일한 컬럼(MCP/Hooks/Plugins의 `Vault` 등)은 순서가 바뀔 수 없으므로 순환에서 제외
+- **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `s` = 정렬 컬럼 이동, `S` = 정렬 방향 토글, `y` = sync 계열(Vault의 project sync, Market의 marketplace sync), `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열, `i` = vault로 import(원본 이동 + 원위치 symlink; Skills/Commands/Agents), `u` = 선택 항목 업데이트(check+apply) — Vault 포함 모든 서브탭 동일 (Vault의 `U`는 unlink-all)
 - **Plugins**: `p`/`g` = project/global settings의 `enabledPlugins` 토글, `x` uninstall (확인 모달), `u` update selected (check + apply)
 - **MCP**: `p` = On 토글 (현재 프로젝트 `disabledMcpServers`, built-in은 `enabledMcpServers` opt-in; global 활성 스코프 없음 — `g`는 안내 메시지). Proj/Glob은 등록 위치 표시로 읽기 전용 — `p`/`g`로 등록을 옮길 수 없음
 - **Hooks**: `p`/`g` 토글 (설정 파일 내 `hooks`↔`disabledHooks` 이동 — user 파일 훅은 `g`, project/local 파일 훅은 `p`, plugin 훅은 읽기 전용), `v` preview (dry-run)
 - **Skills**: `p`/`g` = `.claude/skills` / `~/.claude/skills`에 symlink 링크/해제 (실제 파일·디렉터리는 삭제하지 않음 — symlink만 해제), `a` link (path 입력), `x` unlink (확인 모달), `i` import to vault (원본 이동 + 원위치 symlink; plugin 소속·이미 vault인 항목은 거부), `u` update selected (check + apply)
-- **Market**: `a` add (2-step source+name 입력), `S` sync (무조건 sync — `s`는 정렬), `u` update selected (check + apply, 원격이 앞설 때만 sync), `x` remove (확인). `p`/`g`는 안내 메시지 (전역 레지스트리)
+- **Market**: `a` add (2-step source+name 입력), `y` sync (무조건 sync — `s`/`S`는 정렬), `u` update selected (check + apply, 원격이 앞설 때만 sync), `x` remove (확인). `p`/`g`는 안내 메시지 (전역 레지스트리)
 - **Commands** / **Agents**: `p`/`g` = `.claude/<sub>/` / `~/.claude/<sub>/`에 `.md` symlink 링크/해제, `e` 소스 파일을 `$EDITOR`로 열기, `i` import to vault (Skills와 동일), `u` update selected (check + apply)
 - **모든 서브탭 (Vault / Skills / Commands / Agents / MCP / Hooks / Plugins / Market)**: 리스트 하단에 detail panel 표시 (선택 항목 상세). `Tab` 패널 포커스 → `j/k`·`PgUp/PgDn` 스크롤 → `Tab` 다시 누르면 리스트로 복귀
 

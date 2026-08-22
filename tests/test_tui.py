@@ -780,11 +780,14 @@ def test_handle_vault_input_tab_does_not_change_filter():
 
 
 def test_handle_vault_input_sort_cycle():
+    """`s` moves one column right per press, leaving the direction alone."""
     s = axt.TuiState()
     axt.handle_vault_input(s, ord("s"))
-    assert s.vault_sort == "type"
+    assert (s.vault_sort, s.vault_sort_desc) == ("ver", False)
     axt.handle_vault_input(s, ord("s"))
-    assert s.vault_sort == "project"
+    assert (s.vault_sort, s.vault_sort_desc) == ("type", False)
+    axt.handle_vault_input(s, ord("s"))
+    assert (s.vault_sort, s.vault_sort_desc) == ("project", False)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
@@ -5233,7 +5236,7 @@ def test_handle_vault_input_sync(tmp_path, monkeypatch):
     monkeypatch.chdir(proj)
     s = axt.TuiState()
     s.refresh_token = 1
-    msg = axt.handle_vault_input(s, ord("S"))
+    msg = axt.handle_vault_input(s, ord("y"))
     assert msg is not None and "Sync" in msg
 
 
@@ -5639,7 +5642,7 @@ def test_subtab_action_market_sync(monkeypatch):
     ]
     s.ext_selected["market"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "market", ord("S"))  # `s` is sort; sync = `S`
+    msg = axt._handle_subtab_action(s, "market", ord("y"))  # s/S are sort; sync = `y`
     assert msg is not None and "Synced m1" in msg
 
 
@@ -6638,7 +6641,7 @@ def test_subtab_action_market_sync_failure(monkeypatch):
     ]
     s.ext_selected["market"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
-    msg = axt._handle_subtab_action(s, "market", ord("S"))  # `s` is sort; sync = `S`
+    msg = axt._handle_subtab_action(s, "market", ord("y"))  # s/S are sort; sync = `y`
     assert msg is not None and "Sync failed" in msg
 
 
@@ -7021,17 +7024,17 @@ def test_render_vault_tab_broken_symlink_warning_uses_err_bold(tmp_path, monkeyp
 
 
 def test_vault_sync_failure(monkeypatch):
-    """`S` sync raising OSError returns a 'Sync failed' message (776-777)."""
+    """`y` sync raising OSError returns a 'Sync failed' message (776-777)."""
     monkeypatch.setattr("axt.tui.tabs.sync_project",
                         lambda cwd, vd: (_ for _ in ()).throw(OSError("sync boom")))
     s = axt.TuiState()
     s.vault_items = [axt.VaultItem(name="x", type="skill", path="", description="")]
-    msg = axt.handle_vault_input(s, ord("S"))
+    msg = axt.handle_vault_input(s, ord("y"))
     assert msg is not None and "Sync failed" in msg
 
 
 def test_vault_sync_success_invalidates_context(monkeypatch):
-    """`S` sync with linked changes hits the _invalidate_context branch (line 774)."""
+    """`y` sync with linked changes hits the _invalidate_context branch (line 774)."""
     monkeypatch.setattr("axt.tui.tabs.sync_project",
                         lambda cwd, vd: axt.SyncResult(linked=["a"], unlinked=[], errors=[]))
     monkeypatch.setattr("axt.tui.tabs._vault_load", lambda state: None)
@@ -7040,7 +7043,7 @@ def test_vault_sync_success_invalidates_context(monkeypatch):
                         lambda state: invalidated.append(True))
     s = axt.TuiState()
     s.vault_items = [axt.VaultItem(name="x", type="skill", path="", description="")]
-    msg = axt.handle_vault_input(s, ord("S"))
+    msg = axt.handle_vault_input(s, ord("y"))
     assert msg is not None and "Sync" in msg
     assert invalidated == [True]
 
@@ -8064,27 +8067,95 @@ def test_vault_o_spawn_failure_toast(monkeypatch, tmp_path):
 # ─── Non-vault sub-tab sort (ported from Vault) ───────────────────────────────
 
 
-def test_subtab_sort_label_defaults_to_first_spec():
-    """With no explicit choice, each sortable sub-tab reports its first key;
-    a sub-tab with no sort cycle reports ""."""
+def test_subtab_sort_label_defaults_to_first_column():
+    """With no explicit choice, each sub-tab reports its first column in that
+    column's natural direction. Vault shares the mechanism now."""
     s = axt.TuiState()
-    assert axt.subtab_sort_label(s, "skills") == "name"
-    assert axt.subtab_sort_label(s, "mcp") == "name"
-    assert axt.subtab_sort_label(s, "market") == "name"
-    assert axt.subtab_sort_label(s, "hooks") == "event"
-    assert axt.subtab_sort_label(s, "vault") == ""  # vault has its own cycle
+    assert axt.subtab_sort_label(s, "skills") == "name ▲"
+    assert axt.subtab_sort_label(s, "mcp") == "name ▲"
+    assert axt.subtab_sort_label(s, "market") == "name ▲"
+    assert axt.subtab_sort_label(s, "hooks") == "event ▲"
+    assert axt.subtab_sort_label(s, "vault") == "name ▲"
+    assert axt.subtab_sort_label(s, "nope") == ""
 
 
-def test_handle_extensions_input_s_cycles_sort_skills():
+def test_s_moves_one_column_right():
+    """`s` advances the sort column; the direction is `S`'s job."""
     s = axt.TuiState()
     s.ext_sub_tab = "skills"
     s.ext_cache["skills"] = [axt.SkillInfo(name="a", path="/x", is_symlink=False, source="user")]
-    axt.handle_extensions_input(s, ord("s"))
-    assert s.ext_sort["skills"] == "source"
-    axt.handle_extensions_input(s, ord("s"))
-    assert s.ext_sort["skills"] == "type"
-    axt.handle_extensions_input(s, ord("s"))
-    assert s.ext_sort["skills"] == "name"  # wraps
+    steps = []
+    for _ in range(4):
+        axt.handle_extensions_input(s, ord("s"))
+        steps.append((s.ext_sort["skills"], s.ext_sort_desc["skills"]))
+    assert steps == [("ver", False), ("vault", False), ("proj", False), ("glob", False)]
+
+
+def test_sort_column_cycle_wraps_and_covers_every_column():
+    """A full lap of `s` touches every sortable column once and comes back."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "mcp"
+    s.ext_cache["mcp"] = [axt.McpServerInfo(name="a", plugin_id="", command="c", args=(), env=())]
+    cols = [c[0] for c in axt._SORT_COLUMNS["mcp"]]
+    seen = []
+    for _ in range(len(cols)):
+        axt.handle_extensions_input(s, ord("s"))
+        seen.append(s.ext_sort["mcp"])
+    assert seen == cols[1:] + cols[:1]
+    assert axt._sort_state(s, "mcp") == (cols[0], axt._SORT_COLUMNS["mcp"][0][2])
+
+
+def test_shift_s_toggles_direction_without_moving_the_column():
+    """`S` flips ▲ ↔ ▼ on whatever column `s` last landed on."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [axt.SkillInfo(name="a", path="/x", is_symlink=False, source="user")]
+    axt.handle_extensions_input(s, ord("s"))          # → ver ▲
+    assert axt._sort_state(s, "skills") == ("ver", False)
+    axt.handle_extensions_input(s, ord("S"))
+    assert axt._sort_state(s, "skills") == ("ver", True)
+    axt.handle_extensions_input(s, ord("S"))
+    assert axt._sort_state(s, "skills") == ("ver", False)
+
+
+def test_s_resets_to_the_new_column_natural_direction():
+    """Moving on with `s` drops the previous column's flip — each column opens
+    the way it reads best (Market's Updated newest-first)."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [axt.MarketplaceInfo(
+        name="m", source=axt.MarketplaceSource(kind="directory", path="/p"),
+        install_location="/loc", last_updated="2026-01-01")]
+    axt.handle_extensions_input(s, ord("S"))          # name ▼
+    assert axt._sort_state(s, "market") == ("name", True)
+    axt.handle_extensions_input(s, ord("s"))          # → upd, back to natural ▲
+    assert axt._sort_state(s, "market") == ("upd", False)
+    for _ in range(3):                                # → kind → loc → updated
+        axt.handle_extensions_input(s, ord("s"))
+    assert axt._sort_state(s, "market") == ("updated", True)   # natural = newest first
+
+
+def test_vault_shift_s_toggles_direction():
+    s = axt.TuiState()
+    axt.handle_vault_input(s, ord("s"))
+    assert axt._sort_state(s, "vault") == ("ver", False)
+    axt.handle_vault_input(s, ord("S"))
+    assert axt._sort_state(s, "vault") == ("ver", True)
+    axt.handle_vault_input(s, ord("s"))               # next column, natural again
+    assert axt._sort_state(s, "vault") == ("type", False)
+
+
+def test_sort_direction_reverses_the_order():
+    """`S` flips the rendered order of the active column."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name=n, path=f"/{n}", is_symlink=False, source="user")
+        for n in ("beta", "alpha", "gamma")
+    ]
+    assert [i.name for i in axt._subtab_view(s, "skills")] == ["alpha", "beta", "gamma"]
+    axt.handle_extensions_input(s, ord("S"))  # name ▼
+    assert [i.name for i in axt._subtab_view(s, "skills")] == ["gamma", "beta", "alpha"]
 
 
 def test_subtab_sort_resets_selection():
@@ -8094,7 +8165,6 @@ def test_subtab_sort_resets_selection():
                           for n in ("a", "b", "c")]
     s.ext_selected["mcp"] = 2
     axt.handle_extensions_input(s, ord("s"))
-    assert s.ext_sort["mcp"] == "scope"
     assert s.ext_selected["mcp"] == 0
 
 
@@ -8116,6 +8186,139 @@ def test_subtab_view_reorders_by_active_key():
     assert [i.source for i in axt._subtab_view(s, "skills")] == ["plugin", "user", "user"]
 
 
+def test_sort_key_alone_uses_the_column_natural_direction():
+    """Assigning only the key (no direction) sorts the way that column is
+    meant to read — newest first for Market's Updated."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [
+        axt.MarketplaceInfo(name=n, source=axt.MarketplaceSource(kind="directory", path="/p"),
+                            install_location="/loc", last_updated=d)
+        for n, d in (("old", "2025-01-01"), ("new", "2026-06-01"), ("mid", "2025-09-01"))
+    ]
+    s.ext_sort["market"] = "updated"
+    assert [i.name for i in axt._subtab_view(s, "market")] == ["new", "mid", "old"]
+    assert axt.subtab_sort_label(s, "market") == "updated ▼"
+
+
+def test_sort_falls_back_to_first_column_on_unknown_key():
+    s = axt.TuiState()
+    s.ext_sort["skills"] = "nonexistent"
+    assert axt._sort_state(s, "skills") == ("name", False)
+
+
+def test_sort_by_glyph_column_groups_active_rows_first():
+    """Proj sorts by the glyph the renderer draws: linked (●) before unlinked
+    (○), with names breaking ties."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "commands"
+    s.ext_cache["commands"] = [
+        axt.CommandInfo(name="zz", source="user", source_path="/z",
+                        description="", content=""),
+        axt.CommandInfo(name="aa", source="user", source_path="/a",
+                        description="", content=""),
+        axt.CommandInfo(name="mm", source="project", source_path="/m",
+                        description="", content=""),
+    ]
+    s.ext_sort["commands"] = "proj"
+    # "mm" is the only project-scoped row, so it is the only ● in Proj.
+    assert [i.name for i in axt._subtab_view(s, "commands")][0] == "mm"
+    s.ext_sort_desc["commands"] = True
+    assert [i.name for i in axt._subtab_view(s, "commands")][-1] == "mm"
+
+
+def test_sort_by_upd_column_ranks_updatable_rows_first(monkeypatch):
+    """Upd sorts by its rendered marker: ↑ (update available) before ·
+    (up to date) before ─ (not updatable)."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name=n, path=f"/{n}", is_symlink=False, source="user")
+        for n in ("stale", "fresh", "manual")
+    ]
+    marks = {"stale": "↑", "fresh": "·", "manual": "─"}
+    monkeypatch.setattr("axt.tui.tabs._upd_cell",
+                        lambda state, sub, item: marks[item.name])
+    s.ext_sort["skills"] = "upd"
+    assert [i.name for i in axt._subtab_view(s, "skills")] == ["stale", "fresh", "manual"]
+    s.ext_sort_desc["skills"] = True
+    assert [i.name for i in axt._subtab_view(s, "skills")] == ["manual", "fresh", "stale"]
+
+
+def test_sort_by_vault_column_ranks_stored_rows_first(monkeypatch):
+    """Vault sorts ✓ (vault-managed) ahead of ─ (not)."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "agents"
+    s.ext_cache["agents"] = [
+        axt.AgentInfo(name=n, source="user", source_path=f"/{n}", description="")
+        for n in ("plain", "stored")
+    ]
+    monkeypatch.setattr("axt.tui.tabs._vault_cell",
+                        lambda sub, item: "✓" if item.name == "stored" else "─")
+    s.ext_sort["agents"] = "vault"
+    assert [i.name for i in axt._subtab_view(s, "agents")] == ["stored", "plain"]
+
+
+def test_hook_scope_cells_follow_the_owning_settings_file():
+    """A hook shows its ●/○ only in the scope its settings file belongs to;
+    the other side is ─. The sort reads the same cells."""
+    ctx = {}
+    user_hook = axt.HookInfo(event="PreToolUse", matcher="", source="user",
+                             source_path="/u", type="command", command="x")
+    proj_hook = axt.HookInfo(event="PreToolUse", matcher="", source="project",
+                             source_path="/p", type="command", command="x")
+    plugin_hook = axt.HookInfo(event="PreToolUse", matcher="", source="plugin",
+                               source_path="/pl", type="command", command="x")
+    assert axt._scope_cell("hooks", user_hook, "glob", ctx) == "●"
+    assert axt._scope_cell("hooks", user_hook, "proj", ctx) == "─"
+    assert axt._scope_cell("hooks", proj_hook, "proj", ctx) == "●"
+    assert axt._scope_cell("hooks", proj_hook, "glob", ctx) == "─"
+    # Plugin hooks are read-only, so neither scope claims them.
+    assert axt._scope_cell("hooks", plugin_hook, "proj", ctx) == "─"
+    assert axt._scope_cell("hooks", plugin_hook, "glob", ctx) == "─"
+    # A sub-tab with no Proj/Glob columns at all falls through to ─.
+    assert axt._scope_cell("market", object(), "proj", ctx) == "─"
+
+
+def test_sort_helpers_are_inert_for_a_sub_tab_without_a_cycle():
+    """Every sort entry point has to no-op on an unknown sub-tab rather than
+    raise — the dispatch layer passes whatever sub-tab is active."""
+    s = axt.TuiState()
+    cols = [axt.TableColumn("name", "Name", 10)]
+    assert axt._sort_state(s, "nope") == ("", False)
+    assert axt._sort_column_spec(s, "nope") is None
+    assert axt._mark_sorted_column(s, "nope", cols) == cols
+    assert axt._apply_sort(s, "nope", [1, 2]) == [1, 2]
+    axt._cycle_sort_column(s, "nope")      # must not raise
+    axt._toggle_sort_direction(s, "nope")  # must not raise
+    assert s.ext_sort == {}
+
+
+def test_sort_by_version_is_numeric_aware():
+    """1.10.0 sorts after 1.9.0; a missing version sorts last."""
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [
+        axt.SkillInfo(name="c", path="/c", is_symlink=False, source="user", version="1.10.0"),
+        axt.SkillInfo(name="a", path="/a", is_symlink=False, source="user", version="1.9.0"),
+        axt.SkillInfo(name="b", path="/b", is_symlink=False, source="user", version=""),
+    ]
+    s.ext_sort["skills"] = "ver"
+    assert [i.name for i in axt._subtab_view(s, "skills")] == ["a", "c", "b"]
+
+
+def test_sort_survives_items_missing_an_attribute():
+    """A malformed cache entry must not blank the list — the sorter falls back
+    to the original order."""
+    class Broken:
+        name = "x"
+    s = axt.TuiState()
+    s.ext_sub_tab = "skills"
+    s.ext_cache["skills"] = [Broken(), Broken()]
+    s.ext_sort["skills"] = "path"
+    assert len(axt._subtab_view(s, "skills")) == 2
+
+
 def test_selected_item_follows_sorted_view():
     """The item _handle_subtab_action acts on must be the highlighted (sorted)
     row, not the raw cache order."""
@@ -8131,7 +8334,7 @@ def test_selected_item_follows_sorted_view():
 
 
 def test_market_s_cycles_sort_does_not_sync(monkeypatch):
-    """`s` on Market now cycles sort instead of syncing; sync moved to `S`."""
+    """`s` on Market cycles sort instead of syncing; sync moved to `y`."""
     synced = []
     monkeypatch.setattr("axt.tui.tabs.sync_marketplace",
                         lambda km, name: synced.append(name) or
@@ -8146,8 +8349,29 @@ def test_market_s_cycles_sort_does_not_sync(monkeypatch):
     s.ext_selected["market"] = 0
     s.stdscr_callbacks = {"stdscr": object()}
     msg = axt.handle_extensions_input(s, ord("s"))
-    assert s.ext_sort["market"] == "kind"
+    assert s.ext_sort["market"] == "upd"
+    assert s.ext_sort_desc["market"] is False
     assert synced == []           # no sync triggered
+    assert "Sort:" in (msg or "")
+
+
+def test_market_shift_s_cycles_sort_does_not_sync(monkeypatch):
+    """`S` is the reverse sort step now — it must not reach the sync action."""
+    synced = []
+    monkeypatch.setattr("axt.tui.tabs.sync_marketplace",
+                        lambda km, name: synced.append(name) or
+                        axt.SyncMarketplaceResult(before="a", after="b", updated=True))
+    s = axt.TuiState()
+    s.ext_sub_tab = "market"
+    s.ext_cache["market"] = [
+        axt.MarketplaceInfo(name="m1",
+                            source=axt.MarketplaceSource(kind="directory", path="/p"),
+                            install_location="/loc", last_updated="2026-01-01")
+    ]
+    s.ext_selected["market"] = 0
+    s.stdscr_callbacks = {"stdscr": object()}
+    msg = axt.handle_extensions_input(s, ord("S"))
+    assert synced == []
     assert "Sort:" in (msg or "")
 
 
@@ -8164,22 +8388,73 @@ def test_render_marks_active_sort_column(monkeypatch):
     assert "Server" in headers       # name column unmarked
 
 
-def test_sort_cycle_keys_match_columns():
-    """Every spec's marked_col is a real column key for that sub-tab so the
-    ▲/▼ glyph always lands on an existing header."""
+def test_render_marks_descending_sort_column():
+    s = axt.TuiState()
+    s.ext_sub_tab = "mcp"
+    s.ext_cache["mcp"] = [axt.McpServerInfo(name="srv", plugin_id="", command="c", args=(), env=())]
+    s.ext_sort["mcp"] = "scope"
+    s.ext_sort_desc["mcp"] = True
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_extensions_tab(scr, s, 0, 22, 120)
+    headers = {c[2].strip() for c in scr.calls if len(c) >= 3 and isinstance(c[2], str)}
+    assert "Scope ▼" in headers
+
+
+def test_vault_render_marks_active_sort_column():
+    """Vault goes through the same header-mark helper as the other sub-tabs."""
+    s = axt.TuiState()
+    s.refresh_token = 1
+    s.vault_items = [axt.VaultItem(name="x", type="skill", path="/x", description="")]
+    s.vault_sort = "type"
+    s.vault_sort_desc = True
+    scr = _make_stdscr(rows=24, cols=120)
+    axt.render_vault_tab(scr, s, 0, 22, 120)
+    headers = {c[2].strip() for c in scr.calls if len(c) >= 3 and isinstance(c[2], str)}
+    assert "Type ▼" in headers
+    assert "Name" in headers
+
+
+def test_sort_columns_match_rendered_columns():
+    """Every sortable column must be a real header on its sub-tab (except the
+    two Vault timestamp sorts, which mark nothing) — otherwise the ▲/▼ glyph
+    would land nowhere."""
     col_keys = {
-        "plugins":  {"name", "version", "status", "market"},
-        "skills":   {"name", "ver", "source", "type", "path"},
-        "commands": {"name", "ver", "source", "desc"},
-        "agents":   {"name", "ver", "source", "desc"},
-        "mcp":      {"name", "scope", "transport", "detail"},
-        "hooks":    {"event", "ver", "type", "source", "detail"},
-        "market":   {"name", "ver", "kind", "loc", "updated"},
+        "vault":    {"name", "ver", "type", "project", "global", "used"},
+        "plugins":  {"name", "version", "vault", "proj", "glob", "upd", "market"},
+        "skills":   {"name", "ver", "vault", "proj", "glob", "upd", "source", "type", "path"},
+        "commands": {"name", "ver", "vault", "proj", "glob", "upd", "source", "desc"},
+        "agents":   {"name", "ver", "vault", "proj", "glob", "upd", "source", "desc"},
+        "mcp":      {"name", "ver", "vault", "proj", "glob", "upd", "on", "scope",
+                     "transport", "detail"},
+        "hooks":    {"event", "ver", "vault", "proj", "glob", "upd", "type", "source", "detail"},
+        "market":   {"name", "upd", "kind", "loc", "updated"},
     }
-    for sub, specs in axt._SUBTAB_SORT_SPECS.items():
-        for key, _fn, _rev, marked, _glyph in specs:
+    assert set(axt._SORT_COLUMNS) == set(col_keys)
+    for sub, cols in axt._SORT_COLUMNS.items():
+        keys = [c[0] for c in cols]
+        assert len(keys) == len(set(keys)), f"{sub}: duplicate sort key"
+        for key, marked, _desc_first, _build in cols:
+            assert marked is None or marked == key, \
+                f"{sub} sort {key!r} marks a different column {marked!r}"
             assert marked is None or marked in col_keys[sub], \
                 f"{sub} sort {key!r} marks unknown column {marked!r}"
+
+
+def test_every_sub_tab_has_a_sort_cycle():
+    """The `s` cycle must cover all eight Extensions sub-tabs."""
+    assert set(axt._SORT_COLUMNS) == {k for k, _label in axt.EXTENSION_SUB_TABS}
+
+
+def test_row_number_column_is_never_sortable():
+    """`#` is the row's position in the current order, so sorting by it could
+    never reorder anything."""
+    for sub, cols in axt._SORT_COLUMNS.items():
+        assert "no" not in {c[0] for c in cols}, sub
+
+
+def test_sort_cycle_help_lists_the_columns():
+    assert axt.sort_cycle_help("market") == "name→upd→kind→loc→updated"
+    assert axt.sort_cycle_help("nope") == ""
 
 
 # ─── SUBTAB_KEYMAP table (single source of truth for dispatch/hints/help) ───
@@ -8197,8 +8472,9 @@ def test_subtab_keymap_no_duplicate_keys():
 
 def test_subtab_keymap_avoids_reserved_navigation_keys():
     """Keys consumed by handle_extensions_input's shared navigation layer
-    ([, ], r, s, Tab, j, k, /, Space) must never appear in an action binding."""
-    reserved = {ord("["), ord("]"), ord("r"), ord("s"), ord("\t"),
+    ([, ], r, s, S, Tab, j, k, /, Space) must never appear in an action
+    binding — `S` joined the list when it became the reverse-sort step."""
+    reserved = {ord("["), ord("]"), ord("r"), ord("s"), ord("S"), ord("\t"),
                 ord("j"), ord("k"), ord("/"), ord(" ")}
     for sub, bindings in axt.SUBTAB_KEYMAP.items():
         for b in axt._SUBTAB_COMMON + bindings:
@@ -8270,6 +8546,49 @@ def test_ext_search_is_per_subtab():
     assert len(axt._subtab_view(state, "mcp")) == 1  # other sub-tab unfiltered
 
 
+def test_extensions_shortcuts_name_the_sort_column_and_direction():
+    """The status bar has to say which column the list is sorted by and which
+    way, since that is the only place the column-less sorts show up."""
+    from axt.tui.loop import _extensions_shortcuts
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    assert "s:col/S:dir sort(name ▲)" in _extensions_shortcuts(state)
+    state.ext_sort["mcp"] = "scope"
+    state.ext_sort_desc["mcp"] = True
+    assert "s:col/S:dir sort(scope ▼)" in _extensions_shortcuts(state)
+
+
+def test_vault_title_bar_names_the_sort_column_and_direction():
+    """Vault's title row uses the same sort label as the other sub-tabs'
+    filter bar, so the direction shows there too — it is the only place the
+    column-less Added / Updated sorts appear at all."""
+    scr = _make_stdscr(rows=24, cols=160)
+    state = axt.TuiState()
+    state.refresh_token = 1
+    state.vault_items = [axt.VaultItem(name="x", type="skill", path="/x", description="")]
+    state.vault_sort = "updated"
+    axt.render_vault_tab(scr, state, 0, 22, 160)
+    flat = " ".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "sort=updated ▼" in flat
+
+
+def test_vault_status_line_names_the_sort_and_moved_sync_key():
+    """Vault's status line is built separately from the sub-tab one, so it
+    needs its own check that `s/S` and the relocated `y`=sync are shown."""
+    scr = _make_stdscr(rows=24, cols=280)   # the vault line is ~233 cells wide
+    state = axt.TuiState()
+    state.tab_idx = 0
+    state.refresh_token = 1
+    state.vault_items = [axt.VaultItem(name="x", type="skill", path="/x", description="")]
+    state.vault_sort = "used"
+    from axt.tui.loop import _render_frame
+    _render_frame(scr, state)
+    line = " ".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "s:col/S:dir sort(used ▼)" in line
+    assert "y:sync" in line
+    assert "S:sync" not in line
+
+
 def test_extensions_shortcuts_show_search_state():
     from axt.tui.loop import _extensions_shortcuts
     state = axt.TuiState()
@@ -8286,7 +8605,7 @@ def test_extensions_shortcuts_show_search_state():
 def test_subtab_shortcuts_generated_from_keymap():
     assert axt.subtab_shortcuts("plugins") == "p:project  g:global  x:uninstall  u:update  Tab:detail"
     assert axt.subtab_shortcuts("commands") == "p:project  g:global  e:edit  i:import  u:update  Tab:detail"
-    assert axt.subtab_shortcuts("market") == "a:add  S:sync  x:remove  u:update  Tab:detail"
+    assert axt.subtab_shortcuts("market") == "a:add  y:sync  x:remove  u:update  Tab:detail"
     assert axt.subtab_shortcuts("mcp") == "p:on  Tab:detail"
     assert axt.subtab_shortcuts("vault") == ""  # vault owns its own status line
 
@@ -9051,7 +9370,7 @@ def test_ext_subtab_has_filter_bar_like_vault():
 
     flat = _flat(scr)
     assert " MCP  (1/2 items)" in flat
-    assert "sort=name" in flat
+    assert "sort=name ▲" in flat
     assert "search='al'" in flat
     assert row_of("(1/2 items)") == row_of("/search: al") + 1   # band → filter bar
     assert row_of("Server") == row_of("(1/2 items)") + 1        # filter bar → table
