@@ -182,14 +182,52 @@ _MISSING = object()
 
 
 def read_json(path: os.PathLike[str] | str, *, fallback: Any = _MISSING) -> Any:
-    """Read a JSON file. Return `fallback` if missing (when provided)."""
+    """Read a JSON file, degrading to `fallback` when it cannot be used.
+
+    Passing a `fallback` says "if this file isn't usable, carry on with this
+    instead" — and a half-written file is no more usable than a missing one.
+    Only handling the missing case meant one truncated `settings.json` failed
+    every unrelated command that happened to read it (`plugin list`,
+    `skill list`, `market list` all died on the same parse error).
+
+    Callers that then write the file back must not treat a corrupt read as an
+    empty one — see `read_json_checked`.
+    """
     p = Path(path)
     if not p.exists():
         if fallback is _MISSING:
             raise FileNotFoundError(f"File not found: {p}")
         return fallback
-    with p.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        if fallback is _MISSING:
+            raise
+        return fallback
+
+
+def read_json_checked(
+    path: os.PathLike[str] | str, *, fallback: Any
+) -> tuple[Any, bool]:
+    """`read_json` plus whether the file was present-but-unparseable.
+
+    Read-modify-write callers need this: rewriting a corrupt file from the
+    fallback would replace whatever the user actually had with an empty
+    document. They refuse instead.
+    """
+    p = Path(path)
+    if not p.exists():
+        return fallback, False
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            return json.load(f), False
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return fallback, True
+
+
+class CorruptSettingsError(RuntimeError):
+    """Raised when a settings file must be rewritten but cannot be parsed."""
 
 
 def write_json_atomic(
@@ -308,11 +346,27 @@ def _read_settings_flag_map(
     return {k: bool(v) for k, v in bucket.items()}
 
 
+def _read_settings_for_write(settings_path: os.PathLike[str] | str) -> dict[str, Any]:
+    """Read settings for a read-modify-write cycle, refusing a corrupt file.
+
+    Reads degrade to `{}` so listing keeps working, but writing that `{}` back
+    would discard the user's real settings. Fail loudly instead and let them
+    repair (or delete) the file.
+    """
+    data, corrupt = read_json_checked(settings_path, fallback={})
+    if corrupt:
+        raise CorruptSettingsError(
+            f"{settings_path} is not valid JSON — refusing to overwrite it. "
+            f"Fix or remove the file, then retry."
+        )
+    return data if isinstance(data, dict) else {}
+
+
 def _set_settings_flag(
     settings_path: os.PathLike[str] | str, key: str, item_id: str, present: bool
 ) -> None:
     """Set (present=True) or remove (present=False) `item_id` in a flag bucket."""
-    settings = _read_settings(settings_path)
+    settings = _read_settings_for_write(settings_path)
     bucket = settings.get(key)
     if not isinstance(bucket, dict):
         bucket = settings[key] = {}
@@ -332,8 +386,14 @@ def set_plugin_enabled(
     plugin_id: str,
     enabled: bool,
 ) -> None:
-    settings = _read_settings(settings_path)
-    settings.setdefault("enabledPlugins", {})[plugin_id] = bool(enabled)
+    settings = _read_settings_for_write(settings_path)
+    bucket = settings.get("enabledPlugins")
+    if not isinstance(bucket, dict):
+        # Real-world partial corruption: the key exists with the wrong type.
+        # `setdefault(...)[id] = ...` raised TypeError on a list. Repair just
+        # this bucket and leave every other key alone.
+        bucket = settings["enabledPlugins"] = {}
+    bucket[plugin_id] = bool(enabled)
     write_json_atomic(settings_path, settings)
 
 
@@ -341,7 +401,7 @@ def remove_plugin_from_settings(
     settings_path: os.PathLike[str] | str,
     plugin_id: str,
 ) -> None:
-    settings = _read_settings(settings_path)
+    settings = _read_settings_for_write(settings_path)
     enabled = settings.get("enabledPlugins")
     if isinstance(enabled, dict):
         enabled.pop(plugin_id, None)
@@ -4652,7 +4712,12 @@ def collect_context_sources(
             origin = srv.plugin_id or srv.scope
             sources.append(_make_src(
                 srv.name, "mcp-tools", "", f"- {srv.name} ({origin})",
-                actionable=False, scope=_scope_of_source(srv.scope),
+                # Adjustable: `axt mcp disable <name>` turns a server off for
+                # this project, and MCP tool definitions are one of the largest
+                # reducible slices of the window. `actionable` is consumed only
+                # by `context --json`, whose readers are asking exactly "what
+                # can I cut" — marking these false pointed them away from it.
+                actionable=True, scope=_scope_of_source(srv.scope),
             ))
     except OSError:
         pass
@@ -4665,7 +4730,8 @@ def collect_context_sources(
             if not enabled.get(p.id):
                 continue
             text = f"Plugin: {p.name} v{p.version} — {p.description or ''}"
-            sources.append(_make_src(p.name, "plugins", p.install_path, text, actionable=False))
+            # Adjustable for the same reason: `axt plugin disable <id>`.
+            sources.append(_make_src(p.name, "plugins", p.install_path, text, actionable=True))
     except OSError:
         pass
 

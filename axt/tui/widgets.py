@@ -303,11 +303,16 @@ def render_tab_bar(stdscr, y: int, x: int, w: int, active_idx: int, focused: boo
     active_unfocused = _safe_pair(8, curses.A_BOLD | curses.A_UNDERLINE)
     # Compute total cell width with full names; if it doesn't fit, fall back
     # to the short labels so a narrow terminal still shows every tab.
-    full_widths = [cell_width(f" {i + 1}·{long} ") for i, (_, _short, long) in enumerate(MAIN_TABS)]
+    # Brackets, not just colour, mark the active tab — the same convention the
+    # sub-tab bar already uses. Without them the drawn text is identical
+    # whichever tab is active, so a monochrome terminal, NO_COLOR, or a
+    # colour-blind reader has nothing to go on. Every cell is bracket-width so
+    # the row does not shift as the active tab moves.
+    full_widths = [cell_width(f"[{i + 1}·{long}]") for i, (_, _short, long) in enumerate(MAIN_TABS)]
     use_full = (cur + sum(full_widths)) <= tab_limit
     for i, (_, short, long) in enumerate(MAIN_TABS):
         label = f"{i + 1}·{long if use_full else short}"
-        cell = f" {label} "
+        cell = f"[{label}]" if i == active_idx else f" {label} "
         if i == active_idx:
             attr = active_focused if focused else active_unfocused
         else:
