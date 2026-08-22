@@ -973,7 +973,13 @@ def cli_vault_add(args) -> int:
 
 def cli_vault_install(args) -> int:
     import shutil
-    market_dir = PATHS.marketplaces / args.marketplace
+    # The registry owns where a marketplace lives. A `dir:` marketplace keeps
+    # its external path in `installLocation` (add_marketplace never copies it),
+    # so assuming `<marketplaces>/<name>` made installing from a local
+    # marketplace impossible — that directory never exists.
+    entry = read_json(PATHS.known_marketplaces, fallback={}).get(args.marketplace)
+    registered = entry.get("installLocation") if isinstance(entry, dict) else None
+    market_dir = Path(registered) if registered else PATHS.marketplaces / args.marketplace
     source = find_plugin_source_dir(market_dir, args.name)
     if not source:
         # Only reached once resolution has failed, so the success path is
