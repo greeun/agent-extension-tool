@@ -377,6 +377,39 @@ def _set_settings_flag(
     write_json_atomic(settings_path, settings)
 
 
+def project_local_settings_path(cwd: os.PathLike[str] | str | None = None) -> Path:
+    """`<cwd>/.claude/settings.local.json` — the highest-precedence scope."""
+    base = Path(cwd) if cwd is not None else Path.cwd()
+    return base / ".claude" / "settings.local.json"
+
+
+def resolve_plugin_enabled(
+    plugin_id: str,
+    *,
+    user_settings: os.PathLike[str] | str,
+    cwd: os.PathLike[str] | str | None = None,
+) -> bool:
+    """Is `plugin_id` active here, resolving local > project > user.
+
+    Claude Code exposes three installation scopes (`claude plugin
+    enable/disable --scope user|project|local`), and a per-project `disable`
+    only means anything if the narrower scope *overrides* the wider one — under
+    a logical OR it would be a no-op. So the nearest scope that states a value
+    wins, and an absent value defers outward rather than counting as false.
+
+    axt read this four different ways before: `plugin list` OR'd user and
+    project, while the two readers whose answer has consequences — the MCP
+    server list and the context analysis — looked only at user settings, so
+    `plugin enable --scope project` wrote a value axt itself then ignored.
+    """
+    for path in (project_local_settings_path(cwd), project_settings_path(cwd),
+                 Path(user_settings)):
+        value = read_enabled_plugins(path).get(plugin_id)
+        if value is not None:
+            return bool(value)
+    return False
+
+
 def read_enabled_plugins(settings_path: os.PathLike[str] | str) -> dict[str, bool]:
     return _read_settings_flag_map(settings_path, "enabledPlugins")
 
@@ -601,8 +634,8 @@ def _active_plugins() -> list[PluginInfo]:
     mcp sub-tab loader).
     """
     plugins = list_installed_plugins(PATHS.installed_plugins, PATHS.known_marketplaces)
-    enabled = read_enabled_plugins(PATHS.settings)
-    return [p for p in plugins if enabled.get(p.id) is True]
+    return [p for p in plugins
+            if resolve_plugin_enabled(p.id, user_settings=PATHS.settings)]
 
 
 def add_installed_plugin(
@@ -4737,9 +4770,11 @@ def collect_context_sources(
     # 7. plugins
     try:
         plugins = list_installed_plugins(installed_plugins_path)
-        enabled = read_enabled_plugins(home / ".claude" / "settings.json")
+        user_settings = home / ".claude" / "settings.json"
         for p in plugins:
-            if not enabled.get(p.id):
+            # Same precedence the rest of axt now uses: a plugin disabled for
+            # this project must not be counted against its context budget.
+            if not resolve_plugin_enabled(p.id, user_settings=user_settings, cwd=proj):
                 continue
             text = f"Plugin: {p.name} v{p.version} — {p.description or ''}"
             # Adjustable for the same reason: `axt plugin disable <id>`.

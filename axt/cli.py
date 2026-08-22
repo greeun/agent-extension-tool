@@ -453,7 +453,8 @@ def cli_plugin_list(args) -> int:
     for p in plugins:
         gv = enabled_g.get(p.id)
         pv = enabled_p.get(p.id)
-        is_active = gv is True or pv is True
+        # local > project > user, not a logical OR — see resolve_plugin_enabled.
+        is_active = resolve_plugin_enabled(p.id, user_settings=PATHS.settings)
         if is_active:
             active += 1
         g_mark = _green("●") if gv is True else (_dim("○") if gv is False else _dim("·"))

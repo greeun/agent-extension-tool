@@ -237,7 +237,7 @@ Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) 
 - `read_marked_for_update`, `set_marked_for_update`
 - `read_extra_marketplaces`
 - 우선순위: project local > project > global
-  > **부분 구현**: hooks 와 컨텍스트 분석은 `settings.local.json` 을 읽지만, `enabledPlugins` 해석 경로는 global 과 project 의 `settings.json` 만 본다 — `settings.local.json` 의 플러그인 오버라이드는 무시된다.
+  > `resolve_plugin_enabled()` 이 이 사슬을 구현한다 — 가장 가까운 스코프의 값이 이기고, 값이 없으면 바깥 스코프로 넘어가며, 어디에도 없으면 비활성이다. `claude plugin enable/disable --scope user|project|local` 과 같은 규칙 (프로젝트 단위 disable 이 논리합이라면 no-op 이 되므로). `plugin list` / MCP 서버 수집 / 컨텍스트 분석이 모두 이 함수를 쓴다.
 
 ### 3.4 vault (Section 5, 가장 큰 도메인)
 - 타입: `ExtensionType`, `VaultItem`, `AxtProfile`, `SyncResult`, `MigrateResult`, `PluginRef`
