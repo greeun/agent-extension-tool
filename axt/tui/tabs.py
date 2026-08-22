@@ -114,6 +114,7 @@ class TuiState:
     # re-walks ~/.claude/projects/* so the `Used` column reflects current
     # reality with no manual `f`. The main loop polls while loading is True.
     vault_scan_loading: bool = False
+    vault_scan_failed: str = ""
     vault_scan_thread: Optional[Any] = None  # threading.Thread, kept generic
     vault_scanned_at: Optional[str] = None   # ISO8601 of the last completed scan
 
@@ -140,6 +141,9 @@ class TuiState:
     update_statuses: Optional[dict[tuple[str, str], Any]] = None  # (type, name) → UpdateStatus
     update_checked_at: Optional[str] = None  # ISO8601 of the last completed check
     update_check_loading: bool = False
+    # Set when a whole sweep/scan fails. Without it a dead worker renders
+    # exactly like a clean empty result and the user never learns it died.
+    update_check_failed: str = ""
     update_check_thread: Optional[Any] = None  # threading.Thread, kept generic
 
     # Usage data caches (None = not loaded yet).
@@ -149,6 +153,7 @@ class TuiState:
     # `usage_entries` / `usage_config`; the main loop polls while
     # `usage_loading` is True so the next frame picks up the result.
     usage_loading: bool = False
+    usage_load_failed: str = ""
     usage_load_thread: Optional[Any] = None  # threading.Thread, kept generic
     # Viewport scroll offset (lines, not pixels). Bumped by j/k/PgUp/PgDn
     # in `handle_usage_input` and clamped by `render_usage_tab` against
@@ -492,6 +497,12 @@ def _kick_vault_scan(state: TuiState) -> None:
             state.vault_usage_index = index
             state.vault_scanned_at = _iso_now()
             _save_scan_cache(index, mode)
+            state.vault_scan_failed = ""
+        except Exception as exc:  # noqa: BLE001
+            # An escaping exception would be printed to stderr by the default
+            # thread excepthook — the same terminal curses owns, which garbles
+            # the screen. Record it for the status line instead.
+            state.vault_scan_failed = str(exc) or exc.__class__.__name__
         finally:
             state.vault_scan_loading = False
 
@@ -543,12 +554,14 @@ def _update_check_worker(state: TuiState) -> None:
     try:
         statuses = check_all_updates(types=_UPDATE_CHECK_TYPES)
         checked_at = _iso_now()
+        state.update_check_failed = ""
         _bind_update_statuses(state, statuses, checked_at)
         save_cached_update_statuses(statuses, checked_at)
-    except Exception:  # noqa: BLE001 — a broken sweep must not kill the thread loop
+    except Exception as exc:  # noqa: BLE001 — a broken sweep must not kill the thread loop
         if state.update_statuses is None:
             state.update_statuses = {}
         state.update_checked_at = _iso_now()
+        state.update_check_failed = str(exc) or exc.__class__.__name__
     finally:
         state.update_check_loading = False
 
@@ -1441,6 +1454,7 @@ def _kick_usage_reload(state: TuiState) -> None:
     """
     if state.usage_loading:
         return
+    state.usage_load_failed = ""   # an explicit reload is a retry
     state.usage_loading = True
     set_status(state, "Loading Claude usage…")
 
@@ -1471,8 +1485,14 @@ def _kick_usage_reload(state: TuiState) -> None:
                 )
             state.usage_config = config
             state.usage_entries = entries
+            state.usage_load_failed = ""
             if state.status == "Loading Claude usage…":
                 set_status(state, "")
+        except Exception as exc:  # noqa: BLE001 — same reason as the vault scan
+            # Deliberately does NOT bind an empty list: "load failed" and
+            # "loaded, zero entries" must stay distinguishable, which is the
+            # whole point of surfacing this.
+            state.usage_load_failed = str(exc) or exc.__class__.__name__
         finally:
             state.usage_loading = False
 
@@ -1671,7 +1691,10 @@ def _usage_summary_lines(
 def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # Snapshot before kick — keeps the three render branches consistent.
     entries = state.usage_entries
-    if entries is None and not state.usage_loading:
+    # A failed load leaves `entries` None on purpose (so it stays distinct from
+    # an empty result), so the failure flag is what stops this re-kicking every
+    # frame. `r` clears it to retry.
+    if entries is None and not state.usage_loading and not state.usage_load_failed:
         _kick_usage_reload(state)
     config = state.usage_config or load_config(AXT_CONFIG_PATH)
 
@@ -3936,6 +3959,10 @@ def _upd_cell(state: TuiState, sub: str, item: Any) -> str:
         return "─"
     if state.update_statuses is None:
         return "…"
+    if state.update_check_failed:
+        # The whole sweep died. Reusing the per-item "check failed" glyph is
+        # the point: an empty result set otherwise reads as "all up to date".
+        return "!"
     st = state.update_statuses.get(target)
     if st is None:
         return "─"

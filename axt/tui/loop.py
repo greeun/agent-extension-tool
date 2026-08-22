@@ -205,6 +205,14 @@ def _extensions_shortcuts(state: TuiState) -> str:
     if state.ext_searching:
         return f"/{state.ext_search.get(sub, '')}█  Enter:apply  Esc:cancel"
     parts = ["1-3:tab", "[/]:sub", "j/k:nav"]
+    # A dead background worker otherwise renders exactly like a clean empty
+    # result. This chip persists (unlike a status message, which auto-clears)
+    # and names the key that retries.
+    for failed, label, retry in ((state.update_check_failed, "update check", "r"),
+                                 (state.vault_scan_failed, "vault scan", "f"),
+                                 (state.usage_load_failed, "usage load", "r")):
+        if failed:
+            parts.append(f"✗ {label} failed({retry}:retry)")
     q = state.ext_search.get(sub, "")
     if q:
         parts.append(f"search:{q!r}(Esc:clear)")
