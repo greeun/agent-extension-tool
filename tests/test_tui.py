@@ -8493,6 +8493,99 @@ def test_sort_columns_match_rendered_columns():
                 f"{sub} sort {key!r} marks unknown column {marked!r}"
 
 
+def test_mark_sorted_header_keeps_the_glyph_inside_its_own_column():
+    """A cell is drawn `width + 2` cells wide, so those two trailing cells are
+    the whole gap to the next label. On a header that already fills `width`
+    (Vault, Proj, Glob, Upd) the `"Label ▲"` form spent all of it and rendered
+    `Vault ▲Proj` — the mark read as Proj's prefix. The separator space is
+    dropped exactly when the column can no longer afford it."""
+    cols = [axt.TableColumn("vault", "Vault", 5), axt.TableColumn("ver", "Ver", 8)]
+
+    tight = axt.mark_sorted_header(cols, "vault", "▲")
+    assert tight[0].label == "Vault▲"    # glued — the gap survives
+    assert tight[0].width == 5           # width untouched: the data never shifts
+    assert tight[1].label == "Ver"       # unmarked columns stay plain
+    assert axt.fit_cells(tight[0].label, tight[0].width + 2).endswith(" ")
+
+    roomy = axt.mark_sorted_header(cols, "ver", "▼")
+    assert roomy[1].label == "Ver ▼"     # room to spare — keep the separator
+
+
+def test_sorted_header_never_touches_the_next_column(tmp_path, monkeypatch):
+    """Every sortable column on every sub-tab keeps at least one blank cell
+    after its ▲/▼, so the mark can never be read as the next column's prefix."""
+    import json
+    from types import SimpleNamespace
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json",
+        settings=tmp_path / "s.json",
+        vault=tmp_path / "vault",
+        claude_dir=tmp_path / "claude",
+    ))
+    (tmp_path / "ip.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {"p@m": [{"scope": "u", "installPath": "/p", "version": "1",
+                             "installedAt": "", "lastUpdated": ""}]},
+    }))
+    caches = {
+        "plugins": axt.list_installed_plugins(tmp_path / "ip.json"),
+        "skills": [axt.SkillInfo(name="sk", path="/u/skills/sk",
+                                 is_symlink=False, source="user")],
+        "commands": [axt.CommandInfo(name="c", source="user", source_path="/c.md",
+                                     description="", content="")],
+        "agents": [axt.AgentInfo(name="a", source="user", source_path="/a.md",
+                                 description="")],
+        "mcp": [SimpleNamespace(name="srv", scope="user", transport="stdio",
+                                disabled=False, plugin_id="", version="2.0",
+                                url="", command="node", args_list=[], env_dict={})],
+        "hooks": [axt.HookInfo(event="Stop", matcher="*", source="user",
+                               source_path="/s.json", type="command", command="x")],
+        "market": [axt.MarketplaceInfo(
+            name="mkt", source=axt.MarketplaceSource(kind="github", repo="o/r"),
+            install_location="/loc", last_updated="2026-01-01T00:00:00Z")],
+    }
+
+    captured: list = []
+    real_render_table = axt.render_table
+
+    def spy(stdscr, y, x, h, w, columns, rows, **kw):
+        captured.append(columns)
+        return real_render_table(stdscr, y, x, h, w, columns, rows, **kw)
+
+    monkeypatch.setattr("axt.tui.tabs.render_table", spy)
+
+    def assert_no_collision(columns, where):
+        # Rebuild the header exactly as render_table draws it: one fit_cells()
+        # cell per column, each `width + 2` wide.
+        header = "".join(axt.fit_cells(c.label, c.width + 2) for c in columns)
+        for glyph in ("▲", "▼"):
+            i = header.find(glyph)
+            assert i == -1 or header[i + 1:i + 2] in (" ", ""), \
+                f"{where}: {header!r} — the sort mark is flush against the next label"
+
+    for sub, cache in caches.items():
+        for key, *_rest in axt._SORT_COLUMNS[sub]:
+            state = axt.TuiState()
+            state.ext_sub_tab = sub
+            state.ext_cache[sub] = cache
+            state.ext_sort[sub] = key
+            captured.clear()
+            axt.render_extensions_tab(_make_stdscr(rows=30, cols=160), state, 0, 28, 160)
+            assert captured, f"{sub} sorted by {key}: nothing rendered"
+            assert_no_collision(captured[0], f"{sub} sorted by {key}")
+
+    for key, *_rest in axt._SORT_COLUMNS["vault"]:
+        state = axt.TuiState()
+        state.refresh_token = 1
+        state.vault_items = [axt.VaultItem(name="x", type="skill", path="/x",
+                                           description="")]
+        state.vault_sort = key
+        captured.clear()
+        axt.render_vault_tab(_make_stdscr(rows=30, cols=160), state, 0, 28, 160)
+        assert captured, f"vault sorted by {key}: nothing rendered"
+        assert_no_collision(captured[0], f"vault sorted by {key}")
+
+
 def test_every_sub_tab_has_a_sort_cycle():
     """The `s` cycle must cover all eight Extensions sub-tabs."""
     assert set(axt._SORT_COLUMNS) == {k for k, _label in axt.EXTENSION_SUB_TABS}

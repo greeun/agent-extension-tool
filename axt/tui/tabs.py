@@ -954,7 +954,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         TableColumn("used", "Used", used_w),
     ]
     # Append a direction arrow to the header of the column the list is sorted by
-    # (each fixed column has +2 cells of slack, so the glyph never shifts data).
+    # (the width never changes, so the glyph never shifts the data below it).
     columns = _mark_sorted_column(state, "vault", columns)
     rows: list[dict[str, str]] = []
     # The leftmost ■/□ prefix = Space selection (bulk-unlink marks). Project
@@ -2508,10 +2508,7 @@ def _render_project_files_table(stdscr, state: TuiState, y0: int, h: int, w: int
     # Mark the header of the column the list is currently sorted by (`s` cycles it).
     _, _, _, marked_col, glyph = _project_sort_spec(state)
     if marked_col:
-        columns = [
-            TableColumn(c.key, f"{c.label} {glyph}", c.width) if c.key == marked_col else c
-            for c in columns
-        ]
+        columns = mark_sorted_header(columns, marked_col, glyph)
     rows_data = [{
         "name": i.name,
         "category": CATEGORY_LABELS.get(i.category, i.category),
@@ -3169,10 +3166,7 @@ def _mark_sorted_column(state: TuiState, sub: str, cols: list) -> list:
         return cols
     marked_col = spec[1]
     glyph = "▼" if _sort_state(state, sub)[1] else "▲"
-    return [
-        TableColumn(c.key, f"{c.label} {glyph}", c.width) if c.key == marked_col else c
-        for c in cols
-    ]
+    return mark_sorted_header(cols, marked_col, glyph)
 
 
 def subtab_sort_label(state: TuiState, sub: str) -> str:

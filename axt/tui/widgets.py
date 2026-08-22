@@ -346,6 +346,28 @@ class TableColumn:
     width: int
 
 
+def mark_sorted_header(cols: list[TableColumn], key: str, glyph: str) -> list[TableColumn]:
+    """Return `cols` with column `key`'s header carrying the ▲/▼ sort glyph.
+
+    A cell is drawn `width + 2` cells wide, so those two trailing cells are the
+    only gap between one header and the next column's label. Several headers
+    (Vault, Proj, Glob, Upd) are exactly `width` long, and a `"Label ▲"` form
+    spends that entire gap — the arrow then lands flush against the following
+    label and reads as *its* prefix. So the separator space is only spent when
+    the column can still afford a two-cell gap afterwards; otherwise the glyph
+    is glued to its own label, which always leaves at least one blank cell.
+    The column's width never changes, so marking cannot shift the data below.
+    """
+    out: list[TableColumn] = []
+    for c in cols:
+        if c.key != key:
+            out.append(c)
+            continue
+        sep = " " if cell_width(c.label) + 1 + cell_width(glyph) <= c.width else ""
+        out.append(TableColumn(c.key, f"{c.label}{sep}{glyph}", c.width))
+    return out
+
+
 def render_title_bar(stdscr, y: int, h: int, w: int, title: str, *,
                      search: Optional[str] = None) -> tuple[int, int]:
     """Draw a full-width section / status TITLE at row ``y`` using ``CP_TITLE()``
