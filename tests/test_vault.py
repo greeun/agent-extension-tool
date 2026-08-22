@@ -845,3 +845,64 @@ def test_find_broken_links(tmp_path: Path):
 
 def test_find_broken_links_missing_dirs(tmp_path: Path):
     assert axt.find_broken_links(tmp_path / "nope") == []
+
+
+# ─── Gap-code additions (Phase C, Agent C) ───────────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_unlink_from_global_keeps_vault_content(tmp_path: Path):
+    """Deactivating globally removes only the symlink — the vault keeps the
+    real content (and every other link to it).
+
+    US-VLT05 AC2. Prevents: `unlink-global` following the symlink and deleting
+    the stored extension, which would silently destroy the user's only copy
+    and break every project still linking it.
+    """
+    # TC-UNIT-047 (US-VLT05 AC2)
+    vault = _make_vault(tmp_path)
+    global_dir = tmp_path / "global"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    axt.link_to_global(global_dir, skill)
+    axt.link_to_project(proj, skill)
+
+    axt.unlink_from_global(global_dir, skill)
+
+    assert not (global_dir / "skills" / "myskill").exists()
+    stored = vault / "skills" / "myskill"
+    assert stored.is_dir() and not stored.is_symlink()
+    assert (stored / "SKILL.md").read_text().startswith("---")
+    # A second, independent link to the same vault item is untouched.
+    assert (proj / ".claude" / "skills" / "myskill").is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_agents_force_overrides_lock_without_removing_it(tmp_path: Path):
+    """`--force-agents` mirrors into a lock-managed `.agents` tree, but leaves
+    the third-party installer's `.skill-lock.json` in place.
+
+    US-VLT06 AC3. Prevents two regressions: force silently doing nothing (the
+    guard is checked before `force`), and force "taking ownership" by deleting
+    the lock file — which would make the other installer overwrite our mirror
+    on its next run with no warning.
+    """
+    # TC-UNIT-051 (US-VLT06 AC3)
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    lock = agents / axt.SKILL_LOCK_NAME
+    lock.write_text('{"owner": "vercel-labs/skills"}')
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+
+    ok, msg = axt.link_to_agents(agents, skill, force=True)
+
+    link = agents / "skills" / "myskill"
+    assert ok is True
+    assert "myskill" in msg
+    assert link.is_symlink()
+    # Mirror points at the vault content, exactly as the unforced path does.
+    assert os.path.realpath(link) == os.path.realpath(skill.path)
+    # The installer's marker survives — axt does not claim the tree.
+    assert lock.exists() and lock.read_text() == '{"owner": "vercel-labs/skills"}'

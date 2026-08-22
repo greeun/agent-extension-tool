@@ -9,6 +9,7 @@ object after our reload.
 """
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import sys
 from pathlib import Path
@@ -69,8 +70,12 @@ def test_axt_config_dir_xdg(clean_env, monkeypatch):
 
 def test_paths_object_is_frozen(clean_env):
     """PATHS is a frozen dataclass — assignment must fail."""
+    # Fixed: `pytest.raises(Exception)` accepted ANY failure (a typo in the
+    # attribute name, an import error) as proof of frozen-ness — a false
+    # positive per TEST_DEDUP_POLICY.md §4. Narrowed to the two types a
+    # frozen dataclass can actually raise.
     axt = _reload_axt()
-    with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
+    with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
         axt.PATHS.claude_dir = Path("/nope")  # type: ignore[misc]
 
 
@@ -94,3 +99,58 @@ def test_vault_subdirs_under_axt_dir(clean_env, monkeypatch):
     assert axt.PATHS.vault_agents == Path("/h/.axt/vault/agents")
 
 
+
+# ─── Gap-code additions (Phase C, Agent C) ───────────────────────────────────
+
+
+def test_claude_config_dir_moves_the_claude_json_file(clean_env, monkeypatch):
+    """`~/.claude.json` (MCP registrations, project entries, plan tier) must
+    follow CLAUDE_CONFIG_DIR too.
+
+    Prevents: a user on a relocated config dir having axt read/write the
+    home-default `~/.claude.json` while Claude Code uses the relocated one —
+    `mcp disable` writes would land in a file nothing reads.
+    """
+    # TC-UNIT-004 (US-SYS03 AC1)
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: Path("/h")))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/custom/claude")
+    axt = _reload_axt()
+    assert axt.CLAUDE_CONFIG_FILE == Path("/custom/claude/.claude.json")
+    assert axt.PATHS.claude_config == Path("/custom/claude/.claude.json")
+
+    # Unset → the file sits beside ~/.claude/, not inside it.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    axt = _reload_axt()
+    assert axt.CLAUDE_CONFIG_FILE == Path("/h/.claude.json")
+    assert axt.PATHS.claude_config == Path("/h/.claude.json")
+
+
+def test_axt_config_dir_windows_uses_appdata(clean_env, monkeypatch):
+    """On win32 the axt config dir is %APPDATA%/axt, falling back to
+    ~/AppData/Roaming/axt when APPDATA is unset.
+
+    Prevents: writing the theme/plan config (and the onboarded marker) to a
+    POSIX-style `~/.config/axt` on Windows, where nothing reads it back.
+    """
+    # TC-UNIT-007 (US-SYS03 AC2·AC3)
+    try:
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setenv("APPDATA", "C:\\Users\\u\\AppData\\Roaming")
+        axt = _reload_axt()
+        assert axt.IS_WINDOWS is True
+        assert axt.AXT_CONFIG_DIR == Path("C:\\Users\\u\\AppData\\Roaming") / "axt"
+        assert axt.AXT_CONFIG_PATH == Path("C:\\Users\\u\\AppData\\Roaming") / "axt" / "config.json"
+        # XDG_CONFIG_HOME must NOT win on Windows.
+        monkeypatch.setenv("XDG_CONFIG_HOME", "/xdg")
+        axt = _reload_axt()
+        assert axt.AXT_CONFIG_DIR == Path("C:\\Users\\u\\AppData\\Roaming") / "axt"
+
+        monkeypatch.delenv("APPDATA")
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: Path("/h")))
+        axt = _reload_axt()
+        assert axt.AXT_CONFIG_DIR == Path("/h") / "AppData" / "Roaming" / "axt"
+    finally:
+        # Undo BEFORE reloading: a module left with IS_WINDOWS=True would make
+        # every later symlink test in the session fail.
+        monkeypatch.undo()
+        _reload_axt()

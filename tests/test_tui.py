@@ -10,6 +10,8 @@ import curses
 import json
 import os
 import sys
+import types
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -541,11 +543,21 @@ def test_render_table_scrolls_to_keep_selection_visible():
 
 
 def test_render_table_empty_rows():
-    """Empty rows list should not crash."""
+    """Empty rows list should not crash, and must draw the header only —
+    a stray data row for an empty list would show phantom content."""
+    # Fixed: the comment claimed "no data rows drawn" but nothing asserted it
+    # (FALSE_POSITIVE_AUDIT M-1). The header rows and the returned count are
+    # the observable evidence, so assert both.
     scr = _make_stdscr()
     cols = [axt.TableColumn("name", "Name", 20)]
-    axt.render_table(scr, 0, 0, 15, 80, cols, [], selected=0)
-    # No crash + no data rows drawn.
+    drawn = axt.render_table(scr, 0, 0, 15, 80, cols, [], selected=0)
+    assert drawn == 0
+    header_ys = {c[0] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str)}
+    assert 0 in header_ys, "the column header must still be drawn"
+    assert any("Name" in c[2] for c in scr.calls
+               if len(c) >= 3 and isinstance(c[2], str) and c[0] == 0)
+    # Header row (y=0) + its separator rule (y=1) only — nothing below.
+    assert max(header_ys) <= 1, f"data rows drawn for an empty table: {sorted(header_ys)}"
 
 
 # ─── render_detail_panel ─────────────────────────────────────────────────────
@@ -3486,9 +3498,18 @@ def test_render_usage_tab_with_data_does_not_raise(monkeypatch):
     # Pre-seed config to avoid a live load_config call.
     state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
 
-    scr = _make_stdscr(rows=40, cols=140)
+    # Fixed: "does not raise" also passed when the renderer drew nothing at all
+    # (FALSE_POSITIVE_AUDIT M-2). Assert the synthetic entry actually reaches
+    # the screen. The viewport is sized to the whole report so the model line
+    # at the bottom of the buffer is not clipped away.
+    scr = _make_stdscr(rows=60, cols=140)
     # Must NOT raise NameError("_today_in_tz" / "_unified_to_claude").
-    axt.render_usage_tab(scr, state, y0=3, h=30, w=140)
+    axt.render_usage_tab(scr, state, y0=0, h=58, w=140)
+    flat = "\n".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "claude-sonnet-4" in flat, "the entry's model never reached the screen"
+    month = next(l for l in flat.splitlines() if l.strip().startswith("Month"))
+    assert "sessions=  1" in month
+    assert "in=   1.0K" in flat and "out=    500" in flat
 
 
 def test_render_extensions_tab_mcp_sub_tab_does_not_raise(monkeypatch, tmp_path):
@@ -3517,6 +3538,12 @@ def test_render_extensions_tab_mcp_sub_tab_does_not_raise(monkeypatch, tmp_path)
     scr = _make_stdscr(rows=40, cols=140)
     # Must NOT raise NameError("_active_plugins").
     axt.render_extensions_tab(scr, state, y0=3, h=30, w=140)
+    # Fixed: "does not raise" also passed when nothing was drawn
+    # (FALSE_POSITIVE_AUDIT M-3). Assert the MCP table actually rendered.
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "[ MCP ]" in flat, "the MCP sub-tab must be the active one"
+    for header in ("Server", "Scope", "Transport"):
+        assert header in flat, f"MCP column header {header!r} was not drawn"
 
 
 # ─── Focus-layer key routing (per-layer handlers) ────────────────────────────
@@ -4809,14 +4836,40 @@ def test_preview_modal_search_esc_cancels_input(monkeypatch):
 
 
 def test_preview_modal_search_esc_clears_then_closes(monkeypatch):
+    """Esc is a one-step undo: the first one drops the search, the second
+    closes the modal. A regression that closed on the FIRST Esc is the bug
+    this guards — the same two-step Esc contract Vault/Extensions/Context use."""
+    # Fixed: the test had zero assertions, so a modal that closed on the first
+    # Esc would simply consume one key fewer and still pass
+    # (FALSE_POSITIVE_AUDIT HIGH-1). Assert the key budget AND the extra frame
+    # the surviving modal must repaint after the search is cleared.
     scr = _make_stdscr()
     content = "\n".join([f"row {i}" for i in range(30)] + ["a NEEDLE here"])
     # Run a search, first Esc clears it (modal stays), second Esc closes.
-    # Exactly enough keys: exhausting them before return would raise StopIteration.
+    # 1 (`/`) + 6 (query) + 1 (Enter) + 2 (Esc, Esc) = 10 keys.
     keys = [ord("/")] + _ord_seq("needle") + [10, 27, 27]
     win, _calls = _make_modal_win(keys)
     monkeypatch.setattr("curses.newwin", lambda *a, **kw: win)
     axt.preview_modal(scr, content, title="Search")  # must not raise
+
+    assert win.getch.call_count == 10, (
+        "closing on the first Esc would consume 9 keys — the modal must "
+        "survive it and read the second")
+    # One frame per main-loop pass: initial, post-search, post-first-Esc.
+    frames: list[list[str]] = []
+    for call in win.calls:
+        if len(call) < 3 or not isinstance(call[2], str):
+            continue
+        if " Search " in call[2]:
+            frames.append([])
+        if frames:
+            frames[-1].append(call[2])
+    assert len(frames) == 3, f"expected 3 repaints, saw {len(frames)}"
+    searched, cleared = "".join(frames[1]), "".join(frames[2])
+    assert "[match 1/1]" in searched
+    assert "NEEDLE" in cleared, "the body must still be on screen after the first Esc"
+    assert "[match" not in cleared and "[no match]" not in cleared, \
+        "the first Esc clears the search chip but keeps the modal"
 
 
 # ─── open_in_editor success path ─────────────────────────────────────────────
@@ -9514,3 +9567,1209 @@ def test_act_update_bulk_flashes_current_item(monkeypatch):
     axt.tui.tabs._act_update(state, None, "plugins", ord("u"))
     assert any("a@mk" in m and "(1/2)" in m for m in flashes)
     assert any("b@mk" in m and "(2/2)" in m for m in flashes)
+
+
+# ─── E2E journeys (TC-E2E-*) ─────────────────────────────────────────────────
+#
+# A journey drives `_tui_loop` with a real key sequence and asserts BOTH the
+# final rendered screen and the final on-disk state. `_tui_loop` owns its
+# TuiState, so a `_render_frame` spy is the only way to observe it — the same
+# technique test_tui_loop_number_key_switches_tab_then_quit already uses,
+# generalized here to capture every frame.
+#
+# Focus-layer note (US-TUI02 AC1): the TUI opens on the `mainTab` layer and
+# `loop.py` drops any key the active layer does not own. A journey that ends
+# in a body action therefore has to descend first (↓ mainTab→subTab→content).
+# That descent is part of the real user journey, not test scaffolding.
+
+
+def _e2e_paths(tmp_path, monkeypatch):
+    """Full path isolation: every `Paths` field under tmp_path (the shorter
+    `_setup_isolated_paths` leaves ~8 fields pointing at the real $HOME, which
+    a whole-frame journey would happily read)."""
+    home = tmp_path / "home"
+    claude = tmp_path / "claude"
+    vault = tmp_path / "vault"
+    axt_cfg = tmp_path / "axt-config"
+    proj = tmp_path / "proj"
+    for d in (home, claude, vault, axt_cfg, proj):
+        d.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("axt.HOME", home)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        claude_dir=claude,
+        claude_config=tmp_path / "claude.json",
+        settings=claude / "settings.json",
+        known_marketplaces=claude / "plugins" / "known_marketplaces.json",
+        installed_plugins=claude / "plugins" / "installed_plugins.json",
+        blocklist=claude / "plugins" / "blocklist.json",
+        plugin_cache=claude / "plugins" / "cache",
+        marketplaces=claude / "plugins" / "marketplaces",
+        skills=claude / "skills",
+        projects=claude / "projects",
+        stats_cache=claude / "stats-cache.json",
+        usage_snapshot=claude / "usage-snapshot.json",
+        axt_dir=home / ".axt",
+        vault=vault,
+        vault_skills=vault / "skills",
+        vault_commands=vault / "commands",
+        vault_agents=vault / "agents",
+    ))
+    monkeypatch.setattr("axt.AXT_CONFIG_DIR", axt_cfg)
+    monkeypatch.setattr("axt.AXT_CONFIG_PATH", axt_cfg / "config.json")
+    monkeypatch.chdir(proj)
+    return proj
+
+
+def _e2e_quiet(monkeypatch):
+    """_quiet_curses plus a synchronous stand-in for the Usage loader thread."""
+    _quiet_curses(monkeypatch)
+
+    def _fake_usage_reload(state, *a, **kw):
+        state.usage_loading = False
+        if state.usage_entries is None:
+            state.usage_entries = []
+
+    monkeypatch.setattr("axt.tui.tabs._kick_usage_reload", _fake_usage_reload)
+
+
+def _e2e_stub_context(monkeypatch, sources=None):
+    """Freeze `analyze_context` so Context frames don't shell out to git /
+    `claude --version` and don't depend on the developer's own ~/.claude."""
+    if sources is None:
+        sources = [
+            axt.ContextSource(name="CLAUDE.md", category="claude-md", path="/p/CLAUDE.md",
+                              chars=400, estimated_tokens=300, percentage=3.0,
+                              actionable=True, content="a\n", scope="project"),
+            axt.ContextSource(name="settings.json", category="settings", path="/p/s.json",
+                              chars=200, estimated_tokens=200, percentage=2.0,
+                              actionable=True, content="b\n", scope="project"),
+            axt.ContextSource(name="system-prompt", category="system-prompt", path="",
+                              chars=100, estimated_tokens=100, percentage=1.0,
+                              actionable=False, content="c\n", scope="global"),
+        ]
+
+    def _analyze(*a, **kw):
+        return axt.ContextAnalysis(
+            total_tokens=sum(s.estimated_tokens for s in sources),
+            context_window_size=200_000, used_percent=0.3, model="claude-sonnet",
+            sources=list(sources),
+            cost_impact=axt.CostImpact(
+                model="claude-sonnet", cache_write_cost=0.1,
+                cache_read_cost_per_turn=0.01, avg_turns_per_session=30,
+                avg_sessions_per_day=5, per_session_cost=0.5, monthly_cost=9.0),
+        )
+
+    monkeypatch.setattr("axt.tui.tabs.analyze_context", _analyze)
+    return _analyze
+
+
+def _e2e_frames(monkeypatch, extra=None):
+    """Record every rendered frame: drawn text + a snapshot of the loop-owned
+    TuiState at draw time.
+
+    The snapshot matters: `_tui_loop` mutates ONE TuiState for the whole
+    session, so `frame["state"]` always reads as the *final* state. Anything a
+    per-frame assertion needs has to be copied out here.
+    """
+    real = axt.tui.loop._render_frame
+    frames: list[dict] = []
+
+    def spy(stdscr, state):
+        del stdscr.calls[:]
+        real(stdscr, state)
+        frame = {
+            "tab_idx": state.tab_idx,
+            "ext_sub_tab": state.ext_sub_tab,
+            "context_sub_tab": state.context_sub_tab,
+            "focused_layer": state.focused_layer,
+            "status": state.status,
+            "ext_sort_label": axt.subtab_sort_label(state, state.ext_sub_tab),
+            "ext_search": dict(state.ext_search),
+            "ext_marked": {k: set(v) for k, v in state.ext_marked.items()},
+            "vault_search": state.vault_search,
+            "vault_pending": (set(state.vault_pending_project)
+                              | set(state.vault_pending_global)),
+            "project_sort": state.project_sort,
+            "usage_search": state.usage_search,
+            "calls": list(stdscr.calls),
+            "text": "".join(c[2] for c in stdscr.calls
+                            if len(c) >= 3 and isinstance(c[2], str)),
+            "state": state,
+        }
+        if extra is not None:
+            frame.update(extra(state))
+        frames.append(frame)
+
+    monkeypatch.setattr("axt.tui.loop._render_frame", spy)
+    return frames
+
+
+def _e2e_rows(frame, names, name_col=2):
+    """Data rows of the table drawn in `frame`, keyed by the expected name they
+    carry (a long name is clipped to its column, so prefixes count)."""
+    by_y: dict[int, list] = {}
+    for c in frame["calls"]:
+        if len(c) >= 3 and isinstance(c[2], str):
+            by_y.setdefault(c[0], []).append((c[1], c[2]))
+    out: dict[str, list] = {}
+    for _y, cells in by_y.items():
+        if len(cells) <= name_col:
+            continue
+        # render_table's 4-cell prefix: "▸ 1 " / "  1 " (numbered) or
+        # "▸■ " / " □ " (checkbox). Anything else is not a data row.
+        prefix = cells[0][1].replace("▸", " ").strip()
+        if not (prefix.isdigit() or prefix in ("■", "□")):
+            continue
+        drawn = cells[name_col][1].strip()
+        if not drawn:
+            continue
+        hits = [n for n in names if n == drawn or n.startswith(drawn)]
+        if len(hits) == 1:
+            out[hits[0]] = cells
+    return out
+
+
+def _e2e_row_count(frame):
+    """How many table data rows the frame drew (0 = an empty body)."""
+    by_y: dict[int, list] = {}
+    for c in frame["calls"]:
+        if len(c) >= 3 and isinstance(c[2], str):
+            by_y.setdefault(c[0], []).append(c[2])
+    n = 0
+    for cells in by_y.values():
+        prefix = cells[0].replace("▸", " ").strip()
+        if prefix.isdigit() or prefix in ("■", "□"):
+            n += 1
+    return n
+
+
+def _e2e_last(frames, **match):
+    """Last frame matching every given field (e.g. ext_sub_tab="market")."""
+    hits = [f for f in frames if all(f[k] == v for k, v in match.items())]
+    assert hits, f"no frame matched {match}"
+    return hits[-1]
+
+
+def _e2e_vault_skill(name="alpha", version="1.0.0"):
+    d = pathlib_Path(axt.PATHS.vault) / "skills" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {name} skill\nversion: {version}\n---\nbody\n")
+    return d
+
+
+def _e2e_vault_md(sub, name, version="1.0.0"):
+    d = pathlib_Path(axt.PATHS.vault) / sub
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{name}.md"
+    f.write_text(f"---\nname: {name}\ndescription: {name}\nversion: {version}\n---\nbody\n")
+    return f
+
+
+def _e2e_snapshot(root):
+    """(relative path, kind, bytes-or-target) for every entry under `root`."""
+    root = pathlib_Path(root)
+    out = {}
+    if not root.exists():
+        return out
+    for p in sorted(root.rglob("*")):
+        rel = str(p.relative_to(root))
+        if p.is_symlink():
+            out[rel] = ("symlink", os.readlink(p))
+        elif p.is_dir():
+            out[rel] = ("dir", "")
+        else:
+            out[rel] = ("file", p.read_bytes())
+    return out
+
+
+# `Path` is imported at module scope; alias it so the helpers above read
+# unambiguously next to the many local `path` variables in this file.
+pathlib_Path = Path
+
+_DOWN = curses.KEY_DOWN
+
+
+# ── SC-E2E-001 — first-run navigation ────────────────────────────────────────
+
+
+def test_e2e_number_keys_walk_all_three_main_tabs(tmp_path, monkeypatch):
+    """Prevents: a tab-jump regression that lands on the wrong index, or one
+    that leaves focus below the tab row so the next arrow key goes somewhere
+    unexpected. Walks all three tabs, not just one."""
+    # TC-E2E-002
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_stub_context(monkeypatch)
+    frames = _e2e_frames(monkeypatch)
+
+    scr = _loop_stdscr([ord("2"), ord("3"), ord("1"), ord("q")])
+    assert axt._tui_loop(scr) is None
+
+    assert [f["tab_idx"] for f in frames] == [0, 1, 2, 0]
+    assert all(f["focused_layer"] == "mainTab" for f in frames[1:]), \
+        "a number-key jump must return focus to the tab row"
+
+
+def test_e2e_every_sub_tab_shows_content_or_an_actionable_empty_state(tmp_path, monkeypatch):
+    """Prevents: a sub-tab rendering a blank body on a fresh install. Walks
+    Vault→Market and checks each stop, and pins that the Market hint names a
+    key Market actually binds (US-TUI06 AC2)."""
+    # TC-E2E-003
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    frames = _e2e_frames(monkeypatch)
+
+    # ↓ once to the sub-tab bar, then → across all eight sub-tabs. (`]` is the
+    # content-layer binding; an empty Vault refuses that layer, so the
+    # equivalent sub-tab-layer arrows are used here.)
+    scr = _loop_stdscr([_DOWN] + [curses.KEY_RIGHT] * 7 + [ord("q")],
+                       rows=30, cols=120)
+    axt._tui_loop(scr)
+
+    market = _e2e_last(frames, ext_sub_tab="market")
+    assert "No marketplaces added yet." in market["text"]
+    assert "Press `a` to add one (github:user/repo, git:url, dir:/path)." in market["text"]
+    assert any(ord("a") in b.keys for b in axt.SUBTAB_KEYMAP["market"]), \
+        "the empty-state hint must point at a binding that exists"
+
+    # No sub-tab may render a blank body: it either lists rows or explains
+    # what to do next. (MCP always carries the built-in server, so it is the
+    # one sub-tab that cannot reach the empty state on a fresh install.)
+    for key, label in axt.EXTENSION_SUB_TABS:
+        if key == "vault":
+            continue
+        frame = _e2e_last(frames, ext_sub_tab=key)
+        if _e2e_row_count(frame):
+            continue
+        title, hint = axt._empty_state_hint(key)
+        assert title in frame["text"], f"{label}: empty body with no title"
+        assert hint and hint in frame["text"], f"{label}: empty body with no next-step hint"
+
+
+# ── SC-E2E-002 — curator journey ─────────────────────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_e2e_m_migrates_global_extensions_and_repaints_the_vault(tmp_path, monkeypatch):
+    """Prevents: `m` reporting a migration the Vault list never shows (or not
+    running at all). The empty Vault screen tells the user to press `m`, so the
+    key must be reachable from a fresh launch."""
+    # TC-E2E-004
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    claude = pathlib_Path(axt.PATHS.claude_dir)
+    (claude / "skills" / "alpha").mkdir(parents=True)
+    (claude / "skills" / "alpha" / "SKILL.md").write_text("---\ndescription: a\n---\n")
+    (claude / "commands").mkdir(parents=True)
+    (claude / "commands" / "c1.md").write_text("c1 body\n")
+    (claude / "agents").mkdir(parents=True)
+    (claude / "agents" / "a1.md").write_text("a1 body\n")
+    frames = _e2e_frames(monkeypatch)
+
+    scr = _loop_stdscr([_DOWN, _DOWN, ord("m"), ord("q")])
+    axt._tui_loop(scr)
+
+    last = frames[-1]
+    assert last["status"] == "Migrated: +3 skipped 0 broken 0 err 0", (
+        "`m` never reached handle_vault_input — the empty Vault refuses the "
+        "content layer (sub_tab_has_focusable_content), yet its own empty "
+        "state tells the user to press `m`")
+    vault = pathlib_Path(axt.PATHS.vault)
+    assert (vault / "skills" / "alpha" / "SKILL.md").exists()
+    assert (vault / "commands" / "c1.md").exists()
+    assert (vault / "agents" / "a1.md").exists()
+    # FEATURES.md §1.10 defines migrate as a MOVE (no symlink left behind —
+    # that is `import_to_vault`'s contract, which US-VLT01 AC1 conflates).
+    assert not (claude / "skills" / "alpha").exists()
+    assert not (claude / "commands" / "c1.md").exists()
+    rows = _e2e_rows(last, {"alpha", "c1.md", "a1.md"})
+    assert set(rows) == {"alpha", "c1.md", "a1.md"}, \
+        f"migrated items missing from the repainted Vault: {sorted(rows)}"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_e2e_agent_import_shows_up_on_the_vault_sub_tab(tmp_path, monkeypatch):
+    """Prevents: `i` moving a file into the vault without the Vault sub-tab
+    ever noticing — the user would import, switch back, and see nothing."""
+    # TC-E2E-005
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    claude = pathlib_Path(axt.PATHS.claude_dir)
+    (claude / "agents").mkdir(parents=True)
+    (claude / "agents" / "a2.md").write_text("---\nname: a2\n---\nbody\n")
+    frames = _e2e_frames(monkeypatch)
+
+    # ↓↓ to the body, ]×3 → Agents, `i`, [×3 → Vault.
+    keys = [_DOWN, _DOWN] + [ord("]")] * 3 + [ord("i")] + [ord("[")] * 3 + [ord("q")]
+    scr = _loop_stdscr(keys)
+    axt._tui_loop(scr)
+
+    assert (pathlib_Path(axt.PATHS.vault) / "agents" / "a2.md").is_file()
+    assert (claude / "agents" / "a2.md").is_symlink()
+    vault_frame = _e2e_last(frames, ext_sub_tab="vault")
+    rows = _e2e_rows(vault_frame, {"a2.md", "alpha"})
+    assert "a2.md" in rows, \
+        "the Vault list was not reloaded after the import (state.vault_items is stale)"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_e2e_g_then_p_then_enter_applies_both_scopes_at_once(tmp_path, monkeypatch):
+    """Prevents: Enter applying only one of the two pending scopes, or writing
+    the links without recording them in the project profile (which would make
+    the next `y` sync delete them as orphans)."""
+    # TC-E2E-006
+    proj = _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    monkeypatch.setattr("axt.tui.tabs.confirm_modal", lambda *a, **k: True)
+    frames = _e2e_frames(monkeypatch)
+
+    scr = _loop_stdscr([_DOWN, _DOWN, ord("g"), ord("p"), 10, ord("q")])
+    axt._tui_loop(scr)
+
+    assert frames[-1]["status"] == "Applied 2"
+    assert (pathlib_Path(axt.PATHS.claude_dir) / "skills" / "alpha").is_symlink()
+    assert (proj / ".claude" / "skills" / "alpha").is_symlink()
+    profile = axt.read_profile(proj)
+    assert profile is not None and "alpha" in profile.skills
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_e2e_y_sync_makes_disk_match_the_profile_exactly(tmp_path, monkeypatch):
+    """Prevents: sync half-applying — adding the missing link but leaving an
+    orphan behind (or vice versa). The profile is the declaration; after `y`
+    the directory must equal it."""
+    # TC-E2E-007
+    proj = _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    for name in ("alpha", "beta", "gamma"):
+        _e2e_vault_skill(name)
+    axt.write_profile(proj, axt.empty_profile().with_added("skills", "alpha")
+                      .with_added("skills", "beta"))
+    proj_skills = proj / ".claude" / "skills"
+    proj_skills.mkdir(parents=True)
+    vault_skills = pathlib_Path(axt.PATHS.vault) / "skills"
+    os.symlink(vault_skills / "alpha", proj_skills / "alpha")
+    os.symlink(vault_skills / "gamma", proj_skills / "gamma")
+    frames = _e2e_frames(monkeypatch)
+
+    scr = _loop_stdscr([_DOWN, _DOWN, ord("y"), ord("q")])
+    axt._tui_loop(scr)
+
+    assert frames[-1]["status"] == "Sync: +1 -1 err 0"
+    assert {p.name for p in proj_skills.iterdir()} == {"alpha", "beta"}
+    assert set(axt.read_profile(proj).skills) == {"alpha", "beta"}
+    # The vault content itself is never touched by a sync.
+    assert {p.name for p in vault_skills.iterdir()} == {"alpha", "beta", "gamma"}
+
+
+# ── SC-E2E-003 — sort journey ────────────────────────────────────────────────
+
+
+def _e2e_seed_vault_only_skills(names_versions):
+    for name, version in names_versions:
+        _e2e_vault_skill(name, version)
+
+
+def test_e2e_s_cycles_every_skills_column_without_losing_rows(tmp_path, monkeypatch):
+    """Prevents: a sort column whose key function drops or duplicates rows, and
+    a header/status-bar pair that disagree about which column is active."""
+    # TC-E2E-008
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_seed_vault_only_skills([("zeta", "1.9.0"), ("alpha", "1.10.0"), ("mid", "")])
+    frames = _e2e_frames(monkeypatch)
+
+    n_cols = len(axt._SORT_COLUMNS["skills"])
+    keys = [_DOWN, _DOWN, ord("]")] + [ord("s")] * n_cols + [ord("q")]
+    scr = _loop_stdscr(keys, rows=34, cols=170)
+    axt._tui_loop(scr)
+
+    skill_frames = [f for f in frames if f["ext_sub_tab"] == "skills"]
+    assert len(skill_frames) == n_cols + 1, "one frame per `s` press plus the arrival frame"
+    seen_labels = []
+    for f in skill_frames:
+        rows = _e2e_rows(f, {"zeta", "alpha", "mid"})
+        assert set(rows) == {"zeta", "alpha", "mid"}, \
+            f"sorting changed the row set: {sorted(rows)}"
+        label = f["ext_sort_label"]
+        seen_labels.append(label)
+        column, glyph = label.split(" ")
+        headers = [c[2] for c in f["calls"]
+                   if len(c) >= 3 and isinstance(c[2], str) and glyph in c[2]
+                   and not c[2].startswith(" ")]
+        assert headers, f"no header carries the {glyph} for column {column!r}"
+        assert f"sort={label}" in f["text"], \
+            "the filter bar must name the active column"
+    assert seen_labels[0] == "name ▲"
+    assert seen_labels[-1] == "name ▲", "the cycle must wrap back to the first column"
+    assert len(set(seen_labels)) == n_cols, \
+        f"`s` must visit every column exactly once per lap: {seen_labels}"
+
+
+def test_e2e_sort_state_is_kept_per_sub_tab(tmp_path, monkeypatch):
+    """Prevents: one shared sort key leaking across sub-tabs, so re-entering
+    Skills would silently show a different order than the user left."""
+    # TC-E2E-010
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    for name, _v in (("s1", ""), ("s2", ""), ("s3", "")):
+        _e2e_vault_skill(name)
+    for name in ("c1", "c2", "c3"):
+        _e2e_vault_md("commands", name)
+    for name in ("a1", "a2", "a3"):
+        _e2e_vault_md("agents", name)
+    frames = _e2e_frames(monkeypatch)
+
+    keys = ([_DOWN, _DOWN, ord("]")]           # → Skills
+            + [ord("s"), ord("s")]             # Skills: name → ver → vault
+            + [ord("]")] + [ord("s")]          # → Commands: name → ver
+            + [ord("]")]                       # → Agents (untouched)
+            + [ord("["), ord("[")]             # back to Skills
+            + [ord("q")])
+    scr = _loop_stdscr(keys, rows=34, cols=170)
+    axt._tui_loop(scr)
+
+    final = frames[-1]["state"]
+    assert axt.subtab_sort_label(final, "skills") == "vault ▲"
+    assert axt.subtab_sort_label(final, "commands") == "ver ▲"
+    assert axt.subtab_sort_label(final, "agents") == "name ▲"
+    assert final.ext_detail_focused is False, \
+        "switching sub-tabs must release the detail panel"
+
+
+# ── SC-E2E-004 — search journey ──────────────────────────────────────────────
+
+
+def _e2e_seed_markets(*names):
+    km = pathlib_Path(axt.PATHS.known_marketplaces)
+    km.parent.mkdir(parents=True, exist_ok=True)
+    km.write_text(json.dumps({
+        name: {"source": {"source": "github", "repo": f"org/{name}"},
+               "installLocation": f"/tmp/{name}", "lastUpdated": "2026-01-01T00:00:00Z"}
+        for name in names
+    }))
+
+
+def test_e2e_search_captures_reserved_keys_then_shows_a_filter_chip(tmp_path, monkeypatch):
+    """Prevents: `s`/`r` being eaten by the sort/refresh bindings while the
+    user is typing a query (US-TUI04 AC1), and a filter that applies without
+    telling the user it is on (AC4)."""
+    # TC-E2E-011
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    # `s` and `r` are the sort / refresh bindings; the query "sr" must reach
+    # the filter and match exactly one of the two names.
+    _e2e_seed_markets("sr-repo", "other")
+    frames = _e2e_frames(monkeypatch)
+
+    keys = ([_DOWN, _DOWN] + [ord("]")] * 7          # → Market
+            + [ord("/"), ord("s"), ord("r"), 10]     # /sr<Enter>
+            + [ord("q")])
+    scr = _loop_stdscr(keys, rows=30, cols=140)
+    axt._tui_loop(scr)
+
+    arrival = [f for f in frames if f["ext_sub_tab"] == "market"][0]
+    final = frames[-1]
+    assert final["ext_sort_label"] == arrival["ext_sort_label"], \
+        "`s` typed into the query must not move the sort column"
+    assert final["ext_search"]["market"] == "sr"
+    assert "(1/2 items)" in final["text"]
+    assert "search='sr'" in final["text"]
+
+
+def test_e2e_filters_are_per_sub_tab_and_esc_peels_one_layer(tmp_path, monkeypatch):
+    """Prevents: Esc nuking every filter at once, or a filter bleeding across
+    sub-tabs — both make the list show something other than what the chips say."""
+    # TC-E2E-013
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_seed_markets("sort-repo", "other")
+    for name in ("skill-one", "skill-two", "other-skill"):
+        _e2e_vault_skill(name)
+    frames = _e2e_frames(monkeypatch)
+
+    keys = ([_DOWN, _DOWN] + [ord("]")] * 7                # → Market
+            + [ord("/"), ord("s"), ord("o"), 10]           # market filter "so"
+            + [ord("]"), ord("]")]                         # → Vault → Skills
+            + [ord("/"), ord("t"), ord("w"), ord("o"), 10]  # skills filter "two"
+            + [27]                                         # clears the Skills filter
+            + [27]                                         # climbs to the sub-tab bar
+            + [ord("q")])
+    scr = _loop_stdscr(keys, rows=30, cols=140)
+    axt._tui_loop(scr)
+
+    texts = [f for f in frames if f["ext_sub_tab"] == "skills"]
+    after_clear = texts[-1]["state"]
+    assert set(after_clear.ext_search) == {"market"}, \
+        f"Esc must clear only the active sub-tab's filter: {after_clear.ext_search}"
+    assert frames[-1]["focused_layer"] == "subTab", \
+        "the second Esc climbs out of the body once nothing is left to clear"
+    assert after_clear.ext_search["market"] == "so"
+
+
+# ── SC-E2E-005 — bulk operations on Plugins ──────────────────────────────────
+
+
+def _e2e_seed_plugins(*names, marketplace="mk"):
+    ip = pathlib_Path(axt.PATHS.installed_plugins)
+    ip.parent.mkdir(parents=True, exist_ok=True)
+    plugins = {}
+    for name in names:
+        install = pathlib_Path(axt.PATHS.plugin_cache) / name
+        install.mkdir(parents=True, exist_ok=True)
+        (install / "plugin.json").write_text(json.dumps({"name": name, "version": "1.0.0"}))
+        plugins[f"{name}@{marketplace}"] = [{
+            "scope": "user", "installPath": str(install), "version": "1.0.0",
+            "installedAt": "", "lastUpdated": "",
+        }]
+    ip.write_text(json.dumps({"version": 2, "plugins": plugins}))
+
+
+def test_e2e_space_marks_survive_a_re_sort(tmp_path, monkeypatch):
+    """Prevents: marks keyed by row index instead of item identity — a re-sort
+    would then silently move the selection to different plugins."""
+    # TC-E2E-014
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    _e2e_seed_plugins("a", "b", "c")
+    frames = _e2e_frames(monkeypatch)
+
+    keys = ([_DOWN, _DOWN] + [ord("]")] * 6          # → Plugins
+            + [ord(" "), ord("j"), ord(" ")]          # mark rows 1 and 2
+            + [ord("s"), ord("S")]                    # move the column, flip direction
+            + [ord("q")])
+    scr = _loop_stdscr(keys, rows=30, cols=150)
+    axt._tui_loop(scr)
+
+    plugin_frames = [f for f in frames if f["ext_sub_tab"] == "plugins"]
+    marked_before = plugin_frames[3]["ext_marked"]["plugins"]   # after the 2nd Space
+    final = frames[-1]
+    assert final["ext_marked"]["plugins"] == marked_before == {"a@mk", "b@mk"}
+    assert "marked=2" in final["text"]
+    rows = _e2e_rows(final, {"a", "b", "c"})
+    checked = {name for name, cells in rows.items() if "■" in cells[0][1]}
+    assert checked == {"a", "b"}, f"the checkbox column drifted after sorting: {checked}"
+
+
+def test_e2e_bulk_g_writes_only_the_marked_plugins(tmp_path, monkeypatch):
+    """Prevents: a bulk toggle spilling onto unmarked rows, clobbering unrelated
+    settings keys, or leaving the marks armed for an accidental second run."""
+    # TC-E2E-015
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    _e2e_seed_plugins("a", "b", "c")
+    settings = pathlib_Path(axt.PATHS.settings)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"otherKey": "preserved"}))
+    monkeypatch.setattr("axt.tui.tabs.confirm_modal", lambda *a, **k: True)
+    frames = _e2e_frames(monkeypatch)
+
+    keys = ([_DOWN, _DOWN] + [ord("]")] * 6
+            + [ord(" "), ord("j"), ord(" "), ord("g")]
+            + [ord("q")])
+    scr = _loop_stdscr(keys, rows=30, cols=150)
+    axt._tui_loop(scr)
+
+    data = json.loads(settings.read_text())
+    assert set(data["enabledPlugins"]) == {"a@mk", "b@mk"}, \
+        f"only the marked plugins may be written: {data.get('enabledPlugins')}"
+    assert data["otherKey"] == "preserved"
+    assert not frames[-1]["ext_marked"].get("plugins"), \
+        "an applied bulk toggle must clear the marks"
+    assert "2/2" in frames[-1]["status"]
+
+
+def test_e2e_declining_the_bulk_confirm_changes_nothing(tmp_path, monkeypatch):
+    """Prevents: a confirm modal that is asked but not honoured — the classic
+    'Cancelled' message next to a mutated settings file."""
+    # TC-E2E-016
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    _e2e_seed_plugins("a", "b", "c")
+    settings = pathlib_Path(axt.PATHS.settings)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"enabledPlugins": {"c@mk": True}}))
+    before = settings.read_bytes()
+    monkeypatch.setattr("axt.tui.tabs.confirm_modal", lambda *a, **k: False)
+    frames = _e2e_frames(monkeypatch)
+
+    keys = ([_DOWN, _DOWN] + [ord("]")] * 6
+            + [ord(" "), ord("j"), ord(" "), ord("g")]
+            + [ord("q")])
+    scr = _loop_stdscr(keys, rows=30, cols=150)
+    axt._tui_loop(scr)
+
+    assert frames[-1]["status"] == "Cancelled"
+    assert settings.read_bytes() == before, "a declined confirm must not touch the file"
+    assert frames[-1]["ext_marked"]["plugins"] == {"a@mk", "b@mk"}, \
+        "marks must survive a cancel so the user can retry"
+
+
+# ── SC-E2E-006 — pending toggles never touch the disk ────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_e2e_pending_toggle_is_screen_only(tmp_path, monkeypatch):
+    """Prevents: `p` writing the symlink immediately, which would make the
+    Enter/Esc confirm step meaningless."""
+    # TC-E2E-017
+    proj = _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    _e2e_vault_skill("beta")
+    (proj / ".claude").mkdir(parents=True, exist_ok=True)
+    before = _e2e_snapshot(proj)
+    frames = _e2e_frames(monkeypatch)
+
+    # Armed pending toggles are a modal sub-state: `q` is routed to the vault
+    # handler and does not quit, so the journey unwinds with Esc first.
+    scr = _loop_stdscr([_DOWN, _DOWN, ord("p"), 27, ord("q")])
+    axt._tui_loop(scr)
+
+    armed = [f for f in frames if f["vault_pending"]]
+    assert armed, "`p` must arm a pending toggle"
+    assert "Enter:apply pending (confirm)" in armed[-1]["text"]
+    assert "Esc:discard" in armed[-1]["text"]
+    assert _e2e_snapshot(proj) == before, "a pending toggle must not reach the disk"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_e2e_esc_discards_pending_and_leaves_the_disk_untouched(tmp_path, monkeypatch):
+    """Prevents: Esc quitting the app instead of discarding (content-layer
+    climb exception), and a discard that half-applies before backing out."""
+    # TC-E2E-018
+    proj = _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    _e2e_vault_skill("beta")
+    (proj / ".claude").mkdir(parents=True, exist_ok=True)
+    before = _e2e_snapshot(proj)
+    frames = _e2e_frames(monkeypatch)
+
+    scr = _loop_stdscr([_DOWN, _DOWN, ord("p"), 27, ord("q")])
+    assert axt._tui_loop(scr) is None
+
+    assert frames[-1]["status"] == "Discarded pending changes"
+    assert frames[-1]["vault_pending"] == set()
+    assert _e2e_snapshot(proj) == before
+
+
+# ── SC-E2E-007 — MCP registration vs activation ──────────────────────────────
+
+
+def _e2e_seed_user_mcp(name="srvA"):
+    cfg = pathlib_Path(axt.PATHS.claude_config)
+    cfg.write_text(json.dumps({
+        "mcpServers": {name: {"command": "run-me", "args": []}},
+        "projects": {},
+    }))
+    return cfg
+
+
+def test_e2e_mcp_p_toggles_activation_without_moving_the_registration(tmp_path, monkeypatch):
+    """Prevents: the On toggle being confused with the registration scope — a
+    `p` that appeared to move a user-scope server into the project would be a
+    data-loss-shaped bug."""
+    # TC-E2E-021
+    proj = _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    cfg = _e2e_seed_user_mcp("srvA")
+    frames = _e2e_frames(monkeypatch)
+
+    # → MCP, `j` past the always-present built-in row onto srvA, then toggle.
+    keys = [_DOWN, _DOWN] + [ord("]")] * 4 + [ord("j"), ord("p"), ord("q")]
+    scr = _loop_stdscr(keys, rows=30, cols=170)
+    axt._tui_loop(scr)
+
+    mcp_frames = [f for f in frames if f["ext_sub_tab"] == "mcp"]
+    before_row = _e2e_rows(mcp_frames[0], {"srvA"})["srvA"]
+    after_row = _e2e_rows(mcp_frames[-1], {"srvA"})["srvA"]
+    # cells: [prefix, #, Server, Ver, Vault, Proj, Glob, Upd, On, ...]
+    assert before_row[8][1].strip() != after_row[8][1].strip(), "the On cell must flip"
+    assert after_row[5][1].strip() == before_row[5][1].strip() == "─", "Proj must not move"
+    assert after_row[6][1].strip() == before_row[6][1].strip() == "●", "Glob must not move"
+
+    data = json.loads(cfg.read_text())
+    assert list(data["projects"]) == [str(proj)], "no unrelated project key may appear"
+    assert data["projects"][str(proj)]["disabledMcpServers"] == ["srvA"]
+
+
+def test_e2e_mcp_g_only_explains_and_writes_nothing(tmp_path, monkeypatch):
+    """Prevents: the global key silently writing to ~/.claude.json even though
+    MCP activation is project-scoped only."""
+    # TC-E2E-022
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    cfg = _e2e_seed_user_mcp("srvA")
+    before = cfg.read_bytes()
+    frames = _e2e_frames(monkeypatch)
+
+    keys = [_DOWN, _DOWN] + [ord("]")] * 4 + [ord("j"), ord("g"), ord("q")]
+    scr = _loop_stdscr(keys, rows=30, cols=170)
+    axt._tui_loop(scr)
+
+    assert "use p" in frames[-1]["status"], f"got {frames[-1]['status']!r}"
+    assert cfg.read_bytes() == before
+
+
+# ── SC-E2E-008 — Usage report search ─────────────────────────────────────────
+
+
+def _e2e_usage_entries(monkeypatch, n=3):
+    entries = [
+        axt.UnifiedUsageEntry(
+            platform="claude", model="claude-sonnet-5",
+            timestamp=f"2026-08-2{i}T12:00:00Z", session_id=f"s{i}",
+            project_path="/tmp/proj", input_tokens=1000 * (i + 1),
+            output_tokens=500, cache_write_tokens=0, cache_read_tokens=0)
+        for i in range(n)
+    ]
+
+    def _fake_reload(state, *a, **kw):
+        state.usage_loading = False
+        state.usage_entries = list(entries)
+        state.usage_config = axt.load_config(axt.AXT_CONFIG_PATH)
+
+    monkeypatch.setattr("axt.tui.tabs._kick_usage_reload", _fake_reload)
+    return entries
+
+
+def test_e2e_usage_search_applies_then_n_and_N_cycle_the_matches(tmp_path, monkeypatch):
+    """Prevents: n/N walking off the end of the match list, and a fixed filter
+    bar that forgets to show which match the viewport is on."""
+    # TC-E2E-024
+    _e2e_paths(tmp_path, monkeypatch)
+    _quiet_curses(monkeypatch)
+    _e2e_usage_entries(monkeypatch)
+    frames = _e2e_frames(monkeypatch)
+
+    query = [ord(c) for c in "msgs"]
+    keys = ([ord("3"), _DOWN, ord("/")] + query + [10]
+            + [ord("n"), ord("n"), ord("N"), ord("q")])
+    scr = _loop_stdscr(keys, rows=40, cols=140)
+    axt._tui_loop(scr)
+
+    messages = [f["status"] for f in frames if f["status"].startswith("match ")]
+    assert messages, "applying the query must report a match position"
+    total = int(messages[0].split("/")[1])
+    assert total >= 3, "the fixture must produce enough matches for n/N to cycle"
+    assert messages[-4:] == [f"match 1/{total}", f"match 2/{total}",
+                             f"match 3/{total}", f"match 2/{total}"]
+    final = frames[-1]
+    assert "search='msgs'" in final["text"]
+    assert f"match 2/{total}" in final["text"], \
+        "the fixed filter bar must carry the match chip, not just the status line"
+
+
+def test_e2e_usage_first_esc_clears_search_second_esc_climbs(tmp_path, monkeypatch):
+    """Prevents: a single Esc both clearing the search and bouncing the user
+    out of the body — the two-step Esc contract shared by every tab."""
+    # TC-E2E-025
+    _e2e_paths(tmp_path, monkeypatch)
+    _quiet_curses(monkeypatch)
+    _e2e_usage_entries(monkeypatch)
+    frames = _e2e_frames(monkeypatch)
+
+    keys = ([ord("3"), _DOWN, ord("/")] + [ord(c) for c in "msgs"] + [10]
+            + [27, 27, ord("q")])
+    scr = _loop_stdscr(keys, rows=40, cols=140)
+    axt._tui_loop(scr)
+
+    cleared = next(f for f in frames if f["status"] == "Search cleared")
+    assert cleared["state"].usage_search == ""
+    assert cleared["focused_layer"] == "content", \
+        "clearing the search must not also climb a layer"
+    assert frames[-1]["focused_layer"] == "mainTab", \
+        "Usage has no sub-tab bar, so the second Esc goes straight to the tab row"
+
+
+# ── SC-E2E-009 — Context Project sub-tab ─────────────────────────────────────
+
+
+def test_e2e_project_s_cycles_four_columns_and_skips_percent(tmp_path, monkeypatch):
+    """Prevents: `%` entering the sort cycle (it is derived from Tokens, so it
+    could never reorder anything) and a header glyph that fails to move."""
+    # TC-E2E-026
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_stub_context(monkeypatch)
+    frames = _e2e_frames(monkeypatch)
+
+    keys = [ord("2"), _DOWN, _DOWN] + [ord("s")] * 4 + [ord("q")]
+    scr = _loop_stdscr(keys, rows=36, cols=150)
+    axt._tui_loop(scr)
+
+    project_frames = [f for f in frames
+                      if f["tab_idx"] == 1 and f["focused_layer"] == "content"]
+    labels = [f["project_sort"] for f in project_frames]
+    assert labels == ["tokens", "name", "category", "scope", "tokens"], labels
+    glyphs = {"tokens": "▼", "name": "▲", "category": "▲", "scope": "▲"}
+    headers = {"tokens": "Tokens", "name": "Name", "category": "Category", "scope": "Scope"}
+    for frame in project_frames:
+        key = frame["project_sort"]
+        assert f"{headers[key]} {glyphs[key]}" in frame["text"], \
+            f"the {key} header must carry {glyphs[key]}"
+        assert "% ▲" not in frame["text"] and "% ▼" not in frame["text"], \
+            "the derived % column must stay out of the sort cycle"
+
+
+def test_e2e_d_deletes_a_memory_file_and_its_index_line(tmp_path, monkeypatch):
+    """Prevents: the file being removed while MEMORY.md keeps pointing at it
+    (a dangling index line loads as context forever), and a stale list that
+    still shows the deleted row."""
+    # TC-E2E-027
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    mem = pathlib_Path(axt.PATHS.projects) / "proj-key" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "old.md").write_text("old memory\n")
+    (mem / "keep.md").write_text("keep memory\n")
+    (mem / "MEMORY.md").write_text("- [Old](old.md) — hook\n- [Keep](keep.md) — hook\n")
+
+    def _analyze(*a, **kw):
+        sources = [
+            axt.ContextSource(name=p.name, category="memory", path=str(p),
+                              chars=len(p.read_text()), estimated_tokens=10,
+                              percentage=0.1, actionable=True,
+                              content=p.read_text(), scope="project")
+            for p in sorted(mem.glob("*.md")) if p.name != "MEMORY.md"
+        ]
+        return axt.ContextAnalysis(
+            total_tokens=sum(s.estimated_tokens for s in sources),
+            context_window_size=200_000, used_percent=0.1, model="claude-sonnet",
+            sources=sources,
+            cost_impact=axt.CostImpact(
+                model="claude-sonnet", cache_write_cost=0.0,
+                cache_read_cost_per_turn=0.0, avg_turns_per_session=30,
+                avg_sessions_per_day=5, per_session_cost=0.0, monthly_cost=0.0))
+
+    monkeypatch.setattr("axt.tui.tabs.analyze_context", _analyze)
+    monkeypatch.setattr("axt.tui.tabs.confirm_modal", lambda *a, **k: True)
+    frames = _e2e_frames(monkeypatch)
+
+    # Default project sort is tokens ▼; both rows tie, so the list keeps the
+    # collected order (keep.md, old.md) — `j` lands on old.md.
+    scr = _loop_stdscr([ord("2"), _DOWN, _DOWN, ord("j"), ord("d"), ord("q")],
+                       rows=36, cols=150)
+    axt._tui_loop(scr)
+
+    assert frames[-1]["status"] == "Deleted old.md"
+    assert not (mem / "old.md").exists()
+    assert (mem / "keep.md").exists()
+    assert (mem / "MEMORY.md").read_text() == "- [Keep](keep.md) — hook\n"
+    rows = _e2e_rows(frames[-1], {"old.md", "keep.md"}, name_col=1)
+    assert set(rows) == {"keep.md"}, \
+        f"the deleted row must be gone from the repainted list: {sorted(rows)}"
+
+
+# ── SC-E2E-010 — Context Sources sub-tab ─────────────────────────────────────
+
+
+def _e2e_write_snapshot(updated_at):
+    snap = pathlib_Path(axt.PATHS.usage_snapshot)
+    snap.parent.mkdir(parents=True, exist_ok=True)
+    snap.write_text(json.dumps({
+        "five_hour": {"used_percentage": 42, "resets_at": "2099-01-01T00:00:00Z"},
+        "seven_day": {"used_percentage": 17, "resets_at": "2099-01-08T00:00:00Z"},
+        "updated_at": updated_at,
+    }))
+    return snap
+
+
+def test_e2e_rate_limit_strip_and_cost_line_show_on_both_context_sub_tabs(tmp_path, monkeypatch):
+    """Prevents: the persistent strip or the cost-impact footer being wired to
+    one sub-tab only, so switching would make the quota disappear."""
+    # TC-E2E-029
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_stub_context(monkeypatch)
+    _e2e_write_snapshot(datetime.now(timezone.utc).isoformat())
+    frames = _e2e_frames(monkeypatch)
+
+    scr = _loop_stdscr([ord("2"), _DOWN, _DOWN, ord("]"), ord("["), ord("q")],
+                       rows=36, cols=150)
+    axt._tui_loop(scr)
+
+    sources = _e2e_last(frames, tab_idx=1, context_sub_tab="sources")
+    project = _e2e_last(frames, tab_idx=1, context_sub_tab="project")
+    for name, frame in (("sources", sources), ("project", project)):
+        assert "5h" in frame["text"] and " 42%" in frame["text"], f"{name}: 5h gauge missing"
+        assert "7d" in frame["text"] and " 17%" in frame["text"], f"{name}: 7d gauge missing"
+        assert "[assumes 30 turns × 5 sessions/day]" in frame["text"], \
+            f"{name}: cost-impact line missing"
+    assert "Project context" in project["text"]
+    assert "Project context" not in sources["text"], "only the body table may change"
+
+
+def test_e2e_missing_or_stale_rate_limits_say_so(tmp_path, monkeypatch):
+    """Prevents: a blank strip that reads as '0% used'. Absent and stale data
+    must both be visibly different from a fresh reading."""
+    # TC-E2E-030
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_stub_context(monkeypatch)
+
+    frames = _e2e_frames(monkeypatch)
+
+    def _run():
+        del frames[:]
+        scr = _loop_stdscr([ord("2"), ord("q")], rows=36, cols=150)
+        axt._tui_loop(scr)
+        return _e2e_last(frames, tab_idx=1)["text"]
+
+    missing = _run()
+    # A year-2000 stamp is older than any tolerance at any wall-clock time.
+    _e2e_write_snapshot("2000-01-01T00:00:00Z")
+    stale = _run()
+    _e2e_write_snapshot(datetime.now(timezone.utc).isoformat())
+    fresh = _run()
+
+    assert "Rate limits: snapshot missing or stale" in missing
+    assert "Rate limits: snapshot missing or stale" in stale
+    assert "Rate limits: snapshot missing or stale" not in fresh
+    assert " 42%" in fresh and " 42%" not in stale
+
+
+# ── SC-E2E-011 — hooks ───────────────────────────────────────────────────────
+
+
+def _e2e_seed_plugin_hook(name="ph", marketplace="mk"):
+    install = pathlib_Path(axt.PATHS.plugin_cache) / name
+    (install / "hooks").mkdir(parents=True, exist_ok=True)
+    (install / "plugin.json").write_text(json.dumps({"name": name, "version": "1.0.0"}))
+    (install / "hooks" / "hooks.json").write_text(json.dumps({
+        "hooks": {"PreToolUse": [
+            {"matcher": "Edit", "hooks": [{"type": "command", "command": "plug-cmd"}]}]}
+    }))
+    ip = pathlib_Path(axt.PATHS.installed_plugins)
+    ip.parent.mkdir(parents=True, exist_ok=True)
+    ip.write_text(json.dumps({"version": 2, "plugins": {
+        f"{name}@{marketplace}": [{"scope": "user", "installPath": str(install),
+                                   "version": "1.0.0", "installedAt": "", "lastUpdated": ""}]
+    }}))
+    return install / "hooks" / "hooks.json"
+
+
+def test_e2e_plugin_hook_pg_are_read_only_but_user_hook_g_still_toggles(tmp_path, monkeypatch):
+    """Prevents: a rejected plugin-hook toggle that still rewrites a settings
+    file, and a user-hook toggle that drops the hook definition instead of
+    parking it under disabledHooks."""
+    # TC-E2E-034
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    hooks_json = _e2e_seed_plugin_hook()
+    settings = pathlib_Path(axt.PATHS.settings)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps({"hooks": {"Stop": [
+        {"matcher": "*", "hooks": [{"type": "command", "command": "user-cmd"}]}]}}))
+    plugin_before = hooks_json.read_bytes()
+    frames = _e2e_frames(monkeypatch)
+
+    # Hooks lists user hooks first, then plugin hooks — `j` moves onto the
+    # plugin row; `k` comes back to the user hook.
+    keys = ([_DOWN, _DOWN] + [ord("]")] * 5
+            + [ord("j"), ord("p"), ord("g")]
+            + [ord("k"), ord("g")]
+            + [ord("q")])
+    scr = _loop_stdscr(keys, rows=32, cols=170)
+    axt._tui_loop(scr)
+
+    statuses = [f["status"] for f in frames if f["status"]]
+    assert any("Plugin hooks are read-only" in s for s in statuses), statuses
+    assert hooks_json.read_bytes() == plugin_before, \
+        "a read-only rejection must not rewrite the plugin's hooks.json"
+
+    data = json.loads(settings.read_text())
+    assert not data.get("hooks", {}).get("Stop"), "the user hook must move out of `hooks`"
+    parked = data.get("disabledHooks", {}).get("Stop")
+    assert parked, "the toggled-off definition must be parked, not deleted"
+    assert "user-cmd" in json.dumps(parked), "the command must survive the move"
+
+
+# ── SC-E2E-012 — theme toggle ────────────────────────────────────────────────
+
+
+def test_e2e_t_during_search_types_into_the_query(tmp_path, monkeypatch):
+    """Prevents: the global theme key stealing a keystroke from an open search
+    prompt (US-TUI09 AC3) — the user would get a theme flip instead of a `t`."""
+    # TC-E2E-036
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    persisted: list[str] = []
+    monkeypatch.setattr("axt.tui.loop._persist_theme", lambda t: persisted.append(t))
+    frames = _e2e_frames(monkeypatch, extra=lambda s: {"vault_search": s.vault_search})
+
+    scr = _loop_stdscr([_DOWN, _DOWN, ord("/"), ord("t"), 27, ord("q")])
+    axt._tui_loop(scr)
+
+    assert persisted == [], "`t` typed into a search prompt must not flip the theme"
+    assert any(f["vault_search"] == "t" for f in frames), \
+        "the keystroke must land in the query"
+    assert frames[-1]["vault_search"] == "", "Esc cancels the search"
+
+
+def test_e2e_theme_toggle_repaints_immediately(tmp_path, monkeypatch):
+    """Prevents: the palette changing but the screen only catching up on the
+    next keypress, which reads as a frozen UI."""
+    # TC-E2E-037
+    _e2e_paths(tmp_path, monkeypatch)
+    axt.tui_init_colors("dark")
+    _e2e_quiet(monkeypatch)
+    monkeypatch.setattr("axt.tui.loop._persist_theme", lambda t: None)
+    frames = _e2e_frames(monkeypatch)
+
+    scr = _loop_stdscr([ord("t"), ord("q")])
+    axt._tui_loop(scr, "dark")
+
+    assert len(frames) == 2, "`t` must force one extra repaint (launch + toggle)"
+    assert frames[-1]["status"] == "Theme: light"
+    axt.tui_init_colors("dark")
+
+
+# ── SC-E2E-013 — narrow terminal + resize ────────────────────────────────────
+
+
+def test_e2e_resize_recovers_the_frame_and_keeps_cjk_alignment(tmp_path, monkeypatch):
+    """Prevents: a resize that leaves the too-small placeholder on screen, and
+    a CJK name in the recovered frame overflowing its column."""
+    # TC-E2E-039
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("한글스킬")
+    _e2e_vault_skill("ascii-skill")
+    frames = _e2e_frames(monkeypatch)
+
+    scr = _loop_stdscr([curses.KEY_RESIZE, ord("q")])
+    sizes = iter([(4, 20)])
+    scr.getmaxyx.side_effect = lambda: next(sizes, (30, 120))
+    axt._tui_loop(scr)
+
+    assert frames[0]["text"] == "Terminal too small. Resize and try again."
+    recovered = frames[1]
+    assert "Terminal too small" not in recovered["text"]
+    rows = _e2e_rows(recovered, {"한글스킬", "ascii-skill"})
+    assert set(rows) == {"한글스킬", "ascii-skill"}, sorted(rows)
+    assert [x for x, _t in rows["한글스킬"]] == [x for x, _t in rows["ascii-skill"]], \
+        "the CJK name shifted the column boundaries"
+    for call in recovered["calls"]:
+        assert call[3] > 0 and call[1] + call[3] <= 120, \
+            f"draw at ({call[0]},{call[1]}) width {call[3]} leaves the 120-cell screen"
+
+
+# ── SC-E2E-015 — update markers ──────────────────────────────────────────────
+
+
+def _e2e_market_state(monkeypatch, tmp_path, *names):
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_seed_markets(*names)
+    state = axt.TuiState()
+    state.ext_sub_tab = "market"
+    state.focused_layer = "content"
+    return state
+
+
+def test_e2e_upd_column_moves_from_pending_to_a_real_marker(tmp_path, monkeypatch):
+    """Prevents: the Upd column freezing on `…` after the background check
+    lands (or showing a stale marker before it does)."""
+    # TC-E2E-042
+    state = _e2e_market_state(monkeypatch, tmp_path, "m-old", "m-new")
+
+    # Market columns: [prefix, #, Marketplace, Upd, Source, Location, Updated].
+    scr = _make_stdscr(rows=30, cols=140)
+    axt.render_extensions_tab(scr, state, y0=2, h=26, w=140)
+    pending = {n: c[3][1].strip() for n, c in
+               _e2e_rows({"calls": scr.calls}, {"m-old", "m-new"}).items()}
+    assert pending == {"m-old": "…", "m-new": "…"}, pending
+
+    state.update_statuses = {
+        ("marketplace", "m-old"): axt.UpdateStatus("marketplace", "m-old", 1,
+                                                   "a", "b", True),
+        ("marketplace", "m-new"): axt.UpdateStatus("marketplace", "m-new", 1,
+                                                   "b", "b", False),
+    }
+    scr2 = _make_stdscr(rows=30, cols=140)
+    axt.render_extensions_tab(scr2, state, y0=2, h=26, w=140)
+    settled = {n: c[3][1].strip() for n, c in
+               _e2e_rows({"calls": scr2.calls}, {"m-old", "m-new"}).items()}
+    assert settled == {"m-old": "↑", "m-new": "·"}, settled
+
+
+def test_e2e_u_settles_the_upd_marker_in_the_next_frame(tmp_path, monkeypatch):
+    """Prevents: a successful update leaving `↑` on screen until the next
+    background sweep, which reads as 'the update did not take'."""
+    # TC-E2E-043
+    state = _e2e_market_state(monkeypatch, tmp_path, "m-old")
+    state.update_statuses = {
+        ("marketplace", "m-old"): axt.UpdateStatus("marketplace", "m-old", 1,
+                                                   "a", "b", True),
+    }
+    state.stdscr_callbacks = {"stdscr": _make_stdscr(), "render": lambda: None}
+    monkeypatch.setattr("axt.tui.tabs.check_all_updates", lambda types=None: [
+        axt.UpdateStatus("marketplace", "m-old", 1, "a", "b", True)])
+    monkeypatch.setattr("axt.tui.tabs.apply_updates", lambda targets, **kw: [
+        axt.UpdateResult("marketplace", "m-old", "a", "b", True, "sync")])
+
+    # Paint once so the sub-tab cache is populated, exactly as the live loop
+    # does before the first keystroke reaches the handler.
+    axt.render_extensions_tab(_make_stdscr(rows=30, cols=140), state, y0=2, h=26, w=140)
+    msg = axt.handle_extensions_input(state, ord("u"))
+    assert msg == "Updated m-old: a → b"
+
+    scr = _make_stdscr(rows=30, cols=140)
+    axt.render_extensions_tab(scr, state, y0=2, h=26, w=140)
+    row = _e2e_rows({"calls": scr.calls}, {"m-old"})["m-old"]
+    assert row[3][1].strip() == "·", \
+        "the applied row must read as up to date without a second check"
+
+
+# ─── TUI sort helpers (TC-UNIT-*) ────────────────────────────────────────────
+
+
+def test_ver_key_ignores_a_leading_v():
+    """Prevents: `v1.2.3` and `1.2.3` sorting into two separate groups — the
+    same release tagged both ways would then never compare equal."""
+    # TC-UNIT-238
+    assert axt._ver_key("v1.2.3") == axt._ver_key("1.2.3")
+    assert axt._ver_key("V1.2.3") == axt._ver_key("1.2.3")
+    assert axt._ver_key("v1.10.0") > axt._ver_key("v1.9.0")
+
+
+def test_glyph_columns_sort_by_the_documented_rank_order():
+    """Prevents: a status column ordering by codepoint (or by an internal flag
+    that disagrees with the drawn glyph), so the list order stops matching what
+    the user sees. Active states must come first."""
+    # TC-UNIT-244
+    state = axt.TuiState()
+    state.ext_sub_tab = "skills"
+    glyphs = {"on": "●", "check": "✓", "off": "○", "unset": "·", "na": "─"}
+    items = [types.SimpleNamespace(name=name, glyph=g) for name, g in glyphs.items()]
+    keyfn = axt._by_glyph(lambda st, sub, i: i.glyph, axt._ON_RANK)(state, "skills", items)
+
+    ordered = [i.name for i in sorted(items, key=keyfn)]
+    assert ordered.index("off") < ordered.index("unset") < ordered.index("na")
+    assert {ordered[0], ordered[1]} == {"on", "check"}, \
+        "● and ✓ both mean 'active' and must share the top rank"
+
+
+def test_upd_glyph_rank_puts_unknown_glyphs_last():
+    """Prevents: a newly added Upd glyph silently sorting to the front of the
+    list (rank 0) instead of being parked at the end until it is ranked."""
+    # TC-UNIT-245
+    state = axt.TuiState()
+    state.ext_sub_tab = "market"
+    glyphs = ["↑", "!", "…", "·", "─", "?"]
+    items = [types.SimpleNamespace(name=g, glyph=g) for g in glyphs]
+    keyfn = axt._by_glyph(lambda st, sub, i: i.glyph, axt._UPD_RANK)(state, "market", items)
+
+    assert [i.glyph for i in sorted(items, key=keyfn)] == ["↑", "!", "…", "·", "─", "?"]

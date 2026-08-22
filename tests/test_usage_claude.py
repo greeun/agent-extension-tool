@@ -514,3 +514,165 @@ def test_compute_blocks_cost_sums_per_entry_across_models():
     assert len(blocks) == 1  # 10 minutes apart → same activity block
     # opus input 5.00 + haiku input 1.00
     assert blocks[0].cost == pytest.approx(6.00)
+
+
+# ─── Gap-code additions (Phase C, Agent C) ───────────────────────────────────
+
+
+def test_encode_decode_claude_file_roundtrips_every_field():
+    """The v2 positional row encoding restores every field, deriving
+    `project_path` from the file key's parent directory.
+
+    US-USG08 AC2. Prevents: a column reorder in `_encode_claude_file` (or a
+    drift between encoder and decoder) silently swapping, say, cache-write and
+    cache-read counts — the cache would still load and every cost figure
+    downstream would be wrong.
+    """
+    # TC-UNIT-144 (US-USG08 AC2)
+    entries = [
+        _entry("s1", "2026-04-29T10:00:00Z", model="claude-opus-4-7",
+               input=1, output=2, cw=3, cr=4),
+        _entry("s2", "2026-04-29T11:00:00Z", model="claude-sonnet-5",
+               input=10, output=20, cw=30, cr=40),
+        _entry("s1", "2026-04-29T12:00:00Z", model="claude-opus-4-7",
+               input=100, output=200, cw=300, cr=400),
+    ]
+    models: list[str] = []
+    sessions: list[str] = []
+    fdict = axt._encode_claude_file(entries, 1_700_000_000.0, models, {}, sessions, {})
+
+    key = "/home/u/.claude/projects/-tmp-projA/sess.jsonl"
+    decoded = axt._decode_claude_file(key, fdict, models, sessions)
+
+    assert len(decoded) == 3
+    for original, got in zip(entries, decoded):
+        assert got.model == original.model
+        assert got.session_id == original.session_id
+        assert got.input_tokens == original.input_tokens
+        assert got.output_tokens == original.output_tokens
+        assert got.cache_creation_tokens == original.cache_creation_tokens
+        assert got.cache_read_tokens == original.cache_read_tokens
+        assert got.timestamp == original.timestamp
+        # project_path is recovered from the key, never stored in the row.
+        assert got.project_path == "-tmp-projA"
+    assert fdict["m"] == 1_700_000_000.0
+
+
+def test_encode_claude_file_interns_repeated_model_and_session():
+    """Repeated model / sessionId strings land in the intern tables once and
+    every row references them by index.
+
+    US-USG08 AC2 — the whole point of schema v2 (a heavy user's cache went
+    from ~70MB to ~10MB). Prevents: a regression that appends a new table row
+    per entry, quietly restoring the old size and making the cache slower to
+    load than re-parsing.
+    """
+    # TC-UNIT-145 (US-USG08 AC2)
+    entries = [_entry("same-session", f"2026-04-29T1{i}:00:00Z",
+                      model="claude-opus-4-7", input=i) for i in range(5)]
+    models: list[str] = []
+    sessions: list[str] = []
+    fdict = axt._encode_claude_file(entries, 1.0, models, {}, sessions, {})
+
+    assert models == ["claude-opus-4-7"]
+    assert sessions == ["same-session"]
+    rows = fdict["e"]
+    assert len(rows) == 5
+    assert {r[0] for r in rows} == {0}
+    assert {r[1] for r in rows} == {0}
+
+
+def test_decode_claude_file_skips_malformed_rows():
+    """A row with the wrong arity is dropped; the healthy rows still decode.
+
+    US-USG08 AC3. Prevents: one truncated row (a crash mid-write) raising out
+    of the loader and making every usage command unusable until the cache is
+    manually deleted.
+    """
+    # TC-UNIT-146 (US-USG08 AC3)
+    models = ["claude-opus-4-7"]
+    sessions = ["s1"]
+    fdict = {
+        "m": 1.0,
+        "e": [
+            [0, 0, 1, 2, 3, 4, "2026-04-29T10:00:00Z"],
+            [0, 0, 1, 2, 3],                                # truncated row
+            [0, 0, 5, 6, 7, 8, "2026-04-29T11:00:00Z"],
+        ],
+    }
+    decoded = axt._decode_claude_file("/p/projA/s.jsonl", fdict, models, sessions)
+    assert [e.input_tokens for e in decoded] == [1, 5]
+
+
+def test_load_all_claude_usage_discards_v1_cache_and_rebuilds_as_v2(tmp_path: Path, monkeypatch):
+    """A version-1 cache is thrown away (not migrated) and rebuilt from the
+    JSONL in the v2 schema.
+
+    US-USG08 AC2. Prevents: v1 rows leaking into the result — their per-entry
+    `projectPath`/`model` strings do not line up with the v2 positional rows,
+    so a partial migration would report totals from a schema the decoder
+    cannot read.
+    """
+    # TC-UNIT-147 (US-USG08 AC2)
+    monkeypatch.setattr("axt.CACHE_DIR_FOR_USAGE", tmp_path / "cache")
+    projects = tmp_path / "projects"
+    f = projects / "projA" / "s.jsonl"
+    _write_jsonl(f, [{
+        "type": "assistant", "sessionId": "real", "timestamp": "2026-04-29T10:00:00Z",
+        "message": {"model": "claude-sonnet-5", "usage": {"input_tokens": 7, "output_tokens": 9}},
+    }])
+
+    cache_file = tmp_path / "cache" / "claude-usage.json"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text(json.dumps({
+        "version": 1,
+        "lastUpdated": "2099-01-01T00:00:00.000Z",  # "fresh" — must not save it
+        "projectsDir": str(projects),
+        "files": {
+            str(f): {
+                "mtime": 1.0,
+                "entries": [{
+                    "model": "ghost-model", "sessionId": "ghost",
+                    "projectPath": "projA", "timestamp": "2020-01-01T00:00:00Z",
+                    "inputTokens": 999, "outputTokens": 999,
+                    "cacheCreationTokens": 0, "cacheReadTokens": 0,
+                }],
+            },
+        },
+    }))
+
+    entries = axt.load_all_claude_usage(projects)
+
+    assert [e.session_id for e in entries] == ["real"]
+    assert [e.input_tokens for e in entries] == [7]
+    assert all(e.model != "ghost-model" for e in entries)
+
+    written = json.loads(cache_file.read_text())
+    assert written["version"] == 2
+    assert written["models"] == ["claude-sonnet-5"]
+    assert written["sessions"] == ["real"]
+    assert list(written["files"]) == [str(f)]
+
+
+def test_load_all_claude_usage_recovers_from_corrupt_cache(tmp_path: Path, monkeypatch):
+    """A cache file that is not valid JSON is rebuilt instead of crashing.
+
+    US-USG08 AC3. Prevents: a crash during `save_cached_usage` (or an
+    out-of-space truncation) permanently bricking `axt usage` for that user —
+    they cannot be expected to know the cache path.
+    """
+    # TC-UNIT-150 (US-USG08 AC3)
+    monkeypatch.setattr("axt.CACHE_DIR_FOR_USAGE", tmp_path / "cache")
+    projects = tmp_path / "projects"
+    _write_jsonl(projects / "projA" / "s.jsonl", [{
+        "type": "assistant", "sessionId": "s1", "timestamp": "2026-04-29T10:00:00Z",
+        "message": {"model": "claude-sonnet-5", "usage": {"input_tokens": 42}},
+    }])
+    cache_file = tmp_path / "cache" / "claude-usage.json"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text('{"version": 2, "files": {"a": ')  # truncated mid-write
+
+    entries = axt.load_all_claude_usage(projects)
+
+    assert [e.input_tokens for e in entries] == [42]
+    assert json.loads(cache_file.read_text())["version"] == 2

@@ -951,3 +951,181 @@ def test_collect_context_skips_disabled_plugin(tmp_path: Path, monkeypatch):
         home_dir=home, project_dir=proj, installed_plugins_path=ip,
     )
     assert [s for s in sources if s.category == "plugins"] == []
+
+
+# ─── Gap-code additions (Phase C, Agent C) ───────────────────────────────────
+
+
+def _ctx_fixture_paths(tmp_path: Path, monkeypatch, home: Path, *, ip: Path | None = None) -> None:
+    """Point PATHS/HOME at the given fake home so the list_* helpers used by
+    collect_context_sources never read the developer's real ~/.claude."""
+    monkeypatch.setattr("axt.HOME", home)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        claude_dir=home / ".claude",
+        settings=home / ".claude" / "settings.json",
+        installed_plugins=ip or (tmp_path / "ip.json"),
+        skills=home / ".claude" / "skills",
+    ))
+    monkeypatch.setattr("axt.get_claude_version", lambda: "0.0.0")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks/.agents layout is POSIX-only here")
+def test_collect_context_excludes_agents_dir_only_skill(tmp_path: Path, monkeypatch):
+    """A skill that exists ONLY under `.agents/skills` is not counted.
+
+    US-CTX03 AC1: `.agents` is the cross-agent mirror tree that Claude Code
+    never reads. Prevents: the Context tab inflating the session-start token
+    figure with skills Gemini CLI/Codex load but Claude does not, sending the
+    user off optimizing something that costs them nothing.
+    """
+    # TC-UNIT-204 (US-CTX03 AC1)
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (proj / ".claude" / "skills" / "keep").mkdir(parents=True)
+    (proj / ".claude" / "skills" / "keep" / "SKILL.md").write_text(
+        "---\nname: keep\ndescription: counted\n---\nbody")
+    trap = home / ".agents" / "skills" / "only-here"
+    trap.mkdir(parents=True)
+    (trap / "SKILL.md").write_text("---\nname: only-here\ndescription: not counted\n---\nbody")
+
+    _ctx_fixture_paths(tmp_path, monkeypatch, home)
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json")
+
+    skill_names = {s.name for s in sources if s.category == "skills"}
+    assert "keep" in skill_names
+    assert "only-here" not in skill_names
+    # And it is not smuggled in under some other category either.
+    assert all("only-here" not in s.name for s in sources)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks/.agents layout is POSIX-only here")
+def test_collect_context_excludes_agents_dir_only_agent(tmp_path: Path, monkeypatch):
+    """An agent that exists ONLY under `.agents` is not counted.
+
+    US-CTX03 AC2 — same reasoning as the skills rule. Prevents: agents shared
+    with other tools being billed to Claude's context budget.
+    """
+    # TC-UNIT-206 (US-CTX03 AC2)
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    (home / ".claude" / "agents").mkdir(parents=True)
+    (proj / ".claude" / "agents").mkdir(parents=True)
+    (proj / ".claude" / "agents" / "keep.md").write_text(
+        "---\ndescription: counted\n---\nbody")
+    # Both `.agents` layouts the scanner knows: nested and flat.
+    (home / ".agents" / "agents").mkdir(parents=True)
+    (home / ".agents" / "agents" / "only-here.md").write_text(
+        "---\ndescription: not counted\n---\nbody")
+    (home / ".agents" / "only-here-flat.md").write_text(
+        "---\ndescription: not counted\n---\nbody")
+
+    _ctx_fixture_paths(tmp_path, monkeypatch, home)
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json")
+
+    agent_names = {s.name for s in sources if s.category == "agents"}
+    assert "keep" in agent_names
+    assert "only-here" not in agent_names
+    assert all("only-here" not in s.name for s in sources)
+
+
+def _rich_context_fixture(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """Disk state producing one source in each of the categories the
+    `actionable` rules distinguish."""
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "settings.json").write_text('{"enabledPlugins": {}}')
+    (proj / ".claude" / "skills" / "sk").mkdir(parents=True)
+    (proj / ".claude" / "skills" / "sk" / "SKILL.md").write_text(
+        "---\nname: sk\ndescription: a skill\n---\nbody")
+    (proj / ".claude" / "commands").mkdir(parents=True)
+    (proj / ".claude" / "commands" / "cmd.md").write_text("---\ndescription: a command\n---\n")
+    (proj / ".claude" / "agents").mkdir(parents=True)
+    (proj / ".claude" / "agents" / "ag.md").write_text("---\ndescription: an agent\n---\n")
+    (proj / "CLAUDE.md").write_text("Project guidance.")
+    mem_dir = home / ".claude" / "projects" / axt._encode_project_dir_name(proj) / "memory"
+    mem_dir.mkdir(parents=True)
+    (mem_dir / "MEMORY.md").write_text("# Memory index\n- note\n")
+    (home / ".claude.json").write_text(json.dumps({
+        "mcpServers": {"srv": {"command": "run-srv"}},
+    }))
+    _ctx_fixture_paths(tmp_path, monkeypatch, home)
+    return home, proj
+
+
+def test_collect_context_fixed_sources_are_not_actionable(tmp_path: Path, monkeypatch):
+    """The system prompt and user-context baselines are marked
+    `actionable=False` by the collector itself.
+
+    US-CTX02 AC1. Prevents: the Context tab presenting the 4,200-token system
+    prompt as something the user can trim, wasting their time on a cost that
+    is fixed by Claude Code.
+    """
+    # TC-UNIT-211 (US-CTX02 AC1)
+    home, proj = _rich_context_fixture(tmp_path, monkeypatch)
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json")
+    by_name = {s.name: s for s in sources}
+
+    assert by_name["System Prompt"].estimated_tokens == 4200
+    assert by_name["System Prompt"].actionable is False
+    assert by_name["User Context"].estimated_tokens == 280
+    assert by_name["User Context"].actionable is False
+
+
+def test_collect_context_adjustable_sources_are_actionable(tmp_path: Path, monkeypatch):
+    """Everything the user can actually change — CLAUDE.md, memory, skills,
+    commands, agents and MCP tool definitions — is marked `actionable=True`.
+
+    US-CTX02 AC2. Prevents: the tab hiding a genuinely reducible cost behind
+    the "fixed" styling, so the user never learns that disabling an MCP server
+    for this project would shrink their session-start context.
+    """
+    # TC-UNIT-212 (US-CTX02 AC2) — spec gap G-4: mcp-tools/plugins are
+    # currently emitted with actionable=False; the assertion below follows the
+    # user story, not the implementation.
+    home, proj = _rich_context_fixture(tmp_path, monkeypatch)
+    sources = axt.collect_context_sources(
+        home_dir=home, project_dir=proj, installed_plugins_path=tmp_path / "ip.json")
+
+    by_category: dict[str, list] = {}
+    for s in sources:
+        by_category.setdefault(s.category, []).append(s)
+
+    for category in ("claude-md", "memory", "skills", "commands", "agents", "mcp-tools"):
+        found = by_category.get(category, [])
+        assert found, f"fixture produced no {category} source"
+        assert all(s.actionable is True for s in found), (
+            f"{category}: {[(s.name, s.actionable) for s in found]}")
+
+
+def test_analyze_context_window_follows_the_model(tmp_path: Path, monkeypatch):
+    """The context window and cost impact come from the requested model's
+    pricing row, with a 1,000,000-token fallback for unknown models.
+
+    US-USG06 AC2 / US-CTX01. Prevents: a Haiku user seeing "3% of window used"
+    when they are actually at 15%, and an unpriced model raising instead of
+    degrading to a zero-cost estimate.
+    """
+    # TC-UNIT-222 (US-USG06 AC2)
+    home, proj = _rich_context_fixture(tmp_path, monkeypatch)
+    kwargs = dict(home_dir=home, project_dir=proj,
+                  installed_plugins_path=tmp_path / "ip.json")
+
+    haiku = axt.analyze_context(model="claude-haiku-4-5", **kwargs)
+    assert haiku.context_window_size == 200_000
+    assert haiku.used_percent == pytest.approx(haiku.total_tokens / 200_000 * 100)
+    assert haiku.cost_impact.monthly_cost > 0
+
+    unknown = axt.analyze_context(model="gpt-9", **kwargs)
+    assert unknown.context_window_size == 1_000_000
+    assert unknown.used_percent == pytest.approx(unknown.total_tokens / 1_000_000 * 100)
+    assert unknown.cost_impact.cache_write_cost == 0.0
+    assert unknown.cost_impact.cache_read_cost_per_turn == 0.0
+    assert unknown.cost_impact.monthly_cost == 0.0
+    # Same disk state → same token total regardless of the pricing model.
+    assert unknown.total_tokens == haiku.total_tokens

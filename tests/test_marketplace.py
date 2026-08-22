@@ -937,3 +937,78 @@ def test_sync_marketplace_unsyncable(tmp_path: Path):
     with pytest.raises(RuntimeError, match="not a git repo and not a github source"):
         axt.sync_marketplace(tmp_path / "km.json", "x")
     assert json.loads((tmp_path / "km.json").read_text())["x"]["lastUpdated"] == "keep"
+
+
+# ─── Gap-code additions (Phase C, Agent C) ───────────────────────────────────
+
+
+def test_sync_marketplace_git_order_is_fetch_then_reset_hard_upstream(tmp_path: Path, monkeypatch):
+    """A git-backed marketplace syncs by `fetch` and then `reset --hard @{u}`,
+    in that order.
+
+    US-MKT05 AC1 (see tests/doc/SPEC_DECISIONS.md SD-001: the install dir is a
+    managed cache, so uncommitted local edits are deliberately discarded).
+    Prevents: reordering to `reset` before `fetch`, which would hard-reset to
+    the *stale* remote-tracking ref and report "up to date" while the upstream
+    had actually moved on.
+    """
+    # TC-UNIT-084 (US-MKT05 AC1)
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    _seed_github_entry(tmp_path / "km.json", install)
+
+    calls: list[list[str]] = []
+    state = {"hash": "aaaaaaa"}
+
+    def fake_git(args, cwd=None):
+        calls.append(list(args))
+        if "rev-parse" in args:
+            return (0, state["hash"] + "\n", "")
+        if "fetch" in args:
+            return (0, "", "")
+        if "reset" in args:
+            state["hash"] = "bbbbbbb"
+            return (0, "", "")
+        return (1, "", "unexpected git call")
+
+    monkeypatch.setattr(axt, "_git", fake_git)
+    result = axt.sync_marketplace(tmp_path / "km.json", "x")
+
+    verbs = [a[3] for a in calls if len(a) > 3 and a[1] == "-C"]
+    assert verbs == ["rev-parse", "fetch", "reset", "rev-parse"]
+    reset_call = next(a for a in calls if "reset" in a)
+    assert "--hard" in reset_call and "@{u}" in reset_call
+    assert (result.before, result.after, result.updated) == ("aaaaaaa", "bbbbbbb", True)
+
+
+def test_sync_marketplace_git_reset_failure_leaves_registry_untouched(tmp_path: Path, monkeypatch):
+    """A failing `reset --hard` raises with git's stderr and does NOT bump the
+    registry's `lastUpdated`.
+
+    US-MKT05 AC3. Prevents: a half-failed sync recording a fresh timestamp, so
+    `market list` and the TUI's `Upd` column would claim the marketplace is
+    current when its tree never moved.
+    """
+    # TC-UNIT-084 (US-MKT05 AC3)
+    install = tmp_path / "install"
+    (install / ".git").mkdir(parents=True)
+    km = tmp_path / "km.json"
+    _seed_github_entry(km, install)
+    before_bytes = km.read_bytes()
+
+    def fake_git(args, cwd=None):
+        if "rev-parse" in args:
+            return (0, "aaaaaaa\n", "")
+        if "fetch" in args:
+            return (0, "", "")
+        if "reset" in args:
+            return (128, "", "fatal: ambiguous argument '@{u}': unknown revision")
+        return (1, "", "unexpected git call")
+
+    monkeypatch.setattr(axt, "_git", fake_git)
+    with pytest.raises(RuntimeError) as exc:
+        axt.sync_marketplace(km, "x")
+
+    assert "git reset failed" in str(exc.value)
+    assert "ambiguous argument" in str(exc.value)  # git's own stderr reaches the user
+    assert km.read_bytes() == before_bytes

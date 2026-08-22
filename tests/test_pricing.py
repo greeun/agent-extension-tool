@@ -605,3 +605,103 @@ def test_resolve_claude_plan_falls_back_when_detection_fails(monkeypatch):
         plans={"claude": axt.PlanConfig(plan="max-5x", monthly_cost=100)},
     )
     assert axt.resolve_claude_plan(cfg).plan == "max-5x"
+
+
+# ─── Gap-code additions (Phase C, Agent C) ───────────────────────────────────
+
+
+def _uni(model: str) -> "axt.UnifiedUsageEntry":
+    return axt.UnifiedUsageEntry(
+        platform="claude", model=model, timestamp="2026-07-01T00:00:00Z",
+        session_id="s", project_path="/p",
+        input_tokens=1, output_tokens=1, cache_write_tokens=0, cache_read_tokens=0)
+
+
+def test_find_unpriced_models_placeholders_only_is_empty():
+    """A transcript made up only of placeholder model markers produces no
+    warning at all — not a warning about `unknown`.
+
+    US-USG06 AC3. Prevents: the Usage tab's "⚠ N entries from unpriced models"
+    line firing for markers no pricing table could ever cover, training users
+    to ignore the warning that matters.
+    """
+    # TC-UNIT-175 (US-USG06 AC3)
+    entries = [_uni("unknown"), _uni("unknown"), _uni("<synthetic>"),
+               _uni("<synthetic-quota>"), _uni("")]
+    assert axt.find_unpriced_models(entries) == {}
+
+
+def test_convert_currency_zero_exchange_rate_returns_amount():
+    """A missing/zero exchange rate falls back to the original amount instead
+    of dividing by zero.
+
+    US-USG01. Prevents: a config with `exchange_rate: 0` (or a failed rate
+    lookup defaulting to 0) crashing every cost render with ZeroDivisionError.
+    """
+    # TC-UNIT-177 (US-USG01)
+    assert axt.convert_currency(14000, "krw", "usd", 0) == 14000
+    # The opposite direction must also not raise.
+    assert axt.convert_currency(10, "usd", "krw", 0) == 0
+
+
+def test_get_days_in_billing_period_clamps_day_31_and_first_day_is_zero():
+    """`billing_cycle_start=31` is clamped to day 28 so every month has the
+    day, and the first day of a cycle reports 0 elapsed days.
+
+    US-USG07 AC5. Prevents two crashes/wrong answers: `datetime(2026, 2, 31)`
+    raising ValueError for February, and the day-0 divide that
+    `project_monthly_cost` guards against never being reachable because
+    elapsed silently started at 1.
+    """
+    # TC-UNIT-181 (US-USG07 AC5)
+    from datetime import datetime, timezone
+
+    utc = timezone.utc
+    # Cycle start is day 28, not 31 → the day itself is elapsed 0.
+    assert axt.get_days_in_billing_period(
+        31, now=datetime(2026, 3, 28, 0, 0, tzinfo=utc)) == (0, 31)
+    # Still day 0 late on the same day (whole-day floor, not a rounding).
+    assert axt.get_days_in_billing_period(
+        31, now=datetime(2026, 3, 28, 23, 59, tzinfo=utc)) == (0, 31)
+    # One day before the clamped start rolls back into the Feb 28 → Mar 28
+    # cycle: 28 days long, 27 elapsed. A day-31 start would have crashed here.
+    assert axt.get_days_in_billing_period(
+        31, now=datetime(2026, 3, 27, 0, 0, tzinfo=utc)) == (27, 28)
+
+
+def test_project_monthly_cost_negative_days_elapsed_is_zero():
+    """A negative elapsed-day count yields 0.0, not a negative projection.
+
+    US-USG07 AC5. Prevents: a clock skew (or a billing_start in the future)
+    producing a negative projection that renders as "under budget" when the
+    real number is unknown.
+    """
+    # TC-UNIT-183 (US-USG07 AC5)
+    assert axt.project_monthly_cost(60.0, -1, 30) == 0.0
+    assert axt.project_monthly_cost(60.0, -100, 30) == 0.0
+
+
+def test_compute_plan_usage_fields_are_consistent_including_day_zero():
+    """Every PlanUsage field derives from the same (cost, elapsed, total)
+    triple, and the first day of a cycle produces zeros rather than a divide.
+
+    US-USG07 AC3·AC5. Prevents: `daily_avg_cost` and `projected_monthly_cost`
+    disagreeing (e.g. one guarded against elapsed=0 and the other not), which
+    would show a $0 average next to a non-zero projection.
+    """
+    # TC-UNIT-184 (US-USG07 AC3, AC5)
+    config = axt.PlanConfig(plan="max-20x", monthly_cost=200.0, billing_cycle_start=15)
+    usage = axt.compute_plan_usage(config, current_cost=60.0, days_elapsed=6, total_days=30)
+    assert usage.plan == "max-20x"
+    assert usage.monthly_cost == 200.0
+    assert usage.current_period_cost == 60.0
+    assert usage.daily_avg_cost == 10.0
+    assert usage.days_elapsed == 6
+    assert usage.days_remaining == 24
+    assert usage.projected_monthly_cost == 300.0
+
+    day_zero = axt.compute_plan_usage(config, current_cost=60.0, days_elapsed=0, total_days=30)
+    assert day_zero.daily_avg_cost == 0.0
+    assert day_zero.projected_monthly_cost == 0.0
+    assert day_zero.days_remaining == 30
+    assert day_zero.current_period_cost == 60.0

@@ -591,3 +591,42 @@ def test_update_status_cache_missing_or_corrupt(tmp_path, monkeypatch):
     assert axt.update.load_cached_update_statuses() == ([], None)
     p.write_text("not json at all")
     assert axt.update.load_cached_update_statuses() == ([], None)
+
+
+# ─── Gap-code additions (Phase C, Agent C) ───────────────────────────────────
+
+
+def test_check_all_updates_types_filter_skips_other_updaters_entirely(monkeypatch):
+    """`types=[...]` narrows the sweep to the named item types and never runs
+    the other updaters.
+
+    US-UPD04 AC1. Prevents: `axt update plugin` still git-fetching every
+    marketplace and standalone skill repo — the whole reason to scope a sweep
+    is to skip that network work, so "filter the results afterwards" is not a
+    valid implementation.
+    """
+    # TC-UNIT-225 (US-UPD04 AC1)
+    called: list[str] = []
+
+    def _updater(item_type: str) -> Updater:
+        def check_all():
+            called.append(item_type)
+            return [UpdateStatus(item_type, f"{item_type}-1", 1, "1.0.0", "1.1.0", True)]
+        return Updater(item_type=item_type, tier=1, check_all=check_all, apply_one=None)
+
+    monkeypatch.setattr("axt.update.UPDATERS",
+                        [_updater("plugin"), _updater("marketplace"), _updater("skill")])
+
+    out = check_all_updates(types=["plugin"])
+    assert [s.item_type for s in out] == ["plugin"]
+    assert called == ["plugin"]
+
+    called.clear()
+    out = check_all_updates(types=["marketplace", "skill"])
+    assert sorted(s.item_type for s in out) == ["marketplace", "skill"]
+    assert sorted(called) == ["marketplace", "skill"]
+
+    # No filter → every updater runs (the default full sweep).
+    called.clear()
+    assert len(check_all_updates()) == 3
+    assert sorted(called) == ["marketplace", "plugin", "skill"]

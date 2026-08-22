@@ -86,7 +86,8 @@ TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 
 - 티어: Tier 1(자동 적용) 플러그인/마켓플레이스/git-backed 스킬·명령·에이전트, Tier 2(리포트 전용) MCP 서버(`pinned @x.y.z` / `floating (@latest)` / `unpinned`) 및 non-git 독립 항목, Tier 3(위임) Claude Code 바이너리
 
 ### 1.9 `axt usage` (5)
-공통 옵션: `--since YYYY-MM-DD`, `--until YYYY-MM-DD`, `--model <name>`, `--project <name>`, `--breakdown`, `--timezone <tz>`, `--locale <loc>`, `--json`, `--csv`, `--export <path>`.
+공통 옵션: `--since YYYY-MM-DD`, `--until YYYY-MM-DD`, `--model <name>`, `--project <name>`, `--timezone <tz>`, `--locale <loc>`, `--json`, `--csv`.
+> **미구현**: `--breakdown`, `--export <path>` 는 이 문서가 오래 약속해 왔지만 argparse 에 등록된 적이 없다 (지정 시 `exit 2`). 구현되면 이 줄을 지우고 위 목록에 합친다.
 
 | 서브명령 | 설명 |
 |---|---|
@@ -236,6 +237,7 @@ Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) 
 - `read_marked_for_update`, `set_marked_for_update`
 - `read_extra_marketplaces`
 - 우선순위: project local > project > global
+  > **부분 구현**: hooks 와 컨텍스트 분석은 `settings.local.json` 을 읽지만, `enabledPlugins` 해석 경로는 global 과 project 의 `settings.json` 만 본다 — `settings.local.json` 의 플러그인 오버라이드는 무시된다.
 
 ### 3.4 vault (Section 5, 가장 큰 도메인)
 - 타입: `ExtensionType`, `VaultItem`, `AxtProfile`, `SyncResult`, `MigrateResult`, `PluginRef`

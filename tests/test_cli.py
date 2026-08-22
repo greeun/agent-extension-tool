@@ -1288,3 +1288,807 @@ def test_print_list_header(capsys):
     out = capsys.readouterr().out
     assert "Name  Type" in out
     assert "─" * 10 in out
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Gap-code (Phase C): api-layer TCs from tests/doc/testcases/api-testcases.md.
+# Every test below verifies the CLI *contract* — argument validation, exit
+# code, stdout/stderr shape, --json/--csv schema. Domain parsing rules stay
+# with their unit tests (TEST_DEDUP_POLICY.md §2).
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _run_expect_exit(argv: list[str]) -> tuple[int, str, str]:
+    """Like `_run`, but for argv that argparse rejects before dispatch.
+
+    argparse calls `sys.exit(2)` itself, so `main` never returns — the code
+    has to come off the SystemExit. Returns (exit_code, stdout, stderr)."""
+    out = io.StringIO()
+    err = io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        with pytest.raises(SystemExit) as excinfo:
+            axt.main(argv)
+    return excinfo.value.code, out.getvalue(), err.getvalue()
+
+
+def _subparser_choices(parser) -> dict:
+    """The `{name: subparser}` map of a parser's subcommand group ({} if none).
+
+    argparse exposes no public accessor for the tree, so the tests that assert
+    which subcommands exist have to read `_SubParsersAction.choices`."""
+    import argparse
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return dict(action.choices)
+    return {}
+
+
+def _tree_snapshot(root: Path) -> dict[str, str]:
+    """Every path under `root` mapped to a marker of what it is.
+
+    Used by the read-only-command tests: comparing two snapshots catches a
+    handler that creates, deletes, or rewrites anything it shouldn't."""
+    snap: dict[str, str] = {}
+    for p in sorted(root.rglob("*")):
+        rel = str(p.relative_to(root))
+        if p.is_symlink():
+            snap[rel] = f"symlink:{os.readlink(p)}"
+        elif p.is_dir():
+            snap[rel] = "dir"
+        else:
+            snap[rel] = f"file:{p.read_bytes()!r}"
+    return snap
+
+
+# ─── Argparse contract: exit code 2 ──────────────────────────────────────────
+
+
+def test_unknown_command_exits_with_code_2(monkeypatch):
+    """An unknown top-level command must exit 2 (argparse usage error), not 1
+    (handler error) and not 0. Shell callers branch on that number, so a
+    handler that swallowed the error into `return 1` would look like a failed
+    operation rather than a typo."""
+    # TC-API-001
+    monkeypatch.setenv("NO_COLOR", "1")
+    code, _, err = _run_expect_exit(["totally-not-a-command"])
+    assert code == 2
+    assert "usage:" in err
+
+
+def test_missing_required_argument_exits_2(monkeypatch):
+    """A subcommand invoked without its required positional exits 2 before any
+    handler runs — prevents a regression where `nargs="?"` creeps onto an
+    argument the handler then dereferences as None."""
+    # TC-API-002
+    monkeypatch.setenv("NO_COLOR", "1")
+    for argv in (["market", "add"], ["plugin", "info"]):
+        code, _, err = _run_expect_exit(argv)
+        assert code == 2, argv
+        assert "usage:" in err, argv
+
+
+def test_invalid_choice_exits_2(monkeypatch):
+    """`choices=` violations are caught by argparse (exit 2), not by the
+    handler. Guards US-UPD04 AC2 and the vault `-t` enum."""
+    # TC-API-003
+    monkeypatch.setenv("NO_COLOR", "1")
+    for argv in (["update", "bogus-type"], ["vault", "add", "p", "-t", "bogus"]):
+        code, _, err = _run_expect_exit(argv)
+        assert code == 2, argv
+        assert "invalid choice" in err, argv
+
+
+def test_command_group_without_subcommand_exits_2(monkeypatch):
+    """Groups declared `required=True` must fail loudly when called bare
+    instead of printing help and exiting 0 — otherwise `axt market` in a
+    script silently succeeds while doing nothing."""
+    # TC-API-004
+    monkeypatch.setenv("NO_COLOR", "1")
+    for argv in (["market"], ["vault"]):
+        code, _, err = _run_expect_exit(argv)
+        assert code == 2, argv
+        assert "usage:" in err, argv
+
+
+def test_invalid_theme_value_exits_2(monkeypatch):
+    """--theme is a closed enum; a typo must not fall through to the TUI with
+    an unknown palette name."""
+    # TC-API-010
+    monkeypatch.setenv("NO_COLOR", "1")
+    launched = []
+    monkeypatch.setattr("axt.launch_tui", lambda *a, **k: launched.append(a) or 0)
+    code, _, err = _run_expect_exit(["--theme", "bogus"])
+    assert code == 2
+    assert "invalid choice" in err
+    assert launched == []  # the TUI must not open on a rejected flag
+
+
+def test_plugin_enable_invalid_scope_exits_2(monkeypatch):
+    """--scope is global|project; anything else must be rejected by argparse
+    rather than silently defaulting to global and writing the wrong file."""
+    # TC-API-039
+    monkeypatch.setenv("NO_COLOR", "1")
+    code, _, err = _run_expect_exit(["plugin", "enable", "p@m", "--scope", "bogus"])
+    assert code == 2
+    assert "invalid choice" in err
+
+
+# ─── Top-level error handling / help ─────────────────────────────────────────
+
+
+def test_market_add_invalid_source_errors_on_stderr_only(tmp_path: Path, monkeypatch):
+    """A handler raising ValueError must exit 1 with the `✗` line on *stderr*
+    and nothing on stdout — piping `axt … | jq` must never receive an error
+    decoration in the data stream."""
+    # TC-API-005
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        known_marketplaces=tmp_path / "km.json", marketplaces=tmp_path / "mks"))
+    code, out, err = _run(["market", "add", "nonsense"])
+    assert code == 1
+    assert "✗" in err
+    assert "✗" not in out
+
+
+def test_help_lists_all_twelve_command_groups(monkeypatch):
+    """`--help` must advertise every command group. A subparser that is
+    registered but missing from help is invisible to users; one that was never
+    registered breaks the command outright. Both show up here."""
+    # TC-API-008
+    monkeypatch.setenv("NO_COLOR", "1")
+    code, out, _ = _run_expect_exit(["--help"])
+    assert code == 0
+    for cmd in ("tui", "context", "market", "mcp", "hook", "plan",
+                "plugin", "project", "skill", "usage", "vault", "update"):
+        assert cmd in out, cmd
+
+
+# ─── mcp ─────────────────────────────────────────────────────────────────────
+
+
+def test_mcp_info_remote_server_shows_url_not_command(tmp_path: Path, monkeypatch):
+    """A remote (http/sse) server has no command line — `info` must print its
+    URL and must not print an empty `Command:` line, which would read as a
+    misconfigured server."""
+    # TC-API-024
+    monkeypatch.setenv("NO_COLOR", "1")
+    cfg = tmp_path / ".claude.json"
+    cfg.write_text(json.dumps({"mcpServers": {
+        "remote1": {"type": "http", "url": "https://mcp.example.com/sse"},
+    }}))
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        installed_plugins=tmp_path / "ip.json", settings=tmp_path / "s.json",
+        claude_config=cfg))
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = _run(["mcp", "info", "remote1"])
+    assert code == 0
+    assert "URL: https://mcp.example.com/sse" in out
+    assert "Command:" not in out
+
+
+# ─── hook ────────────────────────────────────────────────────────────────────
+
+
+def test_hook_disable_already_disabled_is_a_noop(tmp_path: Path, monkeypatch):
+    """Disabling an already-parked hook must report `already disabled`, exit 0,
+    and leave the settings file byte-identical — a second disable that moved
+    the entry again would duplicate or drop the definition."""
+    # TC-API-030
+    monkeypatch.setenv("NO_COLOR", "1")
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({
+        "disabledHooks": {
+            "Stop": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo bye"}]}]
+        }
+    }))
+    before = settings.read_bytes()
+    monkeypatch.setattr("axt.PATHS", _hooks_paths(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    code, out, _ = _run(["hook", "disable", "0"])
+    assert code == 0
+    assert "already disabled" in out
+    assert settings.read_bytes() == before
+
+
+# ─── plan ────────────────────────────────────────────────────────────────────
+
+
+def test_plan_set_auto_reenables_autodetect(tmp_path: Path, monkeypatch):
+    """`plan set <name>` pins the plan (auto-detect off); `plan set auto` must
+    turn it back on. Without this the only way back to auto-detection would be
+    editing config.json by hand."""
+    # TC-API-033
+    monkeypatch.setenv("NO_COLOR", "1")
+    _isolate_usage(tmp_path, monkeypatch)
+    # detect_claude_plan() reads the module-level CLAUDE_CONFIG_FILE, not
+    # PATHS — point it at a nonexistent tmp file so the user's real
+    # ~/.claude.json is never read and the branch is deterministic.
+    monkeypatch.setattr("axt.CLAUDE_CONFIG_FILE", tmp_path / "no-claude.json")
+    _run(["plan", "set", "max20"])
+    assert axt.load_config(tmp_path / "config.json").auto_detect_plan is False
+    code, out, _ = _run(["plan", "set", "auto"])
+    assert code == 0
+    assert "Auto-detect enabled" in out
+    assert axt.load_config(tmp_path / "config.json").auto_detect_plan is True
+
+
+# ─── project ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin on Windows")
+def test_project_status_does_not_mutate_filesystem(tmp_path: Path, monkeypatch):
+    """`status` is the pre-flight for `sync` (US-PRJ04 AC1): it must report the
+    drift, never repair it. A snapshot around the call catches a handler that
+    starts creating the missing symlinks."""
+    # TC-API-048
+    monkeypatch.setenv("NO_COLOR", "1")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    axt.write_profile(proj, axt.AxtProfile(skills=("alpha", "beta")))
+    (proj / ".claude" / "skills").mkdir(parents=True)
+    tgt = tmp_path / "alpha-src"
+    tgt.mkdir()
+    os.symlink(tgt, proj / ".claude" / "skills" / "alpha")
+    before = _tree_snapshot(proj)
+    code, out, _ = _run(["project", "status"])
+    assert code == 0
+    assert "missing" in out  # beta is reported, not repaired
+    assert _tree_snapshot(proj) == before
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin on Windows")
+def test_project_add_accepts_multiple_names(tmp_path: Path, monkeypatch):
+    """`project add <type> <names...>` takes a batch (US-PRJ02 AC1). A regression
+    to a single positional would silently link only the first name."""
+    # TC-API-050
+    monkeypatch.setenv("NO_COLOR", "1")
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault, "alpha")
+    _seed_vault_skill(paths.vault, "beta")
+    monkeypatch.setattr("axt.PATHS", paths)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    code, out, _ = _run(["project", "add", "skill", "alpha", "beta"])
+    assert code == 0
+    assert (proj / ".claude" / "skills" / "alpha").is_symlink()
+    assert (proj / ".claude" / "skills" / "beta").is_symlink()
+    assert out.count("✓") == 2  # one confirmation line per name
+
+
+# ─── skill ───────────────────────────────────────────────────────────────────
+
+
+def test_skill_link_subcommands_absent_when_symlinks_unsupported(monkeypatch):
+    """On a platform without symlinks the link/unlink subcommands must not be
+    registered at all (US-LNK02 AC2), so `axt skill --help` never advertises a
+    command that can only fail. The handler's own guard is tested separately."""
+    # TC-API-057
+    monkeypatch.setattr("axt.is_symlink_supported", lambda: False)
+    skill_group = _subparser_choices(axt.build_parser())["skill"]
+    assert set(_subparser_choices(skill_group)) == {"list"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin on Windows")
+def test_skill_link_missing_path_exits_1(tmp_path: Path, monkeypatch):
+    """Linking a path that doesn't exist must fail (US-LNK02 AC3) instead of
+    creating a broken symlink that later shows up as a phantom skill."""
+    # TC-API-058
+    monkeypatch.setenv("NO_COLOR", "1")
+    skills = tmp_path / "skills"
+    monkeypatch.setattr("axt.PATHS", axt.Paths(skills=skills))
+    missing = tmp_path / "no-such-dir"
+    code, out, err = _run(["skill", "link", str(missing)])
+    assert code == 1
+    assert "✗" in err or "✗" in out
+    assert not (skills / "no-such-dir").exists()
+    assert not (skills / "no-such-dir").is_symlink()
+
+
+# ─── usage: filters ──────────────────────────────────────────────────────────
+
+# The `today` window is `since = until = _today_in_tz(tz)`, so these tests pin
+# that seam to a fixed date and give every entry a *naive* timestamp — the same
+# instant the date cutoff parses to, on any host timezone. Without both, the
+# assertions would depend on the wall clock (and on the machine's tz offset).
+
+_USAGE_DAY = "2026-03-01"
+_USAGE_TS = "2026-03-01T00:00:00"
+
+
+def _usage_record(session: str, ts: str, *, model: str = "claude-opus-4-7",
+                  inp: int = 1000) -> dict:
+    return {
+        "type": "assistant", "sessionId": session, "timestamp": ts,
+        "message": {"model": model, "usage": {
+            "input_tokens": inp, "output_tokens": 10,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}},
+    }
+
+
+def _pin_today(monkeypatch, day: str) -> None:
+    monkeypatch.setattr("axt._today_in_tz", lambda tz: day)
+
+
+def test_usage_today_project_filter_narrows_totals(tmp_path: Path, monkeypatch):
+    """--project must restrict the aggregate to that project's entries. A flag
+    that parses but never reaches the loader would report every project's
+    tokens under one project's name."""
+    # TC-API-064
+    monkeypatch.setenv("NO_COLOR", "1")
+    projects = tmp_path / "projects"
+    _write_jsonl(projects / "projA" / "a.jsonl", [_usage_record("sess-a", _USAGE_TS, inp=1000)])
+    _write_jsonl(projects / "projB" / "b.jsonl", [_usage_record("sess-b", _USAGE_TS, inp=7000)])
+    _isolate_usage(tmp_path, monkeypatch, projects=projects)
+    _pin_today(monkeypatch, _USAGE_DAY)
+    code, out, _ = _run(["usage", "today", "--timezone", "UTC", "--project", "projA", "--json"])
+    assert code == 0
+    data = json.loads(out)
+    assert data["sessions"] == 1
+    assert data["inputTokens"] == 1000  # projB's 7000 must not be counted
+
+
+def test_usage_filters_combine_as_and(tmp_path: Path, monkeypatch):
+    """--model and --project are ANDed (US-USG02 AC3). If either were applied
+    as an OR the total would include entries matching only one condition."""
+    # TC-API-068
+    monkeypatch.setenv("NO_COLOR", "1")
+    projects = tmp_path / "projects"
+    _write_jsonl(projects / "projA" / "a.jsonl", [
+        _usage_record("sess-a1", _USAGE_TS, model="claude-opus-4-7", inp=1000),
+        _usage_record("sess-a2", _USAGE_TS, model="claude-sonnet-4-6", inp=200),
+    ])
+    _write_jsonl(projects / "projB" / "b.jsonl", [
+        _usage_record("sess-b1", _USAGE_TS, model="claude-opus-4-7", inp=7000)])
+    _isolate_usage(tmp_path, monkeypatch, projects=projects)
+    _pin_today(monkeypatch, _USAGE_DAY)
+    code, out, _ = _run(["usage", "today", "--timezone", "UTC",
+                         "--model", "claude-opus-4-7", "--project", "projA", "--json"])
+    assert code == 0
+    data = json.loads(out)
+    assert data["sessions"] == 1
+    assert data["inputTokens"] == 1000  # only the opus entry inside projA
+
+
+def test_usage_since_until_narrow_the_window(tmp_path: Path, monkeypatch):
+    """--since/--until must actually bound the query (US-USG02). They are
+    currently parsed and dropped, so a user asking for one past day gets the
+    default window instead of their data."""
+    # TC-API-065
+    monkeypatch.setenv("NO_COLOR", "1")
+    projects = tmp_path / "projects"
+    _write_jsonl(projects / "projA" / "a.jsonl", [
+        _usage_record("sess-1", "2026-03-01T00:00:00", inp=100),
+        _usage_record("sess-2", "2026-03-02T00:00:00", inp=200),
+        _usage_record("sess-3", "2026-03-03T00:00:00", inp=400),
+    ])
+    _isolate_usage(tmp_path, monkeypatch, projects=projects)
+    # A "today" with no data, so a pass can only come from --since/--until.
+    _pin_today(monkeypatch, "2026-06-15")
+    code, out, _ = _run(["usage", "today", "--timezone", "UTC",
+                         "--since", "2026-03-01", "--until", "2026-03-01", "--json"])
+    assert code == 0
+    assert "No usage data" not in out, "--since/--until were ignored; the default today window was used"
+    data = json.loads(out)
+    assert data["sessions"] == 1
+    assert data["inputTokens"] == 100
+
+
+def test_usage_invalid_date_format_exits_1(tmp_path: Path, monkeypatch):
+    """An unparseable --since must fail with a format hint (US-USG02 AC1).
+    Silently ignoring it hands back a report for the wrong period, which the
+    caller has no way to notice."""
+    # TC-API-066
+    monkeypatch.setenv("NO_COLOR", "1")
+    _isolate_usage(tmp_path, monkeypatch)
+    code, out, err = _run(["usage", "today", "--timezone", "UTC", "--since", "notadate"])
+    assert code == 1
+    assert "notadate" in out + err
+    assert "YYYY-MM-DD" in out + err  # the format guidance the AC calls for
+
+
+def test_usage_since_after_until_is_an_error(tmp_path: Path, monkeypatch):
+    """An inverted range is a user mistake, not an empty result (US-USG02 AC2)
+    — reporting "no data" would look like a billing anomaly."""
+    # TC-API-067
+    monkeypatch.setenv("NO_COLOR", "1")
+    _isolate_usage(tmp_path, monkeypatch)
+    code, out, err = _run(["usage", "today", "--timezone", "UTC",
+                           "--since", "2026-03-10", "--until", "2026-03-01"])
+    assert code == 1
+    assert "2026-03-10" in out + err
+
+
+# ─── usage: output formats ───────────────────────────────────────────────────
+
+
+def _uentry(day: str, session: str, *, model: str = "claude-opus-4-7",
+            inp: int = 1000, out: int = 2000, cw: int = 500, cr: int = 8000):
+    return axt.UnifiedUsageEntry(
+        platform="claude", model=model, timestamp=f"{day}T00:00:00.000Z",
+        session_id=session, project_path="proj-x", input_tokens=inp,
+        output_tokens=out, cache_write_tokens=cw, cache_read_tokens=cr)
+
+
+def _stub_usage_entries(tmp_path: Path, monkeypatch, entries) -> None:
+    """`_stub_usage` for more than one entry — the week/month windows are
+    computed from the wall clock, so the loader is stubbed to keep the row set
+    fixed no matter what day the suite runs on."""
+    monkeypatch.setattr("axt.load_unified_usage", lambda **kw: list(entries))
+    monkeypatch.setattr("axt.AXT_CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr("axt.CACHE_DIR_FOR_USAGE", tmp_path / "cache")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(projects=tmp_path / "projects"))
+
+
+def test_usage_week_csv_rows_match_header_column_count(tmp_path: Path, monkeypatch):
+    """Every CSV data row must have exactly as many fields as the header
+    (US-USG03 AC2). A value that grows a comma (a thousands separator, a model
+    list) shifts every later column in the consumer's spreadsheet."""
+    # TC-API-072
+    monkeypatch.setenv("NO_COLOR", "1")
+    _stub_usage_entries(tmp_path, monkeypatch, [
+        _uentry("2026-05-18", "s1", inp=1_500_000, out=2_500_000),
+        _uentry("2026-05-19", "s2"),
+        _uentry("2026-05-20", "s3"),
+    ])
+    code, out, _ = _run(["usage", "week", "--timezone", "UTC", "--csv"])
+    assert code == 0
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    assert len(lines) == 4  # header + one row per day
+    width = lines[0].count(",")
+    for row in lines[1:]:
+        assert row.count(",") == width, row
+
+
+def test_usage_week_json_and_csv_together_emit_one_format(tmp_path: Path, monkeypatch):
+    """--json and --csv at once must produce exactly one machine format
+    (currently JSON wins). Concatenating both would break every parser on
+    either side."""
+    # TC-API-073
+    monkeypatch.setenv("NO_COLOR", "1")
+    _stub_usage_entries(tmp_path, monkeypatch, [_uentry("2026-05-20", "s1")])
+    code, out, _ = _run(["usage", "week", "--timezone", "UTC", "--json", "--csv"])
+    assert code == 0
+    data = json.loads(out)  # fails outright if a CSV block is mixed in
+    assert isinstance(data, list) and data
+    assert "date,sessions," not in out
+
+
+def test_usage_session_ambiguous_prefix_lists_candidates(tmp_path: Path, monkeypatch):
+    """A prefix matching several sessions must list them (US-USG05 AC3).
+    Rendering the first match alone reports one session's cost under a query
+    the user believes covers all of them."""
+    # TC-API-079
+    monkeypatch.setenv("NO_COLOR", "1")
+    projects = tmp_path / "projects"
+    _write_jsonl(projects / "projA" / "a.jsonl", [
+        _usage_record("abc-1111", "2026-03-01T00:00:00"),
+        _usage_record("abc-2222", "2026-03-02T00:00:00"),
+    ])
+    _isolate_usage(tmp_path, monkeypatch, projects=projects)
+    code, out, err = _run(["usage", "session", "abc"])
+    assert "abc-1111" in out + err
+    assert "abc-2222" in out + err, "only the first match was shown; the ambiguity is invisible"
+
+
+# ─── vault ───────────────────────────────────────────────────────────────────
+
+
+def test_vault_add_duplicate_directory_refuses(tmp_path: Path, monkeypatch):
+    """Adding a directory whose name is already in the vault must fail
+    (US-VLT03 AC4) and leave the stored copy untouched — an overwrite would
+    destroy a curated skill with whatever happened to be on disk."""
+    # TC-API-084
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr("axt.PATHS", _vault_paths(tmp_path))
+    src = tmp_path / "my-skill"
+    src.mkdir()
+    (src / "SKILL.md").write_text("---\ndescription: v1\n---\n")
+    assert _run(["vault", "add", str(src), "-t", "skill"])[0] == 0
+    (src / "SKILL.md").write_text("---\ndescription: v2\n---\n")
+    code, out, err = _run(["vault", "add", str(src), "-t", "skill"])
+    assert code == 1
+    assert "✗" in out + err
+    stored = tmp_path / "vault" / "skills" / "my-skill" / "SKILL.md"
+    assert "v1" in stored.read_text()
+
+
+def test_vault_add_duplicate_file_refuses(tmp_path: Path, monkeypatch):
+    """Same contract for the file (command/agent) branch: a name collision is
+    an error, never a silent overwrite."""
+    # TC-API-084
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr("axt.PATHS", _vault_paths(tmp_path))
+    src = tmp_path / "do-thing.md"
+    src.write_text("# v1\n")
+    assert _run(["vault", "add", str(src)])[0] == 0
+    src.write_text("# v2\n")
+    code, out, err = _run(["vault", "add", str(src)])
+    assert code == 1
+    assert "✗" in out + err
+    assert (tmp_path / "vault" / "commands" / "do-thing.md").read_text() == "# v1\n"
+
+
+def test_vault_install_unregistered_marketplace_is_distinguishable(tmp_path: Path, monkeypatch):
+    """An unregistered marketplace and a missing extension are different
+    mistakes (US-VLT04 AC1 vs AC2). Reporting both as "extension not found"
+    sends the user hunting for a package name when they need `market add`."""
+    # TC-API-086
+    monkeypatch.setenv("NO_COLOR", "1")
+    paths = _vault_paths(tmp_path)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=paths.vault, vault_skills=paths.vault_skills,
+        vault_commands=paths.vault_commands, vault_agents=paths.vault_agents,
+        known_marketplaces=tmp_path / "km.json",
+        marketplaces=tmp_path / "marketplaces"))
+    code, out, err = _run(["vault", "install", "ghost-market", "some-skill"])
+    text = out + err
+    assert code == 1
+    assert "ghost-market" in text
+    assert "not registered" in text.lower() or "available" in text.lower()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin on Windows")
+def test_vault_link_global_mirror_agents_points_at_vault(tmp_path: Path, monkeypatch):
+    """--mirror-agents adds `~/.agents/skills/<name>` pointing straight at the
+    vault copy (US-VLT06 AC1). A mirror chained through ~/.claude/skills breaks
+    as soon as the global link is removed."""
+    # TC-API-090
+    monkeypatch.setenv("NO_COLOR", "1")
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault, "alpha")
+    monkeypatch.setattr("axt.PATHS", paths)
+    monkeypatch.setattr("axt.HOME", tmp_path / "home")
+    code, out, _ = _run(["vault", "link-global", "skill", "alpha", "--mirror-agents"])
+    assert code == 0
+    mirror = tmp_path / "home" / ".agents" / "skills" / "alpha"
+    assert mirror.is_symlink()
+    assert os.path.realpath(mirror) == os.path.realpath(paths.vault / "skills" / "alpha")
+    assert "✓" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin on Windows")
+def test_vault_link_global_mirror_respects_skill_lock(tmp_path: Path, monkeypatch):
+    """`.skill-lock.json` marks `.agents` as another installer's tree: mirroring
+    must be skipped (⊘, still exit 0) unless --force-agents is given
+    (US-VLT06 AC2, AC3). Writing into a locked tree makes two managers fight
+    over the same symlinks."""
+    # TC-API-091
+    monkeypatch.setenv("NO_COLOR", "1")
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault, "alpha")
+    _seed_vault_skill(paths.vault, "beta")
+    monkeypatch.setattr("axt.PATHS", paths)
+    home = tmp_path / "home"
+    monkeypatch.setattr("axt.HOME", home)
+    (home / ".agents").mkdir(parents=True)
+    (home / ".agents" / ".skill-lock.json").write_text("{}")
+
+    code, out, _ = _run(["vault", "link-global", "skill", "alpha", "--mirror-agents"])
+    assert code == 0
+    assert "⊘" in out
+    assert not (home / ".agents" / "skills" / "alpha").exists()
+
+    code2, out2, _ = _run(["vault", "link-global", "skill", "beta",
+                           "--mirror-agents", "--force-agents"])
+    assert code2 == 0
+    assert (home / ".agents" / "skills" / "beta").is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin on Windows")
+def test_vault_unlink_global_mirror_agents_removes_both(tmp_path: Path, monkeypatch):
+    """`unlink-global --mirror-agents` must clear the `.agents` mirror as well
+    as the global link (US-VLT06 AC4), while the vault copy survives — a left
+    over mirror keeps a "removed" skill loaded in other agent tools."""
+    # TC-API-092
+    monkeypatch.setenv("NO_COLOR", "1")
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault, "alpha")
+    monkeypatch.setattr("axt.PATHS", paths)
+    home = tmp_path / "home"
+    monkeypatch.setattr("axt.HOME", home)
+    _run(["vault", "link-global", "skill", "alpha", "--mirror-agents"])
+    code, out, _ = _run(["vault", "unlink-global", "skill", "alpha", "--mirror-agents"])
+    assert code == 0
+    assert not (paths.claude_dir / "skills" / "alpha").exists()
+    assert not (home / ".agents" / "skills" / "alpha").is_symlink()
+    assert (paths.vault / "skills" / "alpha" / "SKILL.md").exists()
+
+
+# ─── context ─────────────────────────────────────────────────────────────────
+
+
+def _isolate_context(tmp_path: Path, monkeypatch) -> None:
+    """Point the context analyzer at an empty tmp home so only the two fixed
+    sources (system-prompt / user-context) are guaranteed present."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr("axt.HOME", tmp_path / "home")
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        claude_dir=tmp_path / "claude",
+        claude_config=tmp_path / "claude.json",
+        installed_plugins=tmp_path / "ip.json",
+        settings=tmp_path / "settings.json",
+        projects=tmp_path / "projects",
+        skills=tmp_path / "claude" / "skills"))
+    monkeypatch.setattr("axt.AXT_CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr("axt.get_claude_version", lambda: "test")
+    monkeypatch.setattr("axt.get_git_status", lambda _: "")
+
+
+def _context_item_rows(text: str) -> list[str]:
+    """The per-source rows `--detail` adds under each category (they end in a
+    token count followed by `tok`)."""
+    return [ln for ln in text.splitlines() if re.search(r"\stok(\s|$)", ln)]
+
+
+def test_context_detail_expands_category_items(tmp_path: Path, monkeypatch):
+    """--detail must add the individual sources under each category
+    (US-CTX01 AC2); without them the report says a category is expensive but
+    not which file to trim."""
+    # TC-API-095
+    _isolate_context(tmp_path, monkeypatch)
+    code_plain, plain, _ = _run(["context"])
+    code_detail, detail, _ = _run(["context", "--detail"])
+    assert code_plain == 0 and code_detail == 0
+    assert _context_item_rows(plain) == []
+    assert _context_item_rows(detail)
+    assert len(detail.splitlines()) > len(plain.splitlines())
+
+
+def test_context_category_filter_keeps_only_that_category(tmp_path: Path, monkeypatch):
+    """--category narrows the table to one category (US-CTX01 AC3). A filter
+    applied to the wrong field (or not at all) would leave every row in."""
+    # TC-API-096
+    _isolate_context(tmp_path, monkeypatch)
+    code, out, _ = _run(["context", "--category", "system-prompt"])
+    assert code == 0
+    assert "System prompt" in out
+    assert "User context" not in out  # the other always-present fixed category
+
+
+def test_context_unknown_category_is_empty_not_an_error(tmp_path: Path, monkeypatch):
+    """An unknown category name yields an empty table and exit 0 — it is a
+    filter, not a validated enum, so scripts iterating category names must not
+    break on one that has no sources."""
+    # TC-API-096
+    _isolate_context(tmp_path, monkeypatch)
+    code, out, _ = _run(["context", "--category", "nope"])
+    assert code == 0
+    assert "System prompt" not in out
+    assert "Cost Impact" in out  # the rest of the report still renders
+
+
+def test_context_model_override_changes_context_window(tmp_path: Path, monkeypatch):
+    """--model overrides auto-detection, and the window/percentage must follow
+    it — otherwise the percentage is computed against a different model's
+    window than the one reported."""
+    # TC-API-097
+    _isolate_context(tmp_path, monkeypatch)
+    code, out, _ = _run(["context", "--model", "claude-haiku-4-5", "--json"])
+    assert code == 0
+    data = json.loads(out)
+    assert data["model"] == "claude-haiku-4-5"
+    assert data["contextWindowSize"] == 200000
+    expected_pct = data["totalTokens"] / data["contextWindowSize"] * 100
+    assert abs(data["usedPercent"] - expected_pct) < 0.01
+
+
+# ─── update ──────────────────────────────────────────────────────────────────
+
+
+def _stub_update_statuses(monkeypatch, statuses) -> None:
+    monkeypatch.setattr("axt.cli.check_all_updates", lambda types=None: list(statuses))
+
+
+def _no_apply(monkeypatch) -> None:
+    """Make any apply attempt an immediate, loud failure."""
+    def _boom(*a, **k):
+        raise AssertionError("apply_updates must not run for this invocation")
+    monkeypatch.setattr("axt.cli.apply_updates", _boom)
+
+
+def test_update_report_groups_all_four_tiers(monkeypatch):
+    """The dry-run report separates Updatable / Up to date / Manual / Delegated
+    and closes with a count line (US-UPD01 AC2, AC3). Collapsing the tiers hides
+    which items `--apply` would actually touch."""
+    # TC-API-098
+    monkeypatch.setenv("NO_COLOR", "1")
+    _stub_update_statuses(monkeypatch, [
+        axt.update.UpdateStatus("marketplace", "m1", 1, "1.0", "1.1", True),
+        axt.update.UpdateStatus("plugin", "p@m", 1, "2.0", "2.0", False),
+        axt.update.UpdateStatus("mcp", "srv", 2, "?", "?", False, note="manual"),
+        axt.update.UpdateStatus("claude-code", "claude-code", 3, "2.1.0", "?", False,
+                                note="updates via claude update"),
+    ])
+    _no_apply(monkeypatch)
+    code, out, _ = _run(["update"])
+    assert code == 0
+    for header in ("Updatable:", "Up to date:", "Manual (report only):", "Delegated:"):
+        assert header in out, header
+    assert "1 updatable, 1 up to date, 1 manual, 1 delegated" in out
+
+
+def test_update_without_apply_changes_nothing(tmp_path: Path, monkeypatch):
+    """`axt update` is a report (US-UPD01 AC1): it must never call
+    apply_updates and must not write anything."""
+    # TC-API-099
+    monkeypatch.setenv("NO_COLOR", "1")
+    _stub_update_statuses(monkeypatch, [
+        axt.update.UpdateStatus("marketplace", "m1", 1, "1.0", "1.1", True)])
+    _no_apply(monkeypatch)
+    before = _tree_snapshot(tmp_path)
+    code, _, _ = _run(["update"])
+    assert code == 0
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_update_unknown_type_exits_2(monkeypatch):
+    """An unsupported update type is rejected by argparse (US-UPD04 AC2) — it
+    must not be silently treated as `all` and sweep everything."""
+    # TC-API-100
+    monkeypatch.setenv("NO_COLOR", "1")
+    code, _, err = _run_expect_exit(["update", "bogus"])
+    assert code == 2
+    assert "invalid choice" in err
+
+
+def test_update_unknown_name_reports_and_fails(monkeypatch):
+    """`update <type> <name>` with a name nothing matches must exit 1 with a
+    notice (US-UPD04 AC3). Exiting 0 on a typo makes a CI step that "updated
+    plugin X" pass without ever finding X."""
+    # TC-API-101 — the TC notes the current build exits 0 with an empty report;
+    # US-UPD04 AC3 is the contract, so the assertion follows the spec.
+    monkeypatch.setenv("NO_COLOR", "1")
+    _stub_update_statuses(monkeypatch, [
+        axt.update.UpdateStatus("plugin", "real@m", 1, "1.0", "1.1", True)])
+    _no_apply(monkeypatch)
+    code, out, err = _run(["update", "plugin", "ghost"])
+    assert code == 1
+    assert "ghost" in out + err
+
+
+def test_update_apply_with_no_targets_says_nothing_to_update(monkeypatch):
+    """Nothing updatable is a normal outcome: exit 0 with a plain message and
+    no apply pass."""
+    # TC-API-106
+    monkeypatch.setenv("NO_COLOR", "1")
+    _stub_update_statuses(monkeypatch, [
+        axt.update.UpdateStatus("marketplace", "m1", 1, "1.0", "1.0", False)])
+    _no_apply(monkeypatch)
+    code, out, _ = _run(["update", "--apply", "--yes"])
+    assert code == 0
+    assert "Nothing to update." in out
+
+
+def test_update_apply_json_never_prompts(monkeypatch):
+    """--json means non-interactive (US-UPD03 AC1): --apply must proceed without
+    the confirmation prompt even without -y, or a pipeline hangs on stdin."""
+    # TC-API-108
+    monkeypatch.setenv("NO_COLOR", "1")
+    _stub_update_statuses(monkeypatch, [
+        axt.update.UpdateStatus("marketplace", "m1", 1, "1.0", "1.1", True)])
+
+    def _no_input(*a, **k):
+        raise AssertionError("--json must not prompt for confirmation")
+    monkeypatch.setattr("builtins.input", _no_input)
+    monkeypatch.setattr("axt.cli.apply_updates", lambda targets, no_sync=False: [
+        axt.update.UpdateResult("marketplace", "m1", "1.0", "1.1", True, "git pull")])
+    code, out, _ = _run(["update", "--apply", "--json"])
+    assert code == 0
+    result = json.loads(out)[0]
+    assert set(result) >= {"item_type", "name", "before", "after", "updated", "action", "error"}
+    assert result["updated"] is True
+
+
+def test_update_apply_json_with_no_targets_emits_empty_array(monkeypatch):
+    """With --json the empty case must still be valid JSON (`[]`), not the
+    human "Nothing to update." line — the consumer parses stdout either way."""
+    # TC-API-109
+    monkeypatch.setenv("NO_COLOR", "1")
+    _stub_update_statuses(monkeypatch, [])
+    _no_apply(monkeypatch)
+    code, out, _ = _run(["update", "--apply", "--json"])
+    assert code == 0
+    assert json.loads(out) == []
+    assert out.strip() == "[]"
