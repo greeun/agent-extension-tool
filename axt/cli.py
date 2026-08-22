@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import os
 import sys
 from dataclasses import replace
@@ -639,6 +640,43 @@ def cli_skill_unlink(args) -> int:
 # the wildcard `from axt.core import *` at the top of this module.)
 
 
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$|^\d{8}$")
+
+
+def _validated_date(flag: str, value: Optional[str]) -> Optional[str]:
+    """Return `value` if it is a date axt understands, else raise.
+
+    Ignoring an unparseable `--since` is worse than failing: the caller gets a
+    report for the default window and has no way to tell it is the wrong
+    period.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not _DATE_RE.match(text):
+        raise ValueError(f"{flag}: {value!r} is not a date — use YYYY-MM-DD (or YYYYMMDD)")
+    norm = text if "-" in text else f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    try:
+        datetime.strptime(norm, "%Y-%m-%d")
+    except ValueError as e:
+        raise ValueError(f"{flag}: {value!r} is not a real date — use YYYY-MM-DD") from e
+    return norm
+
+
+def _usage_window(args, *, since: Optional[str], until: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Resolve the effective (since, until) for a usage subcommand.
+
+    Explicit `--since` / `--until` override the subcommand's own window; each
+    subcommand keeps its default when the flag is absent. Both are validated,
+    and an inverted range is a user mistake rather than an empty result.
+    """
+    eff_since = _validated_date("--since", getattr(args, "since", None)) or since
+    eff_until = _validated_date("--until", getattr(args, "until", None)) or until
+    if eff_since and eff_until and eff_since > eff_until:
+        raise ValueError(f"--since ({eff_since}) is after --until ({eff_until})")
+    return eff_since, eff_until
+
+
 def _shared_usage_load(args, *, since: Optional[str] = None, until: Optional[str] = None) -> list[UnifiedUsageEntry]:
     """Apply usage-group filter flags (model/project/timezone)."""
     entries = load_unified_usage(
@@ -657,7 +695,8 @@ def _load_usage_entries(
 ) -> list[ClaudeUsageEntry]:
     """Filter-load usage then adapt unified→claude — the shared opening of every
     `axt usage` subcommand."""
-    return [_unified_to_claude(e) for e in _shared_usage_load(args, since=since, until=until)]
+    eff_since, eff_until = _usage_window(args, since=since, until=until)
+    return [_unified_to_claude(e) for e in _shared_usage_load(args, since=eff_since, until=eff_until)]
 
 
 def _entries_cost(entries: list[ClaudeUsageEntry]) -> float:
@@ -829,6 +868,14 @@ def cli_usage_session(args) -> int:
         print(_red(f'Session "{args.session_id}" not found.'))
         return 1
     sessions = aggregate_by_session(entries)
+    if len(sessions) > 1:
+        # Showing only the first match makes the ambiguity invisible — the user
+        # reads someone else's numbers as their session's.
+        print(_red(f'Session prefix "{args.session_id}" matches {len(sessions)} sessions:'),
+              file=sys.stderr)
+        for cand in sessions:
+            print(f"  {cand.session_id}  {cand.project_path}", file=sys.stderr)
+        return 1
     s = sessions[0]
     cost = _entries_cost(entries)
     savings = _entries_cache_savings(entries)
@@ -895,7 +942,14 @@ def cli_vault_add(args) -> int:
         else PATHS.vault_agents
     )
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / name
+    dest = safe_child(dest_dir, name)
+    if dest.exists():
+        # copytree already refused an existing directory; copy2 overwrote a
+        # file without a word, so the two branches disagreed on whether a name
+        # collision is an error.
+        print(_red(f'✗ "{name}" is already in the vault ({type_}). '
+                   f"Remove it first or rename the source."), file=sys.stderr)
+        return 1
     if src.is_dir():
         shutil.copytree(src, dest)
     else:
@@ -906,8 +960,22 @@ def cli_vault_add(args) -> int:
 
 def cli_vault_install(args) -> int:
     import shutil
-    source = find_plugin_source_dir(PATHS.marketplaces / args.marketplace, args.name)
+    market_dir = PATHS.marketplaces / args.marketplace
+    source = find_plugin_source_dir(market_dir, args.name)
     if not source:
+        # Only reached once resolution has failed, so the success path is
+        # untouched. A typo'd marketplace name used to produce the same message
+        # as a missing extension, sending the user hunting for the wrong thing.
+        if not market_dir.is_dir():
+            known = sorted(d.name for d in PATHS.marketplaces.iterdir()) \
+                if PATHS.marketplaces.is_dir() else []
+            hint = (f" Available: {', '.join(known)}" if known
+                    else " No marketplaces are registered.")
+            # Same stream and the same "not found" wording as its sibling
+            # below — this only adds *which* of the two things was missing.
+            print(_red(f'✗ Marketplace "{args.marketplace}" not found '
+                       f'(not registered).{hint}'))
+            return 1
         print(_red(f'✗ "{args.name}" not found in marketplace "{args.marketplace}"'))
         return 1
     dest_dir = (
@@ -1017,6 +1085,11 @@ def cli_update(args) -> int:
     statuses = check_all_updates(types=types)
     if args.name:
         statuses = [s for s in statuses if s.name == args.name]
+        if not statuses:
+            # Exiting 0 on a typo let a CI step report "updated X" for an X that
+            # was never found.
+            print(_red(f'✗ No {args.type} named "{args.name}" was found.'), file=sys.stderr)
+            return 1
 
     if not args.apply:
         if args.json:

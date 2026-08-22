@@ -4175,6 +4175,10 @@ def _act_import_to_vault(state: TuiState, stdscr: Any, sub: str, key: int) -> Op
         profile = profile.with_added(sub, disk.name)
         write_profile(Path.cwd(), profile)
     _refresh_ext(state, sub)
+    # The item now lives in the vault, so the Vault sub-tab's cache is stale.
+    # Without this the imported item is invisible there until a manual `r`.
+    state.vault_items = []
+    state.refresh_token = 0
     return f"Imported {disk.name!r} to vault"
 
 

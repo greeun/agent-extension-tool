@@ -380,6 +380,16 @@ def _handle_sub_tab_key(stdscr, state: TuiState, key: int, tab_key: str) -> bool
             state.focused_layer = "content"
             _render_frame(stdscr, state)
         return True
+    # An empty sub-tab keeps focus here (above), but its empty state still
+    # advertises actions — the Vault screen says to press `m` to migrate and
+    # `F` to change scan mode. Those keys used to reach nothing at all, so the
+    # screen instructed an action it then refused. Forward exactly the keys the
+    # empty state names; everything else still falls through.
+    if (tab_key == "extensions" and _active_sub_tab(state, tab_key) == "vault"
+            and not state.vault_items and key in (ord("m"), ord("F"), ord("f"), ord("r"))):
+        set_status(state, handle_extensions_input(state, key) or "")
+        _render_frame(stdscr, state)
+        return True
     return False
 
 
