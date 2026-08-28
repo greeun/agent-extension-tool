@@ -5028,6 +5028,20 @@ def test_render_frame_context_shortcuts(tmp_path, monkeypatch):
     axt._render_frame(scr, state)
     flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "[/]:sub" in flat
+    # The `s` sort chip names the active sub-tab's column (Project by default).
+    assert "s:sort(tokens)" in flat
+
+
+def test_context_shortcuts_sort_chip_follows_the_active_sub_tab():
+    """The chip must read the Sources key on Sources and the Project key on
+    Project — the two sorts are independent."""
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.sources_sort = "scope"
+    state.project_sort = "name"
+    assert "s:sort(scope)" in axt._context_shortcuts(state)
+    state.context_sub_tab = "project"
+    assert "s:sort(name)" in axt._context_shortcuts(state)
 
 
 def test_render_frame_usage_shortcuts(tmp_path, monkeypatch):
@@ -7309,6 +7323,119 @@ def test_render_project_files_table_marks_sorted_column_header():
     axt._render_project_files_table(scr2, state, 0, 10, 140)
     flat2 = "".join(c[2] for c in scr2.calls if len(c) >= 3 and isinstance(c[2], str))
     assert "Name ▲" in flat2
+
+
+# ─── Sources sub-tab: `s` column-sort cycle ───────────────────────────────────
+
+
+def _sources_sort_analysis():
+    """Three category rows that order differently under every column: a big
+    global one (System prompt, 1000 tok, 1 item), a small project one (Memory,
+    100 tok, 1 item) and a mid-sized project one with the most items (Skills
+    metadata, 600 tok, 2 items)."""
+    def src(name, category, tokens, pct, scope):
+        return axt.ContextSource(
+            name=name, category=category, path="", chars=tokens * 4,
+            estimated_tokens=tokens, percentage=pct, actionable=True, scope=scope)
+
+    sources = [
+        src("system", "system-prompt", 1000, 50.0, "global"),
+        src("MEMORY.md", "memory", 100, 5.0, "project"),
+        src("skill-a", "skills", 300, 15.0, "project"),
+        src("skill-b", "skills", 300, 15.0, "project"),
+    ]
+    return axt.ContextAnalysis(
+        total_tokens=2000, context_window_size=200_000, used_percent=1.0,
+        model="m", sources=sources,
+        cost_impact=axt.CostImpact(
+            model="m", cache_write_cost=0.0, cache_read_cost_per_turn=0.0,
+            avg_turns_per_session=1, avg_sessions_per_day=1,
+            per_session_cost=0.0, monthly_cost=0.0),
+    )
+
+
+def _sources_labels(state):
+    return [r.label for r in tabs._displayed_context_rows(state, state.context_analysis)]
+
+
+def test_sources_default_sort_is_tokens_desc_across_scopes():
+    """The default view is plain biggest-first — a small project row no longer
+    outranks a large global one just for being project-scoped."""
+    state = axt.TuiState()
+    state.context_analysis = _sources_sort_analysis()
+    assert state.sources_sort == "tokens"
+    assert _sources_labels(state) == ["System prompt", "Skills metadata", "Memory"]
+
+
+def test_cycle_sources_sort_advances_through_columns():
+    """`s` cycles the Sources sort key tokens → category → scope → items,
+    wrapping back to tokens; each step re-orders the rows and re-anchors the
+    selection to the top."""
+    state = axt.TuiState()
+    state.context_analysis = _sources_sort_analysis()
+    state.context_selected = 2
+
+    axt._cycle_sources_sort(state)
+    assert state.sources_sort == "category"
+    assert state.context_selected == 0
+    assert _sources_labels(state) == ["Memory", "Skills metadata", "System prompt"]
+
+    axt._cycle_sources_sort(state)
+    assert state.sources_sort == "scope"
+    assert _sources_labels(state) == ["Skills metadata", "Memory", "System prompt"]
+
+    axt._cycle_sources_sort(state)
+    assert state.sources_sort == "items"
+    assert _sources_labels(state) == ["Skills metadata", "Memory", "System prompt"]
+
+    axt._cycle_sources_sort(state)
+    assert state.sources_sort == "tokens"
+    assert _sources_labels(state) == ["System prompt", "Skills metadata", "Memory"]
+
+
+def test_handle_context_input_s_cycles_sources_sort():
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _sources_sort_analysis()
+    msg = axt.handle_context_input(state, ord("s"))
+    assert state.sources_sort == "category"
+    assert msg == "Sort: category"
+
+
+def test_sources_sort_applies_after_the_search_filter():
+    """Sorting orders whatever the query left behind — the two survive
+    together, in that order."""
+    state = axt.TuiState()
+    state.context_sub_tab = "sources"
+    state.context_analysis = _sources_sort_analysis()
+    state.context_search["sources"] = "s"  # Skills metadata + System prompt
+    state.sources_sort = "category"
+    assert _sources_labels(state) == ["Skills metadata", "System prompt"]
+
+
+def test_render_context_sources_table_marks_sorted_column_header():
+    """The active sort column's header carries the ▲/▼ glyph, and the filter
+    bar names the column (mirrors Vault / Project)."""
+    state = axt.TuiState()
+    state.context_analysis = _sources_sort_analysis()
+    rows = tabs._displayed_context_rows(state, state.context_analysis)
+    scr = _make_stdscr(rows=20, cols=140)
+    axt._render_context_sources_table(scr, state, 0, 12, 140, rows)
+    flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Tokens ▼" in flat
+    assert "sort=tokens" in flat
+
+    axt._cycle_sources_sort(state)  # → category
+    rows2 = tabs._displayed_context_rows(state, state.context_analysis)
+    scr2 = _make_stdscr(rows=20, cols=140)
+    axt._render_context_sources_table(scr2, state, 0, 12, 140, rows2)
+    flat2 = "".join(c[2] for c in scr2.calls if len(c) >= 3 and isinstance(c[2], str))
+    assert "Category ▲" in flat2
+    assert "sort=category" in flat2
+
+
+def test_sources_sort_cycle_help_lists_every_column():
+    assert axt.sources_sort_cycle_help() == "tokens→category→scope→items"
 
 
 def test_ensure_subtab_loaded_commands(tmp_path, monkeypatch):
@@ -10939,8 +11066,9 @@ def test_project_sort_cycle_help_lists_the_columns():
     assert axt.project_sort_cycle_help() == "tokens→name→category→scope"
 
 
-def test_help_text_documents_the_project_sort_and_its_persistence():
-    assert "Cycle: tokens→name→category→scope" in axt.HELP_TEXT
+def test_help_text_documents_both_context_sorts_and_their_persistence():
+    assert "Project cycle: tokens→name→category→scope" in axt.HELP_TEXT
+    assert "Sources cycle: tokens→category→scope→items" in axt.HELP_TEXT
     assert "Saved on quit and restored on the next launch" in axt.HELP_TEXT
 
 
@@ -10963,11 +11091,14 @@ def test_collect_sort_prefs_captures_each_touched_list():
     s.ext_cache["mcp"] = []
     axt.handle_extensions_input(s, ord("s"))     # mcp: name → scope ▲
     axt.handle_project_input(s, ord("s"))        # project: tokens → name
+    s.context_sub_tab = "sources"
+    axt.handle_context_input(s, ord("s"))        # sources: tokens → category
 
     prefs = axt.collect_sort_prefs(s)
     assert prefs["vault"] == axt.SortPref(column="ver", desc=True)
     assert prefs["mcp"] == axt.SortPref(column=axt._SORT_COLUMNS["mcp"][1][0], desc=False)
     assert prefs["project"] == axt.SortPref(column="name", desc=None)
+    assert prefs["sources"] == axt.SortPref(column="category", desc=None)
 
 
 def test_collect_sort_prefs_keeps_a_full_lap_back_to_the_default_column():
@@ -10986,10 +11117,12 @@ def test_apply_sort_prefs_restores_column_and_direction():
         "vault": axt.SortPref(column="used", desc=True),
         "skills": axt.SortPref(column="ver", desc=True),
         "project": axt.SortPref(column="category"),
+        "sources": axt.SortPref(column="scope"),
     })
     assert axt.subtab_sort_label(s, "vault") == "used ▼"
     assert axt.subtab_sort_label(s, "skills") == "ver ▼"
     assert s.project_sort == "category"
+    assert s.sources_sort == "scope"
 
 
 def test_apply_sort_prefs_without_a_direction_uses_the_natural_one():
@@ -11029,6 +11162,8 @@ def test_sort_prefs_survive_a_config_roundtrip(tmp_path):
     left_on.ext_cache["hooks"] = []
     axt.handle_extensions_input(left_on, ord("s"))
     axt.handle_project_input(left_on, ord("s"))
+    left_on.context_sub_tab = "sources"
+    axt.handle_context_input(left_on, ord("s"))
 
     p = tmp_path / "config.json"
     axt.save_config(p, axt.replace(axt.load_config(p),
@@ -11040,6 +11175,7 @@ def test_sort_prefs_survive_a_config_roundtrip(tmp_path):
     for sub in ("vault", "hooks"):
         assert axt.subtab_sort_label(relaunched, sub) == axt.subtab_sort_label(left_on, sub)
     assert relaunched.project_sort == left_on.project_sort
+    assert relaunched.sources_sort == left_on.sources_sort
 
 
 # ─── Sort persistence — _tui_loop wiring ─────────────────────────────────────

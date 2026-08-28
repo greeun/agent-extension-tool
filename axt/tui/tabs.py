@@ -200,6 +200,9 @@ class TuiState:
     project_selected: int = 0
     # Active `s`-cycle sort key for the Project sub-tab (mirrors ext_sort).
     project_sort: str = "tokens"
+    # Active `s`-cycle sort key for the Sources sub-tab (see
+    # _SOURCES_SORT_SPECS).
+    sources_sort: str = "tokens"
 
     # Bridge between handler functions and curses-bound widgets. The handlers
     # don't receive stdscr (so they remain unit-testable), so we stash a dict
@@ -1956,7 +1959,13 @@ class _ContextCategoryRow:
 def _context_rows(analysis: ContextAnalysis) -> list[_ContextCategoryRow]:
     """Roll context sources up per (category, scope) so the Sources table can
     show the current project's own context separately from the global baseline.
-    Rows sort project-first, then by tokens desc within each scope group."""
+
+    Rows come back project-first, then by tokens desc within each scope group.
+    That is only the *base* order: the displayed order is whatever the Sources
+    sub-tab's `s` cycle is on (see `_SOURCES_SORT_SPECS`), applied on top of
+    this in `_displayed_context_rows`. Because Python's sort is stable, this
+    order also acts as the tiebreak for every column sort.
+    """
     by_key: dict[tuple[str, str], list[ContextSource]] = {}
     for s in analysis.sources:
         by_key.setdefault((s.category, getattr(s, "scope", "global")), []).append(s)
@@ -2029,14 +2038,62 @@ def _displayed_project_items(state: TuiState) -> list:
     return items
 
 
+# `s`-cycle sort definitions for the Sources sub-tab's column headers, in the
+# same (key, keyfunc, reverse, marked_col, glyph) shape as _PROJECT_SORT_SPECS
+# and the Extensions sub-tabs' _SORT_COLUMNS. "tokens" is the default so the
+# table opens biggest-consumer-first; the old project-first grouping is still
+# one `s` press away under "scope". "pct" gets no step of its own because a
+# row's percentage is a fixed linear scaling of its tokens (same total for
+# every row), so it would always reproduce the "tokens" order.
+_SOURCES_SORT_SPECS: tuple = (
+    ("tokens",   lambda r: r.tokens,                             True,  "tokens", "▼"),
+    ("category", lambda r: _lc(r.label),                         False, "label",  "▲"),
+    ("scope",    lambda r: (r.scope != "project", -r.tokens),    False, "scope",  "▲"),
+    ("items",    lambda r: r.items,                              True,  "items",  "▼"),
+)
+
+
+def sources_sort_cycle_help() -> str:
+    """`tokens→category→…` listing of the Sources sub-tab's sortable columns,
+    so the `?` help is generated from _SOURCES_SORT_SPECS instead of drifting
+    from it (mirrors `project_sort_cycle_help`)."""
+    return "→".join(s[0] for s in _SOURCES_SORT_SPECS)
+
+
+def _sources_sort_spec(state: TuiState):
+    keys = [s[0] for s in _SOURCES_SORT_SPECS]
+    cur = state.sources_sort if state.sources_sort in keys else keys[0]
+    return next(s for s in _SOURCES_SORT_SPECS if s[0] == cur)
+
+
+def _apply_sources_sort(state: TuiState, rows: list) -> list:
+    _, keyfunc, reverse, _, _ = _sources_sort_spec(state)
+    try:
+        return sorted(rows, key=keyfunc, reverse=reverse)
+    except (TypeError, AttributeError):
+        return rows
+
+
+def _cycle_sources_sort(state: TuiState) -> None:
+    """Advance state.sources_sort to the next column in _SOURCES_SORT_SPECS.
+    The rows themselves are rebuilt per frame (`_displayed_context_rows`), so
+    only the selection needs re-anchoring here."""
+    keys = [s[0] for s in _SOURCES_SORT_SPECS]
+    i = keys.index(state.sources_sort) if state.sources_sort in keys else 0
+    state.sources_sort = keys[(i + 1) % len(keys)]
+    state.context_selected = 0
+
+
 def _displayed_context_rows(state: TuiState, analysis) -> list:
-    """The displayed (search-filtered) Sources category rows."""
+    """The displayed (sorted, search-filtered) Sources category rows — the
+    single ordering shared by render and the input handlers so selection
+    indices stay aligned (mirrors _displayed_project_items)."""
     rows = _context_rows(analysis) if analysis else []
     q = state.context_search.get("sources", "").lower()
     if q:
         rows = [r for r in rows
                 if q in f"{r.label} {r.category} {r.scope}".lower()]
-    return rows
+    return _apply_sources_sort(state, rows)
 
 
 def _render_rate_limit_bars(stdscr, y: int, w: int) -> int:
@@ -2087,7 +2144,7 @@ def _render_context_sources_table(stdscr, state: TuiState, y0: int, h: int, w: i
     all_rows = _context_rows(state.context_analysis) if state.context_analysis else []
     q = state.context_search.get("sources", "")
     count = f"({len(rows)}/{len(all_rows)} categories)" if q else f"({len(all_rows)} categories)"
-    header = f"Context sources  {count}"
+    header = f"Context sources  {count}  sort={_sources_sort_spec(state)[0]}"
     if q:
         header += f"  search={q!r}"
     render_section_header(stdscr, y0, w, header)
@@ -2105,6 +2162,10 @@ def _render_context_sources_table(stdscr, state: TuiState, y0: int, h: int, w: i
         TableColumn("tokens", "Tokens", 10),
         TableColumn("pct", "%", 8),
     ]
+    # Mark the header of the column the list is currently sorted by (`s` cycles it).
+    _, _, _, marked_col, glyph = _sources_sort_spec(state)
+    if marked_col:
+        columns = mark_sorted_header(columns, marked_col, glyph)
     table_rows = [{
         "label": r.label,
         "scope": "project" if r.scope == "project" else "global",
@@ -2368,6 +2429,10 @@ def handle_context_input(state: TuiState, key: int) -> Optional[str]:
         state.context_analysis = None
         state.context_detail_scroll = 0
         return "Refreshed"
+    elif key == ord("s"):
+        _cycle_sources_sort(state)
+        state.context_detail_scroll = 0
+        return f"Sort: {state.sources_sort}"
     elif key == ord("e") and state.context_analysis and state.stdscr_callbacks and 0 <= state.context_selected < n:
         # Match the detail panel's (category, scope) filter — a "project" row
         # must never open a global file (and vice versa).
@@ -3203,10 +3268,11 @@ def sort_cycle_help(sub: str) -> str:
 # collected prefs back once on exit (Section 14), so the pair below is the
 # only place that knows which state field backs which sub-tab.
 
-# The Project sub-tab's sort lives outside _SORT_COLUMNS (its own
-# _PROJECT_SORT_SPECS, with no `S` direction toggle), so it is spelled out
-# here rather than folded into the Extensions loop.
+# The two Context sub-tabs' sorts live outside _SORT_COLUMNS (their own
+# _PROJECT_SORT_SPECS / _SOURCES_SORT_SPECS, with no `S` direction toggle), so
+# they are spelled out here rather than folded into the Extensions loop.
 _PROJECT_SORT_SUB = "project"
+_SOURCES_SORT_SUB = "sources"
 
 
 def _default_sort_pref(sub: str) -> SortPref:
@@ -3214,6 +3280,8 @@ def _default_sort_pref(sub: str) -> SortPref:
     column's natural direction (None = natural, see SortPref)."""
     if sub == _PROJECT_SORT_SUB:
         return SortPref(column=_PROJECT_SORT_SPECS[0][0])
+    if sub == _SOURCES_SORT_SUB:
+        return SortPref(column=_SOURCES_SORT_SPECS[0][0])
     cols = _SORT_COLUMNS.get(sub)
     return SortPref(column=cols[0][0] if cols else "")
 
@@ -3228,6 +3296,7 @@ def collect_sort_prefs(state: TuiState) -> dict[str, SortPref]:
     prefs: dict[str, SortPref] = {
         "vault": SortPref(column=state.vault_sort, desc=state.vault_sort_desc),
         _PROJECT_SORT_SUB: SortPref(column=state.project_sort),
+        _SOURCES_SORT_SUB: SortPref(column=state.sources_sort),
     }
     for sub in set(state.ext_sort) | set(state.ext_sort_desc):
         prefs[sub] = SortPref(
@@ -3250,6 +3319,9 @@ def apply_sort_prefs(state: TuiState, prefs: dict[str, SortPref]) -> None:
             # No `S` toggle here — _PROJECT_SORT_SPECS fixes each column's
             # direction, so pref.desc is deliberately ignored.
             state.project_sort = pref.column
+        elif sub == _SOURCES_SORT_SUB:
+            # Same as Project: _SOURCES_SORT_SPECS fixes the direction.
+            state.sources_sort = pref.column
         elif sub == "vault":
             state.vault_sort = pref.column
             state.vault_sort_desc = pref.desc

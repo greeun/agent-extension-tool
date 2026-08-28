@@ -22,7 +22,7 @@ from typing import Optional
 # Duplicated to keep widgets.py independent of axt.core. The single source
 # of truth is still axt.core.__version__ / axt.__version__ — the package
 # mirror loop in axt/__init__.py re-exports the most-recent definition.
-__version__ = "1.16.1"
+__version__ = "1.17.0"
 
 
 # ── Section 11: TUI — Common helpers (curses, color, key, width) ────────────

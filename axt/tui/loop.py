@@ -35,6 +35,7 @@ from axt.tui.tabs import (  # noqa: F401 — `_`-prefixed names that wildcard sk
     sub_tab_has_focusable_content,
     project_sort_cycle_help,
     sort_cycle_help,
+    sources_sort_cycle_help,
     subtab_sort_label,
     tab_has_focusable_content,
     tab_has_sub_tab,
@@ -165,8 +166,9 @@ Context
                 clear) — matches name/category/scope/path
   Enter         Focus the bottom detail panel — j/k (or PgUp/PgDn) scroll
                 it, Esc blurs back to the table
-  s             Project: sort by the next column, wrapping
-                  Cycle: {project_sort_cycle_help()}
+  s             Sort by the next column of the active sub-tab, wrapping
+                  Sources cycle: {sources_sort_cycle_help()}
+                  Project cycle: {project_sort_cycle_help()}
                 Saved on quit and restored on the next launch
   v             Sources: preview the category's sources with actual content
                 Project: preview the focused file's content
@@ -253,6 +255,10 @@ def _context_shortcuts(state: TuiState) -> str:
     q = state.context_search.get(sub, "")
     if q:
         parts.append(f"search:{q!r}(Esc:clear)")
+    # Both sub-tabs cycle their own sort column with `s` (no `S` direction
+    # toggle here — each column's direction is fixed), so the chip names only
+    # the column the active sub-tab is on.
+    parts.append(f"s:sort({state.sources_sort if sub == 'sources' else state.project_sort})")
     parts += ["/:search", "Enter:detail", "v:preview", "e:edit",
               "d:delete(memory)", "r:refresh", "?:help", "q:quit"]
     return "  ".join(parts)
