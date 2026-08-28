@@ -707,8 +707,7 @@ def test_marks_survive_sort_and_search_and_esc_peels_them_off_first(tmp_path, mo
     state.update_statuses = {}
 
     for _ in range(200):
-        axt.handle_extensions_input(state, ord(" "))
-        axt.handle_extensions_input(state, ord("j"))
+        axt.handle_extensions_input(state, ord(" "))   # Space auto-advances
     assert len(state.ext_marked["skills"]) == 200
 
     for _ in range(3):

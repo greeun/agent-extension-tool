@@ -1194,13 +1194,18 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
         # G = immediate global + .agents mirror toggle for the selected skill.
         return _vault_toggle_mirror_global(state, current)
     elif key == ord(" ") and current:
-        # Space = select: toggle the focused item's bulk-unlink mark. Marks
-        # accumulate across filter/search changes and are consumed by `U`.
+        # Space = select: toggle the focused item's bulk-unlink mark, then
+        # advance focus one row (clamped) so repeated Space marks consecutive
+        # items instead of re-toggling the same one. Marks accumulate across
+        # filter/search changes and are consumed by `U`.
         if current.name in state.vault_marked:
             state.vault_marked.discard(current.name)
-            return f"Unmarked {current.name!r} ({len(state.vault_marked)} marked)"
-        state.vault_marked.add(current.name)
-        return f"Marked {current.name!r} for unlink ({len(state.vault_marked)} marked)"
+            msg = f"Unmarked {current.name!r} ({len(state.vault_marked)} marked)"
+        else:
+            state.vault_marked.add(current.name)
+            msg = f"Marked {current.name!r} for unlink ({len(state.vault_marked)} marked)"
+        state.vault_selected = min(n - 1, state.vault_selected + 1)
+        return msg
     elif key == ord("U") and state.vault_marked:
         # Marks present → bulk unlink every marked item from all its projects.
         # Mirrors Enter's apply-pending-else-focus split: `U` prefers the batch.
@@ -3648,9 +3653,11 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
         _toggle_sort_direction(state, sub)
         return f"Sort: {subtab_sort_label(state, sub)}"
 
-    # Space = select: toggle the focused item's bulk mark (mirrors Vault).
-    # Marks accumulate across sort/search changes; the next p/g applies to
-    # the whole marked set, and Esc clears the marks.
+    # Space = select: toggle the focused item's bulk mark, then advance focus
+    # one row (clamped) so repeated Space marks consecutive items instead of
+    # re-toggling the same one (mirrors Vault). Marks accumulate across
+    # sort/search changes; the next p/g applies to the whole marked set, and
+    # Esc clears the marks.
     if key == ord(" "):
         item = _selected_item(state, sub)
         if item is None:
@@ -3660,9 +3667,13 @@ def handle_extensions_input(state: TuiState, key: int) -> Optional[str]:
         label = _item_label(item)
         if item_key in marks:
             marks.discard(item_key)
-            return f"Unmarked {label!r} ({len(marks)} marked)"
-        marks.add(item_key)
-        return f"Marked {label!r} for bulk toggle ({len(marks)} marked)"
+            msg = f"Unmarked {label!r} ({len(marks)} marked)"
+        else:
+            marks.add(item_key)
+            msg = f"Marked {label!r} for bulk toggle ({len(marks)} marked)"
+        n = len(_subtab_view(state, sub))
+        state.ext_selected[sub] = min(n - 1, state.ext_selected.get(sub, 0) + 1)
+        return msg
 
     # Tab toggles focus into the bottom detail panel (sub-tabs that have one).
     if key in (ord("\t"), curses.KEY_BTAB) and sub in _SUBTABS_WITH_DETAIL:

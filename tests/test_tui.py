@@ -855,7 +855,9 @@ def test_handle_vault_input_unlink_from_all_no_projects():
 
 
 def test_handle_vault_input_mark_toggle():
-    """Space toggles the focused item's bulk-unlink mark."""
+    """Space toggles the focused item's mark and advances focus to the next
+    row (clamped at the end), so repeated Space marks consecutive items
+    instead of re-toggling the same one."""
     s = axt.TuiState()
     s.vault_items = [
         axt.VaultItem(name="alpha", type="skill", path="", description=""),
@@ -864,8 +866,12 @@ def test_handle_vault_input_mark_toggle():
     s.vault_selected = 0
     axt.handle_vault_input(s, ord(" "))
     assert s.vault_marked == {"alpha"}
+    assert s.vault_selected == 1
     axt.handle_vault_input(s, ord(" "))
-    assert s.vault_marked == set()
+    assert s.vault_marked == {"alpha", "beta"}
+    assert s.vault_selected == 1  # clamped at last row
+    axt.handle_vault_input(s, ord(" "))
+    assert s.vault_marked == {"alpha"}  # same row toggles back off
 
 
 def test_handle_vault_input_unlink_marked_bulk(tmp_path, monkeypatch):
@@ -2846,9 +2852,30 @@ def test_space_marks_and_unmarks_item():
     msg = axt.handle_extensions_input(state, ord(" "))
     assert "Marked 'srv'" in msg and "(1 marked)" in msg
     assert state.ext_marked["mcp"] == {"user:srv"}
+    assert state.ext_selected["mcp"] == 0  # single row: advance clamps in place
     msg = axt.handle_extensions_input(state, ord(" "))
     assert "Unmarked 'srv'" in msg and "(0 marked)" in msg
     assert state.ext_marked["mcp"] == set()
+
+
+def test_space_advances_focus_to_next_row():
+    """Space marks the focused row then moves focus down one (clamped), so
+    repeated Space marks consecutive rows instead of re-toggling one row."""
+    from types import SimpleNamespace
+    state = axt.TuiState()
+    state.ext_sub_tab = "mcp"
+    state.ext_cache["mcp"] = [
+        SimpleNamespace(name="srv-a", scope="user", transport="stdio", disabled=False),
+        SimpleNamespace(name="srv-b", scope="user", transport="stdio", disabled=False),
+    ]
+    state.ext_selected["mcp"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    axt.handle_extensions_input(state, ord(" "))
+    assert state.ext_marked["mcp"] == {"user:srv-a"}
+    assert state.ext_selected["mcp"] == 1
+    axt.handle_extensions_input(state, ord(" "))
+    assert state.ext_marked["mcp"] == {"user:srv-a", "user:srv-b"}
+    assert state.ext_selected["mcp"] == 1  # clamped at last row
 
 
 def test_esc_clears_marks_before_search():
@@ -10233,14 +10260,14 @@ def test_e2e_space_marks_survive_a_re_sort(tmp_path, monkeypatch):
     frames = _e2e_frames(monkeypatch)
 
     keys = ([_DOWN, _DOWN] + [ord("]")] * 6          # → Plugins
-            + [ord(" "), ord("j"), ord(" ")]          # mark rows 1 and 2
+            + [ord(" "), ord(" ")]                    # mark rows 1 and 2 (Space auto-advances)
             + [ord("s"), ord("S")]                    # move the column, flip direction
             + [ord("q")])
     scr = _loop_stdscr(keys, rows=30, cols=150)
     axt._tui_loop(scr)
 
     plugin_frames = [f for f in frames if f["ext_sub_tab"] == "plugins"]
-    marked_before = plugin_frames[3]["ext_marked"]["plugins"]   # after the 2nd Space
+    marked_before = plugin_frames[2]["ext_marked"]["plugins"]   # after the 2nd Space
     final = frames[-1]
     assert final["ext_marked"]["plugins"] == marked_before == {"a@mk", "b@mk"}
     assert "marked=2" in final["text"]
@@ -10264,7 +10291,7 @@ def test_e2e_bulk_g_writes_only_the_marked_plugins(tmp_path, monkeypatch):
     frames = _e2e_frames(monkeypatch)
 
     keys = ([_DOWN, _DOWN] + [ord("]")] * 6
-            + [ord(" "), ord("j"), ord(" "), ord("g")]
+            + [ord(" "), ord(" "), ord("g")]          # Space auto-advances
             + [ord("q")])
     scr = _loop_stdscr(keys, rows=30, cols=150)
     axt._tui_loop(scr)
@@ -10294,7 +10321,7 @@ def test_e2e_declining_the_bulk_confirm_changes_nothing(tmp_path, monkeypatch):
     frames = _e2e_frames(monkeypatch)
 
     keys = ([_DOWN, _DOWN] + [ord("]")] * 6
-            + [ord(" "), ord("j"), ord(" "), ord("g")]
+            + [ord(" "), ord(" "), ord("g")]          # Space auto-advances
             + [ord("q")])
     scr = _loop_stdscr(keys, rows=30, cols=150)
     axt._tui_loop(scr)
