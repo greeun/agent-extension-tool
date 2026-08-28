@@ -10893,3 +10893,41 @@ def test_upd_glyph_rank_puts_unknown_glyphs_last():
     keyfn = axt._by_glyph(lambda st, sub, i: i.glyph, axt._UPD_RANK)(state, "market", items)
 
     assert [i.glyph for i in sorted(items, key=keyfn)] == ["↑", "!", "…", "·", "─", "?"]
+
+
+def test_render_table_prefix_widens_for_three_digit_row_numbers():
+    """A 3-digit row number must keep its trailing gap: at the fixed 4-cell
+    gutter `▸120 ` was truncated to `▸120`, so the first column's text ran
+    straight into the number (Context tab lists past 99 rows)."""
+    scr = _make_stdscr(rows=40, cols=120)
+    columns = [axt.TableColumn("name", "Name", 20)]
+    rows = [{"name": f"item-{i}"} for i in range(150)]
+    axt.render_table(scr, 0, 0, 30, 120, columns, rows, selected=119)
+
+    # Every cell drawn at x == 0 below the header rule is a prefix cell; the
+    # numbered ones must end with a space so the number never touches Name.
+    prefixes = [c[2] for c in scr.calls
+                if c[0] > 1 and c[1] == 0 and isinstance(c[2], str)]
+    assert prefixes, "no data-row prefix cells were drawn"
+    assert "▸120 " in prefixes
+    assert all(p.endswith(" ") for p in prefixes)
+
+    # And the Name column starts one cell further right (5, not 4). Row 120
+    # is the selected one (`item-119`, 0-based).
+    name_cells = [c for c in scr.calls
+                  if isinstance(c[2], str) and c[2].startswith("item-119")]
+    assert name_cells and name_cells[0][1] == 5
+
+
+def test_render_table_prefix_stays_four_cells_under_hundred_rows():
+    """The common case is unchanged: ≤99 rows keep the original 4-cell gutter."""
+    scr = _make_stdscr(rows=20, cols=120)
+    columns = [axt.TableColumn("name", "Name", 20)]
+    rows = [{"name": f"item-{i}"} for i in range(9)]
+    axt.render_table(scr, 0, 0, 15, 120, columns, rows, selected=0)
+
+    assert any(c[1] == 0 and c[2] == "▸ 1 " for c in scr.calls
+               if isinstance(c[2], str))
+    name_cells = [c for c in scr.calls
+                  if isinstance(c[2], str) and c[2].startswith("item-0")]
+    assert name_cells and name_cells[0][1] == 4

@@ -22,7 +22,7 @@ from typing import Optional
 # Duplicated to keep widgets.py independent of axt.core. The single source
 # of truth is still axt.core.__version__ / axt.__version__ — the package
 # mirror loop in axt/__init__.py re-exports the most-recent definition.
-__version__ = "1.15.0"
+__version__ = "1.15.1"
 
 
 # ── Section 11: TUI — Common helpers (curses, color, key, width) ────────────
@@ -432,14 +432,21 @@ def render_table(
     if h <= 0 or w <= 0:
         return 0
 
+    # Prefix gutter width: "▸" + the right-aligned 1-based row number + a
+    # trailing space. It grows past the default 4 cells once the row count
+    # reaches 3 digits, so a wide number never truncates the gap that keeps
+    # it separate from the first column's text.
+    num_w = 2 if checked is not None else max(2, len(str(len(rows))))
+    prefix_w = num_w + 2
+
     # Header.
     header_h = 0
     if show_header:
         cursor = x
         if checked is not None:
-            cursor += _draw_cell(stdscr, y, cursor, "■  ", 4, w - (cursor - x), CP_HDR())
+            cursor += _draw_cell(stdscr, y, cursor, "■  ", prefix_w, w - (cursor - x), CP_HDR())
         else:
-            cursor += _draw_cell(stdscr, y, cursor, "#   ", 4, w - (cursor - x), CP_HDR())
+            cursor += _draw_cell(stdscr, y, cursor, "#", prefix_w, w - (cursor - x), CP_HDR())
         for col in columns:
             cursor += _draw_cell(stdscr, y, cursor, col.label, col.width + 2, w - (cursor - x), CP_HDR())
             if cursor - x >= w:
@@ -473,7 +480,8 @@ def render_table(
         sel = ri == selected
         row_y = y + header_h + vi
         row_attr = CP_SEL() if sel else 0
-        # Prefix: 4 cells. Either checkbox or 1-based number with optional pointer.
+        # Prefix: prefix_w cells. Either checkbox or 1-based number with
+        # optional pointer.
         if checked is not None:
             on = ri in checked
             if sel:
@@ -481,10 +489,10 @@ def render_table(
             else:
                 prefix = " ■ " if on else " □ "
         else:
-            num = str(ri + 1).rjust(2)
+            num = str(ri + 1).rjust(num_w)
             prefix = f"▸{num} " if sel else f" {num} "
         cursor = x
-        cursor += _draw_cell(stdscr, row_y, cursor, prefix, 4, w - (cursor - x), row_attr)
+        cursor += _draw_cell(stdscr, row_y, cursor, prefix, prefix_w, w - (cursor - x), row_attr)
         for col in columns:
             value = row.get(col.key, "")
             cursor += _draw_cell(stdscr, row_y, cursor, value, col.width + 2, w - (cursor - x), row_attr)
