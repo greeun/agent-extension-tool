@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.16.0"
+__version__ = "1.16.1"
 
 T = TypeVar("T")
 
@@ -201,7 +201,10 @@ def read_json(path: os.PathLike[str] | str, *, fallback: Any = _MISSING) -> Any:
     try:
         with p.open("r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError, RecursionError):
+        # RecursionError belongs here: `json.load` raises it (not a
+        # JSONDecodeError) on deeply nested input, so a generated or hostile
+        # settings file would otherwise take down every command that reads it.
         if fallback is _MISSING:
             raise
         return fallback
@@ -2180,9 +2183,31 @@ LINKABLE_TYPES: tuple[tuple[str, str], ...] = tuple(
 )
 
 
+def _path_is_dir(p: Path) -> bool:
+    """`Path.is_dir()` that answers False for a path it cannot stat.
+
+    pathlib only swallows the "not there" errnos (ENOENT and friends) — it
+    re-raises EACCES — so a single 0o000 directory under a scan root would
+    otherwise abort the whole enumeration and hide every sibling item.
+    """
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
+def _path_is_file(p: Path) -> bool:
+    """`Path.is_file()` with the same unreadable-path contract as
+    :func:`_path_is_dir`."""
+    try:
+        return p.is_file()
+    except OSError:
+        return False
+
+
 def _iter_item_entries(dir_path: Path) -> list[Path]:
     """Sorted, dotfile-free entries of `dir_path`, or [] if missing/unreadable."""
-    if not dir_path.exists() or not dir_path.is_dir():
+    if not _path_is_dir(dir_path):
         return []
     try:
         entries = sorted(dir_path.iterdir(), key=lambda p: p.name)
@@ -2193,10 +2218,12 @@ def _iter_item_entries(dir_path: Path) -> list[Path]:
 
 def _entry_is_item(entry: Path, item_type: str) -> bool:
     """Whether `entry` is a valid item of `item_type` (skill=dir containing
-    index.md/SKILL.md, else .md file)."""
+    index.md/SKILL.md, else .md file). An entry we cannot stat is not an
+    item — it is skipped, never raised over."""
     if item_type == "skill":
-        return entry.is_dir() and any((entry / c).is_file() for c in ("index.md", "SKILL.md"))
-    return entry.is_file() and entry.suffix == ".md"
+        return _path_is_dir(entry) and any(
+            _path_is_file(entry / c) for c in ("index.md", "SKILL.md"))
+    return _path_is_file(entry) and entry.suffix == ".md"
 
 
 def _make_vault_item(entry: Path, item_type: str, **flags: Any) -> VaultItem:
@@ -5124,7 +5151,7 @@ def _scan_symlinks_at(project_path: str, vault_dir: str, index: UsageIndex, ref:
 
 def _scan_plugin_settings_at(project_path: str, index: UsageIndex, ref: ProjectRef) -> None:
     settings_path = Path(project_path) / ".claude" / "settings.json"
-    if not settings_path.exists():
+    if not _path_is_file(settings_path):
         return
     enabled = read_enabled_plugins(settings_path)
     for plugin_id, val in enabled.items():

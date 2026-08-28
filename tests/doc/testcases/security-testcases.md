@@ -11,7 +11,7 @@ Layer Owner: `tests/test_security.py`
 | **총 TC 수** | **29** (그중 5건은 기존 테스트가 이미 소유 → 신규 작성 대상 24건) |
 | 우선순위 | Critical 19 / High 10 / Medium 0 / Low 0 |
 | Gap | COVERED 5 / PARTIAL 3 / NEW 21 |
-| 실패 예상 TC | 10 (TC-SEC-004 · 005 · 006 · 007 · 009 · 022 · 024 · 026 · 027 · 028) — 스펙-구현 갭. 테스트가 아니라 구현을 고쳐야 통과한다 |
+| 실패 예상 TC | 9 (TC-SEC-004 · 005 · 006 · 007 · 009 · 024 · 026 · 027 · 028) — 스펙-구현 갭. 테스트가 아니라 구현을 고쳐야 통과한다. TC-SEC-022 는 v1.16.1 에서 구현이 따라잡아 해소 |
 
 ## TC 인덱스
 
@@ -358,7 +358,7 @@ Layer Owner: `tests/test_security.py`
 
 ### TC-SEC-022 — 20,000단계 중첩 JSON이 fallback으로 처리된다
 
-- **US**: US-SYS05 AC1 / **OWASP**: A08 (부분) / **Priority**: High / **Gap**: NEW / **실패 예상**
+- **US**: US-SYS05 AC1 / **OWASP**: A08 (부분) / **Priority**: High / **Gap**: NEW / **해소됨 (v1.16.1)**
 - **Preconditions**
   - `sys.setrecursionlimit` 을 **변경하지 않는다**(전역 상태 오염 금지)
   - 파일 생성: `"[" * 20000 + "]" * 20000` 을 `settings.json` 에 기록
@@ -366,10 +366,9 @@ Layer Owner: `tests/test_security.py`
 - **Expected Output**
   - 반환값 `{}`
   - `RecursionError` 를 포함해 어떤 예외도 전파되지 않는다
-- **현재 구현 예상 결과**: `read_json` 은 `json.load` 를 감싸지 않으므로 `RecursionError` 가 그대로 올라온다.
-  `read_json_dict` → `read_enabled_plugins` 경로에도 방어가 없다. **실패 예상.**
-- **실패 시 조치**: `read_json` 에 `except (json.JSONDecodeError, RecursionError, UnicodeDecodeError, OSError)` →
-  `fallback` 반환을 추가한다. `fallback` 미지정 시에만 재전파.
+- **구현 상태**: v1.16.1 에서 해소. `read_json` 의 except 튜플에 `RecursionError` 를 추가해
+  `fallback` 을 반환한다(`fallback` 미지정 시에만 재전파). `json.load` 는 깊은 중첩에서
+  `JSONDecodeError` 가 아니라 `RecursionError` 를 던지므로 별도 항목이 필요했다.
 
 ### TC-SEC-023 — 타입이 어긋난 settings 값이 빈 맵으로 fallback 된다
 

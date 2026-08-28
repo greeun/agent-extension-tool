@@ -16,7 +16,7 @@ Layer Owner: `tests/test_chaos.py`
 | **총 TC 수** | **26** (COVERED 2 제외 → 신규·보강 대상 24건. 종전 BLOCKED 1건은 SD-001 로 해소) |
 | 우선순위 | Critical 12 / High 12 / Medium 2 / Low 0 |
 | Gap | COVERED 2 / PARTIAL 6 / NEW 18 |
-| 실패 예상 TC | 8 (TC-CHAOS-002 · 003 · 004 · 005 · 010 · 011 · 012 · 024) — 구현 갭 |
+| 실패 예상 TC | 7 (TC-CHAOS-002 · 003 · 004 · 005 · 010 · 012 · 024) — 구현 갭. TC-CHAOS-011 · 013 은 v1.16.1 에서 해소 |
 | BLOCKED | 0 — TC-CHAOS-018 은 SD-001 결정으로 해제됨 (`tests/doc/SPEC_DECISIONS.md`) |
 
 ## TC 인덱스
@@ -209,7 +209,7 @@ Layer Owner: `tests/test_chaos.py`
 
 ### TC-CHAOS-011 — 권한 없는 vault 항목만 빠지고 나머지는 열거된다
 
-- **US**: US-SYS05 AC4 / **Priority**: Critical / **Gap**: NEW / **실패 예상**
+- **US**: US-SYS05 AC4 / **Priority**: Critical / **Gap**: NEW / **해소됨 (v1.16.1)**
 - **Preconditions**
   - `if os.getuid() == 0: pytest.fail("root 로 실행하면 chmod 결함 주입이 무력하다 — 비-root 로 실행할 것")`
     (skip 이 아니라 **실패**로 드러낸다 — 조용한 skip 은 허위 통과다)
@@ -242,7 +242,7 @@ Layer Owner: `tests/test_chaos.py`
 
 ### TC-CHAOS-013 — 권한 없는 프로젝트 디렉터리가 스캔을 중단시키지 않는다
 
-- **US**: US-SYS05 AC4 / **Priority**: High / **Gap**: NEW
+- **US**: US-SYS05 AC4 / **Priority**: High / **Gap**: NEW / **해소됨 (v1.16.1)**
 - **Preconditions**
   - root 가드 동일
   - `projects_dir` 에 프로젝트 10개, 그중 1개를 `0o000`
