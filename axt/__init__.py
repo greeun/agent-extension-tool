@@ -74,7 +74,7 @@ _load_submodules()
 # contract and gives IDEs / static checkers something to find.
 from axt.cli import main  # noqa: E402,F401
 
-__version__ = "1.14.1"
+__version__ = "1.15.0"
 
 
 def _find_submodule_with(name: str):
