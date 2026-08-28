@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.15.1"
+__version__ = "1.16.0"
 
 T = TypeVar("T")
 
@@ -4210,6 +4210,19 @@ def detect_claude_plan(
 
 
 @dataclass(frozen=True)
+class SortPref:
+    """One list's remembered sort, keyed by sub-tab in ``AxtConfig.sort``.
+
+    ``column`` is the sort key as `_SORT_COLUMNS` / `_PROJECT_SORT_SPECS`
+    name it; ``desc`` is the explicit direction, or None for "that column's
+    natural direction" — the same None-means-natural contract the TUI's
+    ``vault_sort_desc`` / ``ext_sort_desc`` already use.
+    """
+    column: str
+    desc: Optional[bool] = None
+
+
+@dataclass(frozen=True)
 class AxtConfig:
     currency: tuple[str, ...] = ("usd", "krw")
     exchange_rate: float = 1400.0
@@ -4223,6 +4236,10 @@ class AxtConfig:
     plans: dict[str, PlanConfig] = field(default_factory=lambda: {
         "claude": PlanConfig(plan="max-5x", monthly_cost=100, billing_cycle_start=1),
     })
+    # Last sort the user left each TUI list on, keyed by sub-tab id
+    # ("vault" / "skills" / … / "project"). Empty = every list opens on its
+    # own default column. Written once when the TUI exits.
+    sort: dict[str, SortPref] = field(default_factory=dict)
 
 
 def _plan_from_json(data: Any) -> Optional[PlanConfig]:
@@ -4244,6 +4261,42 @@ def _plan_to_json(p: PlanConfig) -> dict[str, Any]:
     }
     if p.daily_request_limit is not None:
         out["dailyRequestLimit"] = p.daily_request_limit
+    return out
+
+
+def _sort_prefs_from_json(data: Any) -> dict[str, SortPref]:
+    """Parse the config's ``sort`` map, dropping anything unusable.
+
+    A hand-edited or half-written config must never take the TUI down, so an
+    entry survives only with a non-empty string ``column``; a ``desc`` that
+    isn't a real bool falls back to None (the column's natural direction).
+    An unknown column name is left alone here — the TUI's own lookup already
+    falls back to the sub-tab's first column, so a stale key degrades to the
+    default instead of erroring.
+    """
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, SortPref] = {}
+    for sub, raw in data.items():
+        if not isinstance(raw, dict):
+            continue
+        column = raw.get("column")
+        if not isinstance(column, str) or not column:
+            continue
+        desc = raw.get("desc")
+        out[str(sub)] = SortPref(column=column,
+                                 desc=desc if isinstance(desc, bool) else None)
+    return out
+
+
+def _sort_prefs_to_json(prefs: dict[str, SortPref]) -> dict[str, Any]:
+    """Serialize sort prefs, omitting ``desc`` when it is the natural one."""
+    out: dict[str, Any] = {}
+    for sub, pref in prefs.items():
+        entry: dict[str, Any] = {"column": pref.column}
+        if pref.desc is not None:
+            entry["desc"] = pref.desc
+        out[sub] = entry
     return out
 
 
@@ -4270,6 +4323,7 @@ def load_config(config_path: os.PathLike[str] | str) -> AxtConfig:
         theme=str(saved.get("theme", default.theme)),
         auto_detect_plan=bool(saved.get("autoDetectPlan", default.auto_detect_plan)),
         plans=plans,
+        sort=_sort_prefs_from_json(saved.get("sort")),
     )
 
 
@@ -4285,6 +4339,7 @@ def save_config(config_path: os.PathLike[str] | str, config: AxtConfig) -> None:
         "theme": config.theme,
         "autoDetectPlan": config.auto_detect_plan,
         "plans": {k: _plan_to_json(v) for k, v in config.plans.items()},
+        "sort": _sort_prefs_to_json(config.sort),
     }
     write_json_atomic(config_path, payload)
 

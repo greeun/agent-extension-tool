@@ -10931,3 +10931,218 @@ def test_render_table_prefix_stays_four_cells_under_hundred_rows():
     name_cells = [c for c in scr.calls
                   if isinstance(c[2], str) and c[2].startswith("item-0")]
     assert name_cells and name_cells[0][1] == 4
+
+
+def test_project_sort_cycle_help_lists_the_columns():
+    """`?` generates the Project cycle from _PROJECT_SORT_SPECS so the help
+    can't drift from what `s` actually does."""
+    assert axt.project_sort_cycle_help() == "tokens→name→category→scope"
+
+
+def test_help_text_documents_the_project_sort_and_its_persistence():
+    assert "Cycle: tokens→name→category→scope" in axt.HELP_TEXT
+    assert "Saved on quit and restored on the next launch" in axt.HELP_TEXT
+
+
+# ─── Sort persistence — TuiState ⇄ AxtConfig.sort bridge ─────────────────────
+
+
+def test_collect_sort_prefs_is_empty_for_untouched_lists():
+    """Nothing to remember until the user actually sorts something — a fresh
+    session must not write every list's default back to the config."""
+    assert axt.collect_sort_prefs(axt.TuiState()) == {}
+
+
+def test_collect_sort_prefs_captures_each_touched_list():
+    """Vault, an Extensions sub-tab and Project each land under their own key
+    with the column and the explicit direction the user left them on."""
+    s = axt.TuiState()
+    axt.handle_vault_input(s, ord("s"))          # vault: name → ver ▲
+    axt.handle_vault_input(s, ord("S"))          # vault: ver ▼
+    s.ext_sub_tab = "mcp"
+    s.ext_cache["mcp"] = []
+    axt.handle_extensions_input(s, ord("s"))     # mcp: name → scope ▲
+    axt.handle_project_input(s, ord("s"))        # project: tokens → name
+
+    prefs = axt.collect_sort_prefs(s)
+    assert prefs["vault"] == axt.SortPref(column="ver", desc=True)
+    assert prefs["mcp"] == axt.SortPref(column=axt._SORT_COLUMNS["mcp"][1][0], desc=False)
+    assert prefs["project"] == axt.SortPref(column="name", desc=None)
+
+
+def test_collect_sort_prefs_keeps_a_full_lap_back_to_the_default_column():
+    """Cycling all the way around lands on the default column but with an
+    explicit direction — dropping it would lose a deliberate `S` flip."""
+    s = axt.TuiState()
+    for _ in range(len(axt._SORT_COLUMNS["vault"])):
+        axt.handle_vault_input(s, ord("s"))
+    assert s.vault_sort == "name"
+    assert axt.collect_sort_prefs(s)["vault"] == axt.SortPref(column="name", desc=False)
+
+
+def test_apply_sort_prefs_restores_column_and_direction():
+    s = axt.TuiState()
+    axt.apply_sort_prefs(s, {
+        "vault": axt.SortPref(column="used", desc=True),
+        "skills": axt.SortPref(column="ver", desc=True),
+        "project": axt.SortPref(column="category"),
+    })
+    assert axt.subtab_sort_label(s, "vault") == "used ▼"
+    assert axt.subtab_sort_label(s, "skills") == "ver ▼"
+    assert s.project_sort == "category"
+
+
+def test_apply_sort_prefs_without_a_direction_uses_the_natural_one():
+    """A pref that only names the column must open that column the way `s`
+    would — Used newest-and-most-first, text columns A→Z."""
+    s = axt.TuiState()
+    axt.apply_sort_prefs(s, {"vault": axt.SortPref(column="used"),
+                             "skills": axt.SortPref(column="name")})
+    assert axt.subtab_sort_label(s, "vault") == "used ▼"
+    assert axt.subtab_sort_label(s, "skills") == "name ▲"
+
+
+def test_apply_sort_prefs_ignores_an_unknown_sub_tab():
+    """A config naming a sub-tab this build no longer has must be skipped,
+    not injected into ext_sort where it would never be read."""
+    s = axt.TuiState()
+    axt.apply_sort_prefs(s, {"gadgets": axt.SortPref(column="name", desc=True)})
+    assert "gadgets" not in s.ext_sort
+    assert s.ext_sort == {}
+
+
+def test_apply_sort_prefs_survives_a_column_this_build_dropped():
+    """A stale column name degrades to the sub-tab's first column instead of
+    blanking the list."""
+    s = axt.TuiState()
+    axt.apply_sort_prefs(s, {"skills": axt.SortPref(column="obsolete", desc=True)})
+    assert axt.subtab_sort_label(s, "skills") == "name ▼"
+
+
+def test_sort_prefs_survive_a_config_roundtrip(tmp_path):
+    """The whole path the TUI uses on exit and on the next launch: collect →
+    save_config → load_config → apply, ending on the same sort."""
+    left_on = axt.TuiState()
+    axt.handle_vault_input(left_on, ord("s"))
+    axt.handle_vault_input(left_on, ord("S"))
+    left_on.ext_sub_tab = "hooks"
+    left_on.ext_cache["hooks"] = []
+    axt.handle_extensions_input(left_on, ord("s"))
+    axt.handle_project_input(left_on, ord("s"))
+
+    p = tmp_path / "config.json"
+    axt.save_config(p, axt.replace(axt.load_config(p),
+                                   sort=axt.collect_sort_prefs(left_on)))
+    relaunched = axt.TuiState()
+    axt.apply_sort_prefs(relaunched, axt.load_config(p).sort)
+
+    assert axt.collect_sort_prefs(relaunched) == axt.collect_sort_prefs(left_on)
+    for sub in ("vault", "hooks"):
+        assert axt.subtab_sort_label(relaunched, sub) == axt.subtab_sort_label(left_on, sub)
+    assert relaunched.project_sort == left_on.project_sort
+
+
+# ─── Sort persistence — _tui_loop wiring ─────────────────────────────────────
+
+
+def test_tui_loop_restores_the_saved_sort_at_launch(tmp_path, monkeypatch):
+    """A saved sort is on screen from the first frame — the user should not
+    have to re-press `s` after every restart."""
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    axt.save_config(axt.AXT_CONFIG_PATH, axt.replace(
+        axt.load_config(axt.AXT_CONFIG_PATH),
+        sort={"vault": axt.SortPref(column="type", desc=True),
+              "skills": axt.SortPref(column="ver", desc=True),
+              "project": axt.SortPref(column="name")}))
+    frames = _e2e_frames(monkeypatch)
+
+    axt._tui_loop(_loop_stdscr([ord("q")], rows=34, cols=170))
+
+    launched = frames[0]["state"]
+    assert axt.subtab_sort_label(launched, "vault") == "type ▼"
+    assert axt.subtab_sort_label(launched, "skills") == "ver ▼"
+    assert launched.project_sort == "name"
+
+
+def test_tui_loop_persists_the_sort_on_exit(tmp_path, monkeypatch):
+    """`s` / `S` during the session survive the quit."""
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    _e2e_frames(monkeypatch)
+
+    keys = [_DOWN, _DOWN,            # mainTab → subTab → content (Vault)
+            ord("s"), ord("S"),      # vault: name → ver, then flip to ▼
+            ord("q")]
+    axt._tui_loop(_loop_stdscr(keys, rows=34, cols=170))
+
+    assert axt.load_config(axt.AXT_CONFIG_PATH).sort["vault"] == \
+        axt.SortPref(column="ver", desc=True)
+
+
+def test_tui_loop_persists_the_sort_when_quitting_with_esc(tmp_path, monkeypatch):
+    """Esc at the main tab row is the other ordinary way out — it must save
+    the same as `q`."""
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    _e2e_frames(monkeypatch)
+
+    keys = [_DOWN, _DOWN, ord("s"),
+            axt.KEY_ESC, axt.KEY_ESC,   # content → subTab → mainTab
+            axt.KEY_ESC]                # mainTab → quit
+    axt._tui_loop(_loop_stdscr(keys, rows=34, cols=170))
+
+    assert axt.load_config(axt.AXT_CONFIG_PATH).sort["vault"] == \
+        axt.SortPref(column="ver", desc=False)
+
+
+def test_tui_loop_leaves_the_config_alone_when_nothing_was_sorted(tmp_path, monkeypatch):
+    """A look-and-quit session must not create or touch config.json."""
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_frames(monkeypatch)
+
+    axt._tui_loop(_loop_stdscr([ord("q")], rows=34, cols=170))
+
+    assert not Path(axt.AXT_CONFIG_PATH).exists()
+
+
+def test_tui_loop_sort_write_keeps_a_theme_toggled_mid_session(tmp_path, monkeypatch):
+    """The exit write must re-read the config, not replay a launch-time
+    snapshot — otherwise `t` (which saves the theme immediately) is silently
+    rolled back when the user quits."""
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    monkeypatch.setattr("axt.tui.widgets._ACTIVE_THEME", "dark")
+    _e2e_vault_skill("alpha")
+    _e2e_frames(monkeypatch)
+
+    keys = [ord("t"),                # theme dark → light, written immediately
+            _DOWN, _DOWN, ord("s"),  # then change the sort
+            ord("q")]
+    axt._tui_loop(_loop_stdscr(keys, rows=34, cols=170))
+
+    saved = axt.load_config(axt.AXT_CONFIG_PATH)
+    assert saved.theme == "light"
+    assert saved.sort["vault"] == axt.SortPref(column="ver", desc=False)
+
+
+def test_tui_loop_survives_an_unwritable_config_on_exit(tmp_path, monkeypatch):
+    """Persisting is best-effort: a read-only config must not turn quitting
+    into a traceback."""
+    _e2e_paths(tmp_path, monkeypatch)
+    _e2e_quiet(monkeypatch)
+    _e2e_vault_skill("alpha")
+    _e2e_frames(monkeypatch)
+
+    attempted = []
+
+    def boom(*a, **kw):
+        attempted.append(a)
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr("axt.tui.loop.save_config", boom)
+    axt._tui_loop(_loop_stdscr([_DOWN, _DOWN, ord("s"), ord("q")], rows=34, cols=170))
+    assert attempted, "the exit path must have tried to save the sort"

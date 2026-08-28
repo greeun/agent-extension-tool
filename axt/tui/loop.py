@@ -33,6 +33,7 @@ from axt.tui.tabs import (  # noqa: F401 — `_`-prefixed names that wildcard sk
     _cycle_sub_tab,
     _prime_vault_scan,
     sub_tab_has_focusable_content,
+    project_sort_cycle_help,
     sort_cycle_help,
     subtab_sort_label,
     tab_has_focusable_content,
@@ -97,7 +98,8 @@ Vault
   S             Flip the active column between ascending ▲ and descending ▼.
                 The sorted column's header carries the arrow, and the title
                 bar's sort= text names the active one (Added and Updated sort
-                real data but have no column of their own)
+                real data but have no column of their own). The sort you leave
+                each list on is saved on quit and restored on the next launch.
   f             Re-scan ALL projects to refresh `Used` (auto-runs on launch in
                 the background; cached to disk; title shows scan age / scanning…)
   F             Toggle scan mode (default ↔ full) and re-scan (f's full variant)
@@ -142,6 +144,8 @@ Extensions sub-tab actions
                   Market   {sort_cycle_help("market")}
                 (`#` is the row number in the current order, so it has no
                  sort; columns that never vary on a sub-tab are skipped too)
+                Each sub-tab's sort is saved on quit and restored on the
+                next launch (~/.config/axt/config.json, "sort").
 {subtab_help_block()}
   Notes:        Hooks toggle only in their own scope: a hook in the user
                 settings file is global (g), one in project/local settings
@@ -161,6 +165,9 @@ Context
                 clear) — matches name/category/scope/path
   Enter         Focus the bottom detail panel — j/k (or PgUp/PgDn) scroll
                 it, Esc blurs back to the table
+  s             Project: sort by the next column, wrapping
+                  Cycle: {project_sort_cycle_help()}
+                Saved on quit and restored on the next launch
   v             Sources: preview the category's sources with actual content
                 Project: preview the focused file's content
   e             Sources: open first source file in $EDITOR
@@ -507,7 +514,52 @@ def _persist_theme(theme: str) -> None:
         pass
 
 
+def _restore_sort(state) -> None:
+    """Put every list back on the sort the last session left it on.
+
+    Best-effort, same as `_persist_theme`: an unreadable or malformed config
+    must never keep the TUI from starting — the lists just open on their
+    defaults.
+    """
+    try:
+        apply_sort_prefs(state, load_config(AXT_CONFIG_PATH).sort)
+    except (OSError, ValueError):
+        pass
+
+
+def _persist_sort(state) -> None:
+    """Save the sort every list ended on, once, as the TUI exits.
+
+    The config is re-read here rather than carried over from launch, so a
+    mid-session write (`t` saving the theme) survives. Nothing is written
+    when the sorts are unchanged, which keeps a look-and-quit session from
+    creating a config file it never needed.
+    """
+    try:
+        cfg = load_config(AXT_CONFIG_PATH)
+        prefs = collect_sort_prefs(state)
+        if prefs == cfg.sort:
+            return
+        save_config(AXT_CONFIG_PATH, replace(cfg, sort=prefs))
+    except (OSError, ValueError):
+        pass
+
+
 def _tui_loop(stdscr, theme: str = "dark") -> None:
+    """Run the TUI until the user quits, restoring and then re-saving the
+    per-list sort around the session."""
+    state = TuiState()
+    _restore_sort(state)
+    try:
+        _run_tui_loop(stdscr, state, theme)
+    finally:
+        # `finally` rather than a line before each `return`: the loop leaves
+        # by `q`, by Esc, and by KeyboardInterrupt, and a fourth exit added
+        # later would silently skip the save.
+        _persist_sort(state)
+
+
+def _run_tui_loop(stdscr, state, theme: str = "dark") -> None:
     curses.curs_set(0)
     try:
         curses.set_escdelay(25)  # 3.9+
@@ -516,7 +568,6 @@ def _tui_loop(stdscr, theme: str = "dark") -> None:
     stdscr.keypad(True)
     tui_init_colors(theme, stdscr)
 
-    state = TuiState()
     # `render` lets synchronous handlers force an immediate repaint before a
     # blocking op (e.g. flash "Updating…" ahead of a git fetch/pull on `u`).
     state.stdscr_callbacks = {"stdscr": stdscr, "render": lambda: _render_frame(stdscr, state)}

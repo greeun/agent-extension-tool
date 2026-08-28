@@ -705,3 +705,51 @@ def test_compute_plan_usage_fields_are_consistent_including_day_zero():
     assert day_zero.projected_monthly_cost == 0.0
     assert day_zero.days_remaining == 30
     assert day_zero.current_period_cost == 60.0
+
+
+# ─── Sort preferences (persisted TUI sort state) ─────────────────────────────
+
+
+def test_load_config_sort_defaults_to_empty(tmp_path: Path):
+    """A config with no `sort` key must leave every sub-tab on its own
+    default column, not invent one."""
+    assert axt.load_config(tmp_path / "config.json").sort == {}
+
+
+def test_save_load_config_roundtrips_sort_prefs(tmp_path: Path):
+    """The column AND the explicit direction survive a restart — saving only
+    the column would silently drop a `S` flip."""
+    p = tmp_path / "config.json"
+    axt.save_config(p, axt.AxtConfig(sort={
+        "vault": axt.SortPref(column="used", desc=True),
+        "skills": axt.SortPref(column="ver", desc=False),
+        "project": axt.SortPref(column="name"),
+    }))
+    loaded = axt.load_config(p).sort
+    assert loaded["vault"] == axt.SortPref(column="used", desc=True)
+    assert loaded["skills"] == axt.SortPref(column="ver", desc=False)
+    assert loaded["project"] == axt.SortPref(column="name", desc=None)
+
+
+def test_load_config_ignores_malformed_sort_entries(tmp_path: Path):
+    """A hand-edited or truncated config must not take the TUI down: entries
+    without a usable column are dropped, a non-bool direction falls back to
+    the column's natural one."""
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"sort": {
+        "vault": {"column": 5},
+        "skills": "descending",
+        "commands": {},
+        "mcp": {"column": "name", "desc": "yes"},
+        "agents": {"column": "ver", "desc": True},
+    }}))
+    loaded = axt.load_config(p).sort
+    assert set(loaded) == {"mcp", "agents"}
+    assert loaded["mcp"] == axt.SortPref(column="name", desc=None)
+    assert loaded["agents"] == axt.SortPref(column="ver", desc=True)
+
+
+def test_load_config_ignores_non_dict_sort(tmp_path: Path):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"sort": ["vault"]}))
+    assert axt.load_config(p).sort == {}

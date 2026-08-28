@@ -2425,6 +2425,13 @@ _PROJECT_SORT_SPECS: tuple = (
 )
 
 
+def project_sort_cycle_help() -> str:
+    """`tokens→name→…` listing of the Project sub-tab's sortable columns, so
+    the `?` help is generated from _PROJECT_SORT_SPECS instead of drifting
+    from it (mirrors `sort_cycle_help` for the Extensions sub-tabs)."""
+    return "→".join(s[0] for s in _PROJECT_SORT_SPECS)
+
+
 def _project_sort_spec(state: TuiState):
     keys = [s[0] for s in _PROJECT_SORT_SPECS]
     cur = state.project_sort if state.project_sort in keys else keys[0]
@@ -3187,6 +3194,71 @@ def sort_cycle_help(sub: str) -> str:
     """`name→ver→…` listing of a sub-tab's sortable columns, so the `?` help
     is generated from _SORT_COLUMNS instead of drifting from it."""
     return "→".join(c[0] for c in _SORT_COLUMNS.get(sub, ()))
+
+
+# ─── Sort persistence — TuiState ⇄ AxtConfig.sort ────────────────────────────
+#
+# The TUI remembers where each list's `s` / `S` cycle was left. The loop
+# hydrates a fresh TuiState from `config.sort` at launch and writes the
+# collected prefs back once on exit (Section 14), so the pair below is the
+# only place that knows which state field backs which sub-tab.
+
+# The Project sub-tab's sort lives outside _SORT_COLUMNS (its own
+# _PROJECT_SORT_SPECS, with no `S` direction toggle), so it is spelled out
+# here rather than folded into the Extensions loop.
+_PROJECT_SORT_SUB = "project"
+
+
+def _default_sort_pref(sub: str) -> SortPref:
+    """What `sub` opens on with nothing remembered — its first column in that
+    column's natural direction (None = natural, see SortPref)."""
+    if sub == _PROJECT_SORT_SUB:
+        return SortPref(column=_PROJECT_SORT_SPECS[0][0])
+    cols = _SORT_COLUMNS.get(sub)
+    return SortPref(column=cols[0][0] if cols else "")
+
+
+def collect_sort_prefs(state: TuiState) -> dict[str, SortPref]:
+    """The sort every list is currently on, keyed by sub-tab id.
+
+    Lists still on their default are omitted so an untouched session has
+    nothing to write. A full `s` lap back to the first column is NOT the
+    default — it carries an explicit direction — so it is kept.
+    """
+    prefs: dict[str, SortPref] = {
+        "vault": SortPref(column=state.vault_sort, desc=state.vault_sort_desc),
+        _PROJECT_SORT_SUB: SortPref(column=state.project_sort),
+    }
+    for sub in set(state.ext_sort) | set(state.ext_sort_desc):
+        prefs[sub] = SortPref(
+            column=state.ext_sort.get(sub) or _default_sort_pref(sub).column,
+            desc=state.ext_sort_desc.get(sub),
+        )
+    return {sub: p for sub, p in prefs.items() if p != _default_sort_pref(sub)}
+
+
+def apply_sort_prefs(state: TuiState, prefs: dict[str, SortPref]) -> None:
+    """Restore remembered sorts onto a fresh `state`.
+
+    Sub-tabs this build no longer has are skipped; a column it no longer has
+    is written through as-is, because `_sort_state` already falls back to the
+    sub-tab's first column — the list degrades to its default instead of
+    going blank.
+    """
+    for sub, pref in prefs.items():
+        if sub == _PROJECT_SORT_SUB:
+            # No `S` toggle here — _PROJECT_SORT_SPECS fixes each column's
+            # direction, so pref.desc is deliberately ignored.
+            state.project_sort = pref.column
+        elif sub == "vault":
+            state.vault_sort = pref.column
+            state.vault_sort_desc = pref.desc
+        elif sub in _SORT_COLUMNS:
+            state.ext_sort[sub] = pref.column
+            if pref.desc is None:
+                state.ext_sort_desc.pop(sub, None)
+            else:
+                state.ext_sort_desc[sub] = pref.desc
 
 
 def _blur_ext_detail(state: TuiState) -> None:
