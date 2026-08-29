@@ -48,3 +48,7 @@ __pycache__/
 *-runs/
 *-output/
 # <<< skill-artifacts
+
+# env 예시/템플릿은 추적한다
+!.env*.example
+!.env*.template
