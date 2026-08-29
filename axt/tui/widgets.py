@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from dataclasses import dataclass
 from typing import Optional
@@ -22,7 +23,7 @@ from typing import Optional
 # Duplicated to keep widgets.py independent of axt.core. The single source
 # of truth is still axt.core.__version__ / axt.__version__ — the package
 # mirror loop in axt/__init__.py re-exports the most-recent definition.
-__version__ = "1.17.0"
+__version__ = "1.18.0"
 
 
 # ── Section 11: TUI — Common helpers (curses, color, key, width) ────────────
@@ -608,6 +609,38 @@ def _wrap_to_cells(text: str, max_cells: int) -> list[str]:
     if current:
         out.append("".join(current))
     return out if out else [""]
+
+
+# ── Loading indicator ───────────────────────────────────────────────────────
+#
+# Progress labels are STORED with a literal "…" (state.status, the vault
+# title tag, …) and only animated at draw time. Keeping the stored string
+# stable is what lets `classify_status` and the "is this load still the one
+# I started?" checks in `_kick_usage_reload` keep matching on it.
+
+_ELLIPSIS_PERIOD_S = 0.4
+
+
+def ellipsis_frame(now: Optional[float] = None) -> str:
+    """One frame of the `.` → `..` → `...` loading cycle.
+
+    Time-based rather than frame-counted so every animated label on screen
+    steps together, and so the speed does not follow the poll interval.
+    """
+    t = time.monotonic() if now is None else now
+    return "." * (int(t / _ELLIPSIS_PERIOD_S) % 3 + 1)
+
+
+def animate_ellipsis(text: str, now: Optional[float] = None) -> str:
+    """Swap a trailing `…` for the current dot frame.
+
+    `"Loading…"` paints as `Loading.` / `Loading..` / `Loading...` on
+    successive frames. Text without a trailing `…` is returned unchanged,
+    so this is safe to apply to any status message.
+    """
+    if text.endswith("…"):
+        return text[:-1] + ellipsis_frame(now)
+    return text
 
 
 def render_status_bar(stdscr, y: int, w: int, shortcuts: str, status: str = "",

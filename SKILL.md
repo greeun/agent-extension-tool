@@ -1,7 +1,7 @@
 ---
 name: agent-extension-tool
 description: Use `axt` (Agent eXtension Tool) — a Python+curses CLI/TUI — to inspect and manage extensions, plugins, skills, MCP servers, hooks, commands, agents, marketplaces, and usage/cost for Claude Code. Trigger phrases — EN ("axt", "list plugins", "install plugin", "list skills", "list MCP", "enable/disable MCP", "show hooks", "enable/disable hook", "list agents", "claude usage", "claude plan", "billing cycle", "marketplace add/sync", "vault list", "link skill", "context analyze", "token usage at session start", "check for updates", "update plugins", "axt update"). KO ("axt", "플러그인 목록", "플러그인 설치", "스킬 목록", "MCP 서버", "MCP 켜기/끄기", "훅 보기", "훅 켜기/끄기", "에이전트 목록", "클로드 사용량", "마켓플레이스", "볼트", "스킬 링크", "컨텍스트 분석", "에이전트 확장 도구", "업데이트 확인", "플러그인 업데이트", "확장 업데이트").
-version: 1.17.0
+version: 1.18.0
 ---
 
 # axt — Agent eXtension Tool

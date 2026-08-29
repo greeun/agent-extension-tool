@@ -865,7 +865,7 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # relative age of the last completed scan. Lets the user judge staleness at
     # a glance and decide whether to press `f`.
     if state.vault_scan_loading:
-        freshness = ", scanning…"
+        freshness = ", scanning" + ellipsis_frame()
     else:
         age = _fmt_scan_age(state.vault_scanned_at)
         freshness = f", {age}" if age else ""
@@ -1711,7 +1711,11 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
     # on large transcripts.
     # The tab title is a FIXED filter-bar row (vault convention) drawn below
     # the `/search:` band — NOT part of the scrollable buffer.
-    sig = (id(entries), id(config), w)
+    # The loading body line animates, so while `entries` is None the dot frame
+    # is part of the signature — otherwise the cached buffer would freeze the
+    # animation on whatever frame built it.
+    sig = (id(entries), id(config), w,
+           ellipsis_frame() if entries is None else "")
     if state.usage_lines is None or state.usage_lines_sig != sig:
         lines: list[tuple[int, str, int, int]] = []
         if entries is None:
@@ -1719,7 +1723,7 @@ def render_usage_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
             # context / rate-limit meters appear immediately.
             lines.extend(_usage_gauge_lines(state, w))
             lines.append((0, "", w, 0))
-            lines.append((2, "Loading Claude usage…", w - 4, CP_DIM()))
+            lines.append((2, animate_ellipsis("Loading Claude usage…"), w - 4, CP_DIM()))
         else:
             lines.extend(_usage_summary_lines(state, config, entries, w))
         state.usage_lines = lines
@@ -2282,7 +2286,8 @@ def render_context_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None
     _ensure_context_loaded(state)
     analysis = state.context_analysis
     if analysis is None:
-        safe_addnstr(stdscr, y0 + 2, 2, "Loading context…", w - 4, CP_DIM())
+        safe_addnstr(stdscr, y0 + 2, 2, animate_ellipsis("Loading context…"), w - 4,
+                     CP_DIM())
         return
 
     # The `/search:` band and the `search='q'` chip both live down at the

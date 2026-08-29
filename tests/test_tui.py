@@ -9,6 +9,7 @@ from __future__ import annotations
 import curses
 import json
 import os
+import re
 import sys
 import types
 from datetime import datetime, timezone
@@ -1975,8 +1976,8 @@ def test_fmt_scan_age_buckets():
 
 
 def test_vault_title_shows_scanning_then_age(tmp_path, monkeypatch):
-    """While a scan is in flight the title reads 'scanning…'; once done it
-    shows the relative age."""
+    """While a scan is in flight the title reads 'scanning' + animated dots;
+    once done it shows the relative age."""
     from datetime import datetime, timezone, timedelta
     vault = tmp_path / "vault"
     (vault / "skills" / "alpha").mkdir(parents=True)
@@ -1994,7 +1995,9 @@ def test_vault_title_shows_scanning_then_age(tmp_path, monkeypatch):
     state.vault_usage_index = {"skill:alpha": axt.ExtensionUsage(
         type="skill", name="alpha", projects=[axt.ProjectRef(path="/p", name="p")])}
     state.vault_scan_loading = True
-    assert "scanning…" in render_title(state)
+    # The trailing dots animate (`.` / `..` / `...`), so match the stem plus
+    # at least one dot rather than a fixed frame.
+    assert re.search(r"scanning\.{1,3}\)", render_title(state))
 
     state.vault_scan_loading = False
     state.vault_scanned_at = (
@@ -3871,6 +3874,56 @@ def test_kick_usage_reload_idempotent_while_loading(monkeypatch, tmp_path):
     gate.set()
     first_thread.join(timeout=2.0)
     assert state.usage_loading is False
+
+
+def test_ellipsis_frame_cycles_one_two_three_dots():
+    """The loading animation steps `.` → `..` → `...` and wraps, driven by
+    wall-clock time so every animated label on screen stays in step."""
+    period = axt.tui.widgets._ELLIPSIS_PERIOD_S
+    assert [axt.ellipsis_frame(i * period) for i in range(4)] == \
+        [".", "..", "...", "."]
+    # Mid-step times land on the same frame as the step boundary.
+    assert axt.ellipsis_frame(period * 0.99) == "."
+    assert axt.ellipsis_frame(period * 1.01) == ".."
+
+
+def test_animate_ellipsis_only_touches_a_trailing_ellipsis():
+    """A stored `…` label animates; anything else is passed through, so the
+    helper is safe to apply to every status message."""
+    period = axt.tui.widgets._ELLIPSIS_PERIOD_S
+    assert axt.animate_ellipsis("Loading Claude usage…", 0.0) == "Loading Claude usage."
+    assert axt.animate_ellipsis("Loading Claude usage…", period) == "Loading Claude usage.."
+    assert axt.animate_ellipsis("Unlinked alpha", 0.0) == "Unlinked alpha"
+    assert axt.animate_ellipsis("", 0.0) == ""
+    # A mid-string "…" is not a progress suffix — leave it alone.
+    assert axt.animate_ellipsis("… and 3 more", 0.0) == "… and 3 more"
+
+
+def test_usage_loading_line_animates_across_frames(tmp_path, monkeypatch):
+    """The cached usage line buffer must not freeze the animation: two paints
+    at different points in the cycle render different dot counts."""
+    _setup_isolated_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr("axt.tui.tabs.load_unified_usage", lambda **kw: [])
+
+    state = axt.TuiState()
+    state.usage_load_failed = "boom"  # keeps entries None without a worker
+
+    # Fake clock so the two paints land on known frames of the cycle.
+    clock = {"t": 0.0}
+    monkeypatch.setattr("axt.tui.tabs.ellipsis_frame",
+                        lambda *a: axt.ellipsis_frame(clock["t"]))
+    monkeypatch.setattr("axt.tui.tabs.animate_ellipsis",
+                        lambda text, *a: axt.animate_ellipsis(text, clock["t"]))
+
+    def paint():
+        scr = _make_stdscr(rows=30, cols=120)
+        axt.render_usage_tab(scr, state, 0, 28, 120)
+        flat = "".join(c[2] for c in scr.calls if len(c) >= 3 and isinstance(c[2], str))
+        return re.search(r"Loading Claude usage(\.{1,3})", flat).group(1)
+
+    first = paint()
+    clock["t"] = 2 * axt.tui.widgets._ELLIPSIS_PERIOD_S
+    assert [first, paint()] == [".", "..."]
 
 
 def test_render_usage_tab_shows_loading_when_entries_none(tmp_path, monkeypatch):

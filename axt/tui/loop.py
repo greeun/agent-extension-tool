@@ -344,7 +344,10 @@ def _render_frame(stdscr, state: TuiState) -> None:
         "ok": CP_OK() | curses.A_BOLD,
         "error": CP_ERR() | curses.A_BOLD,
     }.get(state.status_kind)
-    render_status_bar(stdscr, h - 1, w, shortcuts, state.status, status_attr=status_attr)
+    # `animate_ellipsis` only touches a trailing "…", so progress messages
+    # ("Loading Claude usage…") pulse while everything else paints as-is.
+    render_status_bar(stdscr, h - 1, w, shortcuts, animate_ellipsis(state.status),
+                      status_attr=status_attr)
 
     stdscr.refresh()
 
