@@ -124,9 +124,10 @@ Extensions sub-tab actions
   All sub-tabs: p=toggle PROJECT activation  g=toggle GLOBAL activation
                 (per-sub-tab semantics below)
   All sub-tabs: Space=mark/unmark the focused item (left checkbox ■/□)
-                and move focus to the next row; with marks set, p/g toggle
-                and u updates every marked item at once (confirm) and Esc
-                clears the marks
+                and move focus to the next row; with marks set, p/g toggle,
+                u updates and i imports every marked item at once (confirm)
+                and Esc clears the marks. The status bar's `N marked(...)`
+                chip names the bulk keys the current sub-tab actually has.
   All sub-tabs: o=open a new terminal at the item's directory
                 (matches your terminal via TERM_PROGRAM; inside cmux a
                  workspace/window chooser appears first)
@@ -229,7 +230,11 @@ def _extensions_shortcuts(state: TuiState) -> str:
         parts.append(f"search:{q!r}(Esc:clear)")
     marks = state.ext_marked.get(sub) or set()
     if marks:
-        parts.append(f"{len(marks)} marked(p/g:bulk Esc:clear)")
+        # Name the sub-tab's actual mark-consuming keys — they differ per
+        # sub-tab (no `u` on hooks, no `i` outside skills/commands/agents).
+        bulk = subtab_bulk_keys(sub)
+        parts.append(f"{len(marks)} marked({bulk}:bulk Esc:clear)" if bulk
+                     else f"{len(marks)} marked(Esc:clear)")
     sort_label = subtab_sort_label(state, sub)
     if sort_label:
         # `s` picks the column, `S` flips its direction — named in one chip

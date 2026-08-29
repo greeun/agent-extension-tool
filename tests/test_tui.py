@@ -5329,6 +5329,149 @@ def test_act_import_to_vault_failure_returns_error(tmp_path, monkeypatch):
     assert msg is not None and "Import failed" in msg
 
 
+# ─── `i` bulk import: Space marks consume the whole marked set ───────────────
+
+
+def _mk_import_state(tmp_path, monkeypatch, names, *, sub="skills"):
+    """Build a TuiState whose `sub` cache holds real on-disk items under
+    ~/.claude/<sub>, with PATHS pointed at tmp_path and cwd in a scratch
+    project (so the profile branch of _import_one stays out of the way)."""
+    claude = tmp_path / "claude"
+    vault = tmp_path / "vault"
+    monkeypatch.setattr("axt.PATHS", axt.Paths(
+        vault=vault, installed_plugins=tmp_path / "ip.json", claude_dir=claude,
+    ))
+    proj = tmp_path / "proj"
+    proj.mkdir(exist_ok=True)
+    monkeypatch.chdir(proj)
+    s = axt.TuiState()
+    items = []
+    for name in names:
+        if sub == "skills":
+            d = claude / "skills" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text("---\ndescription: d\n---")
+            items.append(axt.SkillInfo(name=name, path=str(d),
+                                       is_symlink=False, source="user"))
+        else:
+            d = claude / sub
+            d.mkdir(parents=True, exist_ok=True)
+            f = d / f"{name}.md"
+            f.write_text("body")
+            items.append(axt.CommandInfo(name=name, source="user",
+                                         source_path=str(f),
+                                         description="", content="body"))
+    s.ext_cache[sub] = items
+    s.ext_selected[sub] = 0
+    return s, vault, items
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault import unsupported on Windows")
+def test_act_import_bulk_marked_imports_every_marked_skill(tmp_path, monkeypatch):
+    """Space marks present → `i` imports the whole marked set (not just the
+    focused row), reports a tally, and consumes the marks."""
+    s, vault, items = _mk_import_state(tmp_path, monkeypatch, ["a", "b", "c"])
+    s.ext_marked["skills"] = {axt._item_key("skills", items[1]),
+                              axt._item_key("skills", items[2])}
+    msg = axt._act_import_to_vault(s, None, "skills", ord("i"))
+    assert msg == "Imported 2/2 marked to vault"
+    assert (vault / "skills" / "b" / "SKILL.md").exists()
+    assert (vault / "skills" / "c" / "SKILL.md").exists()
+    assert not (vault / "skills" / "a").exists()   # focused row untouched
+    assert not s.ext_marked["skills"]              # marks consumed
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault import unsupported on Windows")
+def test_act_import_bulk_marked_works_on_commands(tmp_path, monkeypatch):
+    """The bulk path keys off _item_key, so commands (source_path) work too."""
+    s, vault, items = _mk_import_state(tmp_path, monkeypatch, ["one", "two"],
+                                       sub="commands")
+    s.ext_marked["commands"] = {axt._item_key("commands", i) for i in items}
+    msg = axt._act_import_to_vault(s, None, "commands", ord("i"))
+    assert msg == "Imported 2/2 marked to vault"
+    assert (vault / "commands" / "one.md").exists()
+    assert (vault / "commands" / "two.md").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault import unsupported on Windows")
+def test_act_import_bulk_marked_skips_unimportable_and_notes_it(tmp_path, monkeypatch):
+    """A plugin-sourced mark can't be imported; the rest still are and the
+    status line carries the first skip reason."""
+    s, vault, items = _mk_import_state(tmp_path, monkeypatch, ["ok"])
+    plug = axt.SkillInfo(name="p:sk", path="/plug/skills/sk", is_symlink=False,
+                         source="plugin", plugin="p")
+    s.ext_cache["skills"] = items + [plug]
+    s.ext_marked["skills"] = {axt._item_key("skills", items[0]),
+                              axt._item_key("skills", plug)}
+    msg = axt._act_import_to_vault(s, None, "skills", ord("i"))
+    assert msg.startswith("Imported 1/2 marked to vault — ")
+    assert "not importable" in msg
+    assert (vault / "skills" / "ok" / "SKILL.md").exists()
+    assert not s.ext_marked["skills"]
+
+
+def test_act_import_bulk_marked_all_skipped_keeps_marks(tmp_path, monkeypatch):
+    """Nothing imported → marks stay for a retry, message names the reason."""
+    s, vault, items = _mk_import_state(tmp_path, monkeypatch, [])
+    plug = axt.SkillInfo(name="p:sk", path="/plug/skills/sk", is_symlink=False,
+                         source="plugin", plugin="p")
+    s.ext_cache["skills"] = [plug]
+    s.ext_marked["skills"] = {axt._item_key("skills", plug)}
+    msg = axt._act_import_to_vault(s, None, "skills", ord("i"))
+    assert msg is not None and msg.startswith("No marked item imported — ")
+    assert "not importable" in msg
+    assert s.ext_marked["skills"]                  # kept for retry
+
+
+def test_act_import_bulk_marked_stale_marks_ask_for_refresh(tmp_path, monkeypatch):
+    s, _vault, _items = _mk_import_state(tmp_path, monkeypatch, ["a"])
+    s.ext_marked["skills"] = {"/gone/skills/ghost"}
+    msg = axt._act_import_to_vault(s, None, "skills", ord("i"))
+    assert msg == "No marked item found (press r to refresh)"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault import unsupported on Windows")
+def test_act_import_bulk_marked_confirm_cancel_imports_nothing(tmp_path, monkeypatch):
+    """With a curses screen the bulk import confirms first; declining is a no-op."""
+    s, vault, items = _mk_import_state(tmp_path, monkeypatch, ["a"])
+    s.ext_marked["skills"] = {axt._item_key("skills", items[0])}
+    monkeypatch.setattr("axt.tui.tabs.confirm_modal", lambda *a, **kw: False)
+    msg = axt._act_import_to_vault(s, object(), "skills", ord("i"))
+    assert msg == "Cancelled"
+    assert not (vault / "skills" / "a").exists()
+    assert s.ext_marked["skills"]                  # marks survive a cancel
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault import unsupported on Windows")
+def test_act_import_bulk_marked_invalidates_vault_cache_once(tmp_path, monkeypatch):
+    """The Vault sub-tab cache is dropped after a bulk import, and the ext
+    cache is refreshed once for the batch, not once per item."""
+    s, _vault, items = _mk_import_state(tmp_path, monkeypatch, ["a", "b"])
+    s.vault_items = [object()]
+    s.refresh_token = 7
+    s.ext_marked["skills"] = {axt._item_key("skills", i) for i in items}
+    calls = []
+    monkeypatch.setattr("axt.tui.tabs._refresh_ext",
+                        lambda state, sub: calls.append(sub))
+    axt._act_import_to_vault(s, None, "skills", ord("i"))
+    assert calls == ["skills"]
+    assert s.vault_items == []
+    assert s.refresh_token == 0
+
+
+def test_subtab_bulk_keys_names_only_mark_consuming_bindings():
+    """The status chip's key list is generated from SUBTAB_KEYMAP: `i` shows
+    up exactly on the sub-tabs that have an import binding, and Market's
+    p/g (a global-only note, not a bulk action) never does."""
+    assert axt.subtab_bulk_keys("skills") == "p/g/i/u"
+    assert axt.subtab_bulk_keys("commands") == "p/g/i/u"
+    assert axt.subtab_bulk_keys("agents") == "p/g/i/u"
+    assert axt.subtab_bulk_keys("plugins") == "p/g/u"
+    assert axt.subtab_bulk_keys("hooks") == "p/g"
+    assert axt.subtab_bulk_keys("market") == "u"
+    assert axt.subtab_bulk_keys("mcp") == "p"   # its `g` binding is hint-less
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need elevation")
 def test_skills_subtab_merges_vault_only_items(tmp_path, monkeypatch):
     """The Skills sub-tab loader appends vault-stored skills nothing links to

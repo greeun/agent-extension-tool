@@ -4332,21 +4332,20 @@ def _act_skill_unlink(state: TuiState, stdscr: Any, sub: str, key: int) -> Optio
 _SUB_ITEM_TYPE: dict[str, str] = dict(LINKABLE_TYPES)
 
 
-def _act_import_to_vault(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
-    """i: move the selected item into vault storage, leaving a symlink behind."""
-    item = _selected_item(state, sub)
-    if item is None:
-        return None
+def _import_one(state: TuiState, sub: str, item: Any) -> tuple[bool, str]:
+    """Move one item into vault storage, leaving a symlink behind.
+    Returns (imported, message). Caches are NOT refreshed here — the caller
+    does that once, so a bulk run pays for one refresh instead of N."""
     if item.source == "plugin":
-        return "Plugin-bundled items stay with their plugin (not importable)"
+        return False, "Plugin-bundled items stay with their plugin (not importable)"
     if _vault_cell(sub, item) == "✓":
-        return "Already in vault"
+        return False, "Already in vault"
     disk = Path(_item_disk_path(sub, item))
     vitem = VaultItem(name=disk.name, type=_SUB_ITEM_TYPE[sub], path=str(disk), description="")
     try:
         import_to_vault(PATHS.claude_dir, PATHS.vault, vitem)
     except (OSError, ValueError, FileExistsError) as exc:
-        return f"Import failed: {exc}"
+        return False, f"Import failed: {exc}"
     if item.source == "project" and (Path.cwd() / ".claude") in disk.parents:
         # import_to_vault left a symlink at the project path; record it in
         # .axt-profile.json so sync_project won't unlink it as an orphan.
@@ -4355,12 +4354,60 @@ def _act_import_to_vault(state: TuiState, stdscr: Any, sub: str, key: int) -> Op
         profile = read_profile(Path.cwd()) or empty_profile()
         profile = profile.with_added(sub, disk.name)
         write_profile(Path.cwd(), profile)
+    return True, f"Imported {disk.name!r} to vault"
+
+
+def _settle_after_import(state: TuiState, sub: str) -> None:
+    """Post-import cache invalidation, shared by the single and bulk paths."""
     _refresh_ext(state, sub)
-    # The item now lives in the vault, so the Vault sub-tab's cache is stale.
-    # Without this the imported item is invisible there until a manual `r`.
+    # The item(s) now live in the vault, so the Vault sub-tab's cache is stale.
+    # Without this an imported item is invisible there until a manual `r`.
     state.vault_items = []
     state.refresh_token = 0
-    return f"Imported {disk.name!r} to vault"
+
+
+def _act_import_marked(state: TuiState, stdscr: Any, sub: str,
+                       marks: set[str]) -> Optional[str]:
+    """`i` with Space marks: import every marked item (confirmed), mirroring
+    the p/g and u bulk paths. One item's failure doesn't abort the rest;
+    the status line carries the tally."""
+    items = [i for i in state.ext_cache.get(sub, []) if _item_key(sub, i) in marks]
+    if not items:
+        return "No marked item found (press r to refresh)"
+    if stdscr is not None and not confirm_modal(
+        stdscr,
+        f"Import {len(items)} marked item(s) into vault? (move + leave symlink)",
+        title="Confirm bulk import",
+    ):
+        return "Cancelled"
+    imported, skipped = 0, []
+    for item in items:
+        ok, msg = _import_one(state, sub, item)
+        if ok:
+            imported += 1
+        else:
+            skipped.append(msg)
+    if not imported:
+        return f"No marked item imported — {skipped[0]}"
+    marks.clear()
+    _settle_after_import(state, sub)
+    note = f" — {skipped[0]}" if skipped else ""
+    return f"Imported {imported}/{len(items)} marked to vault{note}"
+
+
+def _act_import_to_vault(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
+    """i: move the selected item into vault storage, leaving a symlink behind.
+    Space marks present → the whole marked set at once (confirmed)."""
+    marks = (state.ext_marked.get(sub) if state is not None else None) or set()
+    if marks:
+        return _act_import_marked(state, stdscr, sub, marks)
+    item = _selected_item(state, sub)
+    if item is None:
+        return None
+    ok, msg = _import_one(state, sub, item)
+    if ok:
+        _settle_after_import(state, sub)
+    return msg
 
 
 def _act_market_add(state: TuiState, stdscr: Any, sub: str, key: int) -> Optional[str]:
@@ -4634,7 +4681,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
                       "x=unlink (confirm)",
                       True, _act_skill_unlink),
         SubtabBinding((ord("i"),), "i:import",
-                      "i=import into vault (move + leave symlink)",
+                      "i=import into vault (move + leave symlink; Space marks → bulk)",
                       False, _act_import_to_vault),
         SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply; Space marks → bulk)", True, _act_update),
     ),
@@ -4673,7 +4720,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
                       "e=open source file in $EDITOR",
                       True, _act_edit_source),
         SubtabBinding((ord("i"),), "i:import",
-                      "i=import into vault (move + leave symlink)",
+                      "i=import into vault (move + leave symlink; Space marks → bulk)",
                       False, _act_import_to_vault),
         SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply; Space marks → bulk)", True, _act_update),
     ),
@@ -4688,7 +4735,7 @@ SUBTAB_KEYMAP: dict[str, tuple[SubtabBinding, ...]] = {
                       "e=open source file in $EDITOR",
                       True, _act_edit_source),
         SubtabBinding((ord("i"),), "i:import",
-                      "i=import into vault (move + leave symlink)",
+                      "i=import into vault (move + leave symlink; Space marks → bulk)",
                       False, _act_import_to_vault),
         SubtabBinding((ord("u"),), "u:update", "u=update selected (check + apply; Space marks → bulk)", True, _act_update),
     ),
@@ -4703,6 +4750,22 @@ def subtab_shortcuts(sub: str) -> str:
     if sub in _SUBTABS_WITH_DETAIL:
         parts.append("Tab:detail")
     return "  ".join(parts)
+
+
+# Handlers that act on the whole Space-marked set when marks exist, instead of
+# the focused row. Used to name the live bulk keys in the "N marked(...)" chip.
+_BULK_MARK_HANDLERS = (_act_scope_toggle, _act_update, _act_import_to_vault)
+
+
+def subtab_bulk_keys(sub: str) -> str:
+    """`p/g/u/i` — the mark-consuming keys of a sub-tab, generated from
+    SUBTAB_KEYMAP so the status chip can't drift from the live bindings.
+    Hint-less (hidden) bindings are skipped, as in subtab_shortcuts()."""
+    keys: list[str] = []
+    for b in SUBTAB_KEYMAP.get(sub, ()):
+        if b.handler in _BULK_MARK_HANDLERS and b.hint:
+            keys.extend(chr(k) for k in b.keys)
+    return "/".join(keys)
 
 
 _SUBTAB_HELP_LABELS: tuple[tuple[str, str], ...] = (

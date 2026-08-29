@@ -167,7 +167,7 @@ G           skill 전용 — GLOBAL + ~/.agents/skills 미러 동시 토글 (즉
 
 ### 2.6 키바인딩 (서브탭별 고유)
 - **공통(모든 서브탭)**: `p` = PROJECT 스코프 토글, `g` = GLOBAL 스코프 토글 (아래 서브탭별 의미 참조)
-- **공통(모든 서브탭)**: `Space` = 포커스 항목 마크/해제 (좌측 체크박스 ■/□) 후 포커스가 다음 행으로 이동 (마지막 행에서 고정 — 연속 Space로 연속 마킹). 마크가 있으면 `p`/`g`가 마크된 전체 항목에 일괄 적용, `u`가 마크된 전체 항목을 일괄 업데이트 (둘 다 확인 모달; `u`는 항목별 실패가 나머지를 중단시키지 않고 상태바에 `N updated, N up to date, N failed` 집계 표시), `Esc`가 마크 해제 → 검색 해제 → 포커스 상승 순으로 동작
+- **공통(모든 서브탭)**: `Space` = 포커스 항목 마크/해제 (좌측 체크박스 ■/□) 후 포커스가 다음 행으로 이동 (마지막 행에서 고정 — 연속 Space로 연속 마킹). 마크가 있으면 `p`/`g`가 마크된 전체 항목에 일괄 적용, `u`가 마크된 전체 항목을 일괄 업데이트, `i`(Skills/Commands/Agents)가 마크된 전체 항목을 vault로 일괄 import (모두 확인 모달; `u`는 항목별 실패가 나머지를 중단시키지 않고 상태바에 `N updated, N up to date, N failed` 집계 표시, `i`는 `Imported N/M marked to vault` 집계 + 건너뛴 첫 사유 표시, 하나도 import되지 않으면 재시도용으로 마크 유지), `Esc`가 마크 해제 → 검색 해제 → 포커스 상승 순으로 동작. 상태바 `N marked(...)` 칩은 해당 서브탭이 실제로 가진 일괄 키만 나열한다 (예: Skills `p/g/i/u`, Hooks `p/g`, Market `u`)
 - **공통(모든 서브탭)**: `o` 포커스된 항목의 저장 경로에서 새 터미널 열기 (cst 방식 — TERM_PROGRAM 매칭, cmux 안에서는 workspace/window 선택 모달)
 - **공통(모든 서브탭)**: `/` 검색 필터 (입력 중 Esc 취소, 적용 후 Esc 해제 — 서브탭별로 독립 유지). Vault와 동일한 `/search:` 입력 밴드가 필터바 위에 표시됨 (입력 중 `_` 커서, 적용 후 커서 없이 유지)
 - **공통(모든 서브탭)**: Vault 타이틀 행과 동일한 **필터바**가 항상 표시됨 — `<라벨> (건수)` + `sort=<key>` + 검색 적용 시 `(필터/전체 items)` `search='q'` + 마크 시 `marked=N`. 배치는 전 탭 공통: `구분선 → /search: 밴드(검색 시) → 필터바 → 테이블`
@@ -180,7 +180,7 @@ G           skill 전용 — GLOBAL + ~/.agents/skills 미러 동시 토글 (즉
   - **Hooks**: Event→Ver→Proj→Glob→Upd→Type→Source→Detail
   - **Market**: Name→Upd→Kind→Loc→Updated
   - 해당 서브탭에서 값이 항상 동일한 컬럼(MCP/Hooks/Plugins의 `Vault` 등)은 순서가 바뀔 수 없으므로 순환에서 제외
-- **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `s` = 정렬 컬럼 이동, `S` = 정렬 방향 토글, `y` = sync 계열(Vault의 project sync, Market의 marketplace sync), `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열, `i` = vault로 import(원본 이동 + 원위치 symlink; Skills/Commands/Agents), `u` = 선택 항목 업데이트(check+apply) — Vault 포함 모든 서브탭 동일 (Vault의 `U`는 unlink-all)
+- **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `s` = 정렬 컬럼 이동, `S` = 정렬 방향 토글, `y` = sync 계열(Vault의 project sync, Market의 marketplace sync), `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열, `i` = vault로 import(원본 이동 + 원위치 symlink; Skills/Commands/Agents, 마크 시 일괄), `u` = 선택 항목 업데이트(check+apply) — Vault 포함 모든 서브탭 동일 (Vault의 `U`는 unlink-all)
 - **Plugins**: `p`/`g` = project/global settings의 `enabledPlugins` 토글, `x` uninstall (확인 모달), `u` update selected (check + apply)
 - **MCP**: `p` = On 토글 (현재 프로젝트 `disabledMcpServers`, built-in은 `enabledMcpServers` opt-in; global 활성 스코프 없음 — `g`는 안내 메시지). Proj/Glob은 등록 위치 표시로 읽기 전용 — `p`/`g`로 등록을 옮길 수 없음
 - **Hooks**: `p`/`g` 토글 (설정 파일 내 `hooks`↔`disabledHooks` 이동 — user 파일 훅은 `g`, project/local 파일 훅은 `p`, plugin 훅은 읽기 전용), `v` preview (dry-run)
