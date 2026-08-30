@@ -14,7 +14,7 @@ Claude Code exclusively. Removed surfaces:
 - Paths: `CODEX_HOME`, `GEMINI_CLI_HOME` env vars no longer honored.
 - Config: `AxtConfig.plans` only stores Claude plan now.
 
-If you still need the multi-platform behavior, check out the `v0.2.0` git tag or use the frozen `legacy-ts/` implementation.
+If you still need the multi-platform behavior, check out the `v0.2.0` git tag.
 
 ---
 
@@ -213,15 +213,16 @@ The new version computes display width via `unicodedata.east_asian_width`, but t
 
 ## 6. (Reference) Running the legacy TypeScript build
 
-The frozen v0.1.x line is preserved under `legacy-ts/` in the new repo. If you ever need the old behavior, it still builds and runs from inside that directory (the global `axt` command is now v0.2.0, so invoke the legacy one explicitly to avoid confusion):
+The v0.1.x line is no longer in the working tree. It stays reachable through git history — check out a tag that still carries it (`v0.2.0` through `v1.19.0`) and build from the `legacy-ts/` directory that tag contains:
 
 ```bash
+git checkout v0.2.0
 cd legacy-ts
 bun install
 bun run dev          # or: bun run bin/axt.ts <subcommand>
 ```
 
-`legacy-ts/` will not receive further updates. Bug reports and feature requests target v1.0.0 (Claude-only). The v0.2.x multi-platform line is unmaintained.
+That line will not receive further updates. Bug reports and feature requests target v1.0.0 (Claude-only). The v0.2.x multi-platform line is unmaintained.
 
 ---
 

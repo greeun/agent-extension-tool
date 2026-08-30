@@ -12,8 +12,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Primary implementation**: Python + curses, packaged as `axt/`. Pure stdlib runtime.
 
-**Frozen legacy**: TypeScript + Ink implementation lives under `legacy-ts/` (v0.1.x line). Read-only — no new development.
-
 ## Commands
 
 ```bash
@@ -68,7 +66,6 @@ tests/                  → pytest suite, one test_*.py per domain (paths, json_
                           settings, vault, marketplace, plugin, skill, mcp,
                           hooks, commands_agents, usage_claude, pricing,
                           context, project_usage, tui, cli)
-legacy-ts/              → Frozen TypeScript+Ink implementation (v0.1.x, no new work)
 ```
 
 ### Key design patterns
@@ -149,4 +146,3 @@ fast-forwarded from `develop` at release time.
 - Section header comments (`# ── Section N:`) are stable navigation anchors — keep them.
 - The package mirror in `axt/__init__.py` re-exports submodule globals onto `axt`, so tests can keep using `axt.X` / `monkeypatch.setattr("axt.X", ...)` without caring which submodule owns `X`. When adding a new public name, no manual re-export is needed; mirror happens automatically.
 - Tests live in `tests/` and import `axt` as a package. Run `pytest` from the repo root.
-- Do not modify `legacy-ts/`. It is frozen as historical reference and a fallback.

@@ -6,7 +6,7 @@ A unified CLI & TUI dashboard for managing extensions, plugins, skills, MCP serv
 
 > **v1.0.0: Claude-only.** The earlier multi-platform line (Codex / Gemini CLI / Cursor) is retained as v0.2.x; v1 drops that surface to focus on Claude depth. See [MIGRATION.md](./MIGRATION.md) (English) or [MIGRATION.ko.md](./MIGRATION.ko.md) (Korean) for upgrade notes.
 
-Python + curses package, pure stdlib runtime. The older TypeScript+Ink line (v0.1.x) is preserved frozen under [`legacy-ts/`](./legacy-ts/).
+Python + curses package, pure stdlib runtime. The older TypeScript+Ink line (v0.1.x) lives in git history only — see the `v0.2.0` tag.
 
 ## Features
 
@@ -178,7 +178,6 @@ DESIGN.md           rewrite rationale + Phase-C package split
 FEATURES.md         feature inventory
 SKILL.md            Claude Code skill manifest
 MIGRATION.md        Upgrade notes: v0.1.x→v0.2.0 and v0.2.x→v1.0.0 (EN; KO in MIGRATION.ko.md)
-legacy-ts/          frozen TypeScript+Ink implementation (v0.1.x line)
 ```
 
 ## License

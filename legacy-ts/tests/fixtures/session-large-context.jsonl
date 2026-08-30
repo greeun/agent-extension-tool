@@ -1,2 +1,0 @@
-{"type":"user","message":{"role":"user","content":"big session"},"sessionId":"sess-large","timestamp":"2026-05-11T03:00:00.000Z"}
-{"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":200000,"output_tokens":30000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[{"type":"tool_use","name":"Skill","input":{"skill":"superpowers:subagent-driven-development"}}]},"sessionId":"sess-large","timestamp":"2026-05-11T03:01:00.000Z"}

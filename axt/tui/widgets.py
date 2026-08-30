@@ -33,8 +33,8 @@ __version__ = "1.19.0"
 #   was caused by Ink/Yoga's flex-layout writing rows of *different* trailing-
 #   space widths depending on whether they had a background-affecting style.
 #   Curses sidesteps the whole class of bugs by writing every cell explicitly
-#   via addnstr(y, x, text, width, attr) — the way cst (claude-session-tracker)
-#   does and never hits the same issue.
+#   via addnstr(y, x, text, width, attr), so the trailing-space width never
+#   varies between rows and the issue cannot arise.
 
 
 

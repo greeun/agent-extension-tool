@@ -2,9 +2,9 @@
 
 ## 배경 (Why)
 
-axt는 본래 TypeScript + Ink(React-for-CLI)로 작성되었다. Ink의 flexbox 레이아웃 모델은 character-width 측정에 의존하며, WezTerm + cmux 같은 환경에서 selected 행의 inverse 렌더링이 시각적으로 사라지는 버그가 재현된다. 동일 도메인 도구인 cst(claude-session-tracker)는 Python + curses로 작성되어 동일 환경에서 정상 동작한다.
+axt는 본래 TypeScript + Ink(React-for-CLI)로 작성되었다. Ink의 flexbox 레이아웃 모델은 character-width 측정에 의존하며, WezTerm + cmux 같은 환경에서 selected 행의 inverse 렌더링이 시각적으로 사라지는 버그가 재현된다. 반면 Python + curses 로 셀 단위 렌더링하는 구현은 동일 환경에서 정상 동작한다.
 
-여러 Ink 우회 시도(구조 통일, AMBIGUOUS_SAFETY, color 기반 selected)가 모두 실패. 근본 해결을 위해 cst와 동일한 렌더 모델(curses 절대 좌표 cell-by-cell)로 v1.0.0에서 전체 재작성했다.
+여러 Ink 우회 시도(구조 통일, AMBIGUOUS_SAFETY, color 기반 selected)가 모두 실패. 근본 해결을 위해 curses 절대 좌표 cell-by-cell 렌더 모델로 v1.0.0에서 전체 재작성했다.
 
 > **v1.0.0 — Claude 전용 정리**: Codex / Gemini / Cursor 지원을 제거하고 Claude 한정으로 집중. `UnifiedUsageEntry` 어댑터 구조는 유지하되 `PLATFORMS = ("claude",)`로 좁힌다. 멀티 플랫폼 추상화를 다시 도입할 계획은 없다.
 

@@ -9,10 +9,6 @@ __pycache__/
 htmlcov/
 build/
 
-# Node / TypeScript (legacy-ts/)
-node_modules
-bun.lock
-
 # Common
 dist/
 .DS_Store
@@ -22,12 +18,6 @@ dist/
 coverage/
 .axt-profile.json
 .axt-profile.json.bak
-
-# Other workdirs
-wp-blog-post/
-wp-blog-post-ccx-backup/
-linkedin-post/
-docs/superpowers/
 
 # superpowers (auto-installed; do not track)
 .superpowers/

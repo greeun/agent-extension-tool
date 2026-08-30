@@ -6,7 +6,7 @@
 
 > **v1.0.0부터 Claude 전용.** 이전 멀티플랫폼 라인(Codex / Gemini CLI / Cursor)은 v0.2.x로 유지되며, v1은 Claude 깊이에 집중하기 위해 해당 영역을 제거했습니다. 업그레이드 안내는 [MIGRATION.ko.md](./MIGRATION.ko.md)(한글) 또는 [MIGRATION.md](./MIGRATION.md)(영어) 참고.
 
-Python + curses 패키지, 순수 stdlib 런타임. 구버전 TypeScript+Ink 라인(v0.1.x)은 [`legacy-ts/`](./legacy-ts/)에 동결 보존되어 있습니다.
+Python + curses 패키지, 순수 stdlib 런타임. 구버전 TypeScript+Ink 라인(v0.1.x)은 git 이력에만 남아 있습니다 — `v0.2.0` 태그 참고.
 
 ## 기능
 
@@ -166,7 +166,6 @@ DESIGN.md           재작성 배경 + Phase-C 패키지 분할
 FEATURES.md         기능 목록
 SKILL.md            Claude Code 스킬 매니페스트
 MIGRATION.md        업그레이드 안내: v0.1.x→v0.2.0, v0.2.x→v1.0.0 (영문; 한글은 MIGRATION.ko.md)
-legacy-ts/          동결된 TypeScript+Ink 구현 (v0.1.x 라인)
 ```
 
 ## 라이선스

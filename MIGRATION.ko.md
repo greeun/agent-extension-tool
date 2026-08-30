@@ -14,8 +14,7 @@ axt v1.0.0부터 Codex, Gemini CLI, Cursor 지원이 제거되었습니다. 이�
 - 경로: `CODEX_HOME`, `GEMINI_CLI_HOME` 환경변수 더 이상 인식되지 않음.
 - 설정: `AxtConfig.plans`는 이제 Claude만 저장.
 
-멀티 플랫폼 동작이 필요하면 `v0.2.0` git 태그를 체크아웃하거나 frozen된 `legacy-ts/`
-구현을 사용하세요.
+멀티 플랫폼 동작이 필요하면 `v0.2.0` git 태그를 체크아웃하세요.
 
 ---
 
@@ -214,15 +213,16 @@ pip install -e ".[dev,windows]"
 
 ## 6. (참고) 정말 옛 TS 버전을 다시 돌려야 한다면
 
-새 저장소의 `legacy-ts/` 디렉토리에 v0.1.x가 freeze된 채로 남아 있습니다. 이전 동작이 필요하면 그 디렉토리에서 그대로 실행 가능합니다 (전역 `axt`는 새 v0.2.0이므로 충돌하지 않도록 직접 호출):
+v0.1.x 라인은 더 이상 워킹트리에 없습니다. git 이력으로 접근합니다 — 해당 디렉토리를 아직 포함한 태그(`v0.2.0` ~ `v1.19.0`)를 체크아웃하면 그 태그의 `legacy-ts/` 에서 그대로 빌드·실행할 수 있습니다:
 
 ```bash
+git checkout v0.2.0
 cd legacy-ts
 bun install
 bun run dev          # 또는: bun run bin/axt.ts <subcommand>
 ```
 
-`legacy-ts/`는 더 이상 갱신되지 않습니다. 이슈/기능 요청은 v1.0.0 (Claude 전용) 기준으로 받습니다. v0.2.x 멀티 플랫폼 라인은 유지보수되지 않습니다.
+해당 라인은 더 이상 갱신되지 않습니다. 이슈/기능 요청은 v1.0.0 (Claude 전용) 기준으로 받습니다. v0.2.x 멀티 플랫폼 라인은 유지보수되지 않습니다.
 
 ---
 
