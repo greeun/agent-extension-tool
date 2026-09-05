@@ -66,10 +66,10 @@ TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 
 | 서브명령 | 인자 | 설명 |
 |---|---|---|
 | `init` | — | `.axt-profile.json` 빈 프로필 생성 |
-| `add <type> <names...>` | skill/command/agent + 이름들 | vault → project symlink |
-| `remove <type> <name>` | 타입 + 이름 | symlink 제거 |
-| `sync` | — | profile ↔ symlink 동기화 |
-| `status` | — | profile vs 실제 symlink 비교 |
+| `add <type> <names...>` | skill/command/agent + 이름들 + `--mirror-agents` `--force-agents` | vault → project symlink. `--mirror-agents`(skill 한정)로 `<project>/.agents/skills/`에도 vault를 직접 가리키는 symlink 병행 생성 + 프로필 `agentsMirror`에 기록 — `.skill-lock.json`이 있으면 기본 거부(프로필 미기록), `--force-agents`로 강제. 프로젝트 `.agents`가 `~/.agents`이면(HOME에서 실행) 거부 |
+| `remove <type> <name>` | 타입 + 이름 + `--mirror-agents` | symlink 제거. `--mirror-agents`로 `<project>/.agents/skills/`의 대응 symlink(이 vault 항목을 가리킬 때만)와 `agentsMirror` 항목도 제거 |
+| `sync` | — | profile ↔ symlink 동기화. `agentsMirror`에 선언된 skill은 `<project>/.agents/skills/`에 생성하고, 선언되지 않았는데 vault를 가리키는 symlink는 제거(리포트 태그 `skill:<name> (.agents)`) — `.skill-lock.json` 트리는 강제하지 않고 오류로 리포트 |
+| `status` | — | profile vs 실제 symlink 비교. `agentsMirror` 항목은 `(.agents mirror)` 표기로 함께 표시 |
 
 ### 1.8 `axt skill` (3)
 | 서브명령 | 인자 | 설명 |
@@ -162,6 +162,9 @@ u           포커스 항목 콘텐츠 업데이트 (check+apply): 저장 디렉
 G           skill 전용 — GLOBAL + ~/.agents/skills 미러 동시 토글 (즉시 실행, 확인 모달; pending
             `g`와 별개). 둘 다 링크됨 → 둘 다 해제, 아니면 없는 쪽을 링크. `.skill-lock.json`이
             있는 트리는 자동 건너뜀(강제는 CLI `--force-agents` 전용)
+P           skill 전용 — PROJECT `.claude/skills` + `.agents/skills` 미러 동시 토글 (`G`의 프로젝트
+            판; 즉시 실행, 확인 모달; pending `p`와 별개). 양쪽 모두 `.axt-profile.json`
+            (`skills` / `agentsMirror`)에 기록되어 `y`(sync)가 유지·복구. 잠금 트리 건너뜀은 `G`와 동일
 ```
 - **깨진 심볼릭 링크 리포트** (`m`): 대상이 사라진 심볼릭 링크는 이동하지 않고 `broken` 항목으로만 리포트(삭제하지 않음). 브로큰 항목이 있으면 상태 메시지가 `Warning: N broken symlink(s) not migrated — …`를 표시(성공 처리가 아닌 info로 분류, 초록 표시 미적용). Vault가 비어 있고 `~/.claude`에 브로큰 심링크가 남아 있으면 Vault 빈 화면에 굵은 빨간 경고 줄이 추가로 표시됨
 
@@ -248,6 +251,7 @@ Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) 
 - `link_to_project`, `unlink_from_project`, `sync_project`
 - `link_to_global`, `unlink_from_global`
 - `link_to_agents`, `unlink_from_agents`, `skill_lock_present` — skill을 `~/.agents/skills/`에도 미러(vault 원본을 직접 가리킴). `.skill-lock.json`(서드파티 설치기 소유 트리 표시) 존재 시 기본 거부, `force=True`로 우회
+- `link_to_project_agents`, `unlink_from_project_agents`, `project_agents_dir` — 같은 미러를 `<project>/.agents/skills/`에 생성/제거하고 `.axt-profile.json`의 `agentsMirror`에 기록/삭제. `sync_project`가 이 선언을 기준으로 프로젝트 `.agents/skills/`를 조정. 프로젝트 `.agents`가 `~/.agents`와 같으면(HOME) 전역 미러와 충돌하므로 거부/건너뜀
 - `import_to_vault`, `migrate_to_vault`
 - **Windows 미지원**: symlink 생성 fail-safe 메시지
 

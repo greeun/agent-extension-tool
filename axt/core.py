@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.19.0"
+__version__ = "1.20.0"
 
 T = TypeVar("T")
 
@@ -1821,6 +1821,7 @@ class VaultItem:
     is_linked: bool = False
     is_global_linked: bool = False
     is_agents_linked: bool = False  # skill mirrored into ~/.agents/skills (points at this vault item)
+    is_project_agents_linked: bool = False  # skill mirrored into <project>/.agents/skills (points at this vault item)
     in_vault: Optional[bool] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -1833,16 +1834,22 @@ class AxtProfile:
     commands: tuple[str, ...] = ()
     agents: tuple[str, ...] = ()
     plugins: tuple[str, ...] = ()
+    # Skills also mirrored into `<project>/.agents/skills/` for cross-agent
+    # tools (see the `.agents/skills` mirror section). Serialized under the
+    # `agentsMirror` key; profiles written before it existed read as `()`.
+    agents_mirror: tuple[str, ...] = ()
 
     def as_json(self) -> dict[str, Any]:
-        return {
-            "extensions": {
-                "skills": list(self.skills),
-                "commands": list(self.commands),
-                "agents": list(self.agents),
-                "plugins": list(self.plugins),
-            }
+        ext: dict[str, Any] = {
+            "skills": list(self.skills),
+            "commands": list(self.commands),
+            "agents": list(self.agents),
+            "plugins": list(self.plugins),
         }
+        # Only emitted when used, so an untouched profile keeps its old shape.
+        if self.agents_mirror:
+            ext["agentsMirror"] = list(self.agents_mirror)
+        return {"extensions": ext}
 
     @classmethod
     def empty(cls) -> "AxtProfile":
@@ -1858,7 +1865,8 @@ class AxtProfile:
         def _list(key: str) -> tuple[str, ...]:
             v = ext.get(key)
             return tuple(str(x) for x in v) if isinstance(v, list) else ()
-        return cls(skills=_list("skills"), commands=_list("commands"), agents=_list("agents"), plugins=_list("plugins"))
+        return cls(skills=_list("skills"), commands=_list("commands"), agents=_list("agents"),
+                   plugins=_list("plugins"), agents_mirror=_list("agentsMirror"))
 
     def with_added(self, key: str, name: str) -> "AxtProfile":
         current = getattr(self, key)
@@ -1875,7 +1883,8 @@ class AxtProfile:
     def _replace(self, **kw) -> "AxtProfile":
         # dataclass(frozen=True) without `eq` we can't use dataclasses.replace
         # on a tuple field cleanly, but we can construct fresh.
-        merged = {"skills": self.skills, "commands": self.commands, "agents": self.agents, "plugins": self.plugins}
+        merged = {"skills": self.skills, "commands": self.commands, "agents": self.agents,
+                  "plugins": self.plugins, "agents_mirror": self.agents_mirror}
         merged.update(kw)
         return AxtProfile(**merged)
 
@@ -2411,6 +2420,65 @@ def unlink_from_agents(
     return True, f"Removed .agents/skills/{item.name}"
 
 
+def project_agents_dir(project_dir: os.PathLike[str] | str) -> Path:
+    """The project-level cross-agent tree: `<project>/.agents`."""
+    return Path(project_dir) / ".agents"
+
+
+def _project_agents_is_home(project_dir: os.PathLike[str] | str) -> bool:
+    """True when the project's `.agents` IS `~/.agents` (axt run from HOME).
+    Managing that tree as a *project* mirror would fight the global mirror
+    (`G` / `vault link-global --mirror-agents`), so callers skip it."""
+    try:
+        return project_agents_dir(project_dir).resolve() == (HOME / ".agents").resolve()
+    except OSError:
+        return False
+
+
+def link_to_project_agents(
+    project_dir: os.PathLike[str] | str,
+    item: VaultItem,
+    *,
+    force: bool = False,
+) -> tuple[bool, str]:
+    """Mirror a vault skill into `<project>/.agents/skills/<name>` and record
+    it under `agentsMirror` in `.axt-profile.json` so `sync_project` keeps it.
+
+    Same guards as `link_to_agents` (skills only, `.skill-lock.json` unless
+    ``force``); additionally refuses when the project `.agents` is `~/.agents`.
+    The profile entry is written only after the symlink exists, so a guarded
+    skip leaves the profile untouched. Returns ``(linked, message)``."""
+    if item.type != "skill":
+        return False, f"Only skills mirror to .agents/skills (got {item.type})"
+    if _project_agents_is_home(project_dir):
+        return False, "Project .agents is ~/.agents — use the global mirror (G / link-global --mirror-agents)"
+    ok, msg = link_to_agents(project_agents_dir(project_dir), item, force=force)
+    if not ok:
+        return ok, msg
+    profile = read_profile(project_dir) or empty_profile()
+    write_profile(project_dir, profile.with_added("agents_mirror", item.name))
+    return True, f"Mirrored {item.name} to .agents/skills (project)"
+
+
+def unlink_from_project_agents(
+    project_dir: os.PathLike[str] | str,
+    item: VaultItem,
+) -> tuple[bool, str]:
+    """Remove the `<project>/.agents/skills/<name>` mirror and drop its
+    `agentsMirror` profile entry.
+
+    The profile entry goes regardless of the link outcome — un-declaring is
+    the user's intent — while the symlink itself follows `unlink_from_agents`
+    (only a link pointing at this vault item is removed). Returns
+    ``(removed, message)`` for the symlink."""
+    if _project_agents_is_home(project_dir):
+        return False, "Project .agents is ~/.agents — use the global mirror (G / unlink-global --mirror-agents)"
+    profile = read_profile(project_dir)
+    if profile is not None and item.name in profile.agents_mirror:
+        write_profile(project_dir, profile.with_removed("agents_mirror", item.name))
+    return unlink_from_agents(project_agents_dir(project_dir), item)
+
+
 # ─── Sync / Migrate / Import ─────────────────────────────────────────────────
 
 
@@ -2466,7 +2534,74 @@ def sync_project(project_dir: os.PathLike[str] | str, vault_dir: os.PathLike[str
                 except OSError:
                     pass
 
+    _sync_project_agents_mirror(project_dir, vault_dir, profile, linked, unlinked, errors)
     return SyncResult(tuple(linked), tuple(unlinked), tuple(errors))
+
+
+def _sync_project_agents_mirror(
+    project_dir: os.PathLike[str] | str,
+    vault_dir: os.PathLike[str] | str,
+    profile: AxtProfile,
+    linked: list[str],
+    unlinked: list[str],
+    errors: list[str],
+) -> None:
+    """Reconcile `<project>/.agents/skills/` with the profile's `agentsMirror`.
+
+    Entries are tagged `skill:<name> (.agents)` so they read apart from the
+    `.claude/skills` links. Declared mirrors are created (unless the tree is
+    `.skill-lock.json`-guarded, reported as an error rather than forced), and
+    symlinks into the vault skills dir that are no longer declared are removed
+    — foreign links and real dirs are left alone. Nothing happens when the
+    project has no mirrors and no `.agents/skills` dir, and the whole step is
+    skipped when the project `.agents` is `~/.agents`."""
+    declared = set(profile.agents_mirror)
+    dot_agents = project_agents_dir(project_dir)
+    agents_skills = dot_agents / "skills"
+    if not declared and not agents_skills.is_dir():
+        return
+    if _project_agents_is_home(project_dir):
+        if declared:
+            errors.append("agentsMirror: project .agents is ~/.agents — skipped (use the global mirror)")
+        return
+    vault_sub = Path(vault_dir) / "skills"
+
+    for name in sorted(declared):
+        tag = f"skill:{name} (.agents)"
+        vp = vault_sub / name
+        if not vp.exists():
+            errors.append(f"{tag} not found in vault")
+            continue
+        if (agents_skills / name).is_symlink():
+            continue
+        item = VaultItem(name=name, type="skill", path=str(vp), description="")
+        try:
+            ok, msg = link_to_agents(dot_agents, item)
+        except (OSError, FileExistsError) as e:
+            errors.append(f"{tag}: {e}")
+            continue
+        (linked if ok else errors).append(tag if ok else f"{tag}: {msg}")
+
+    if not agents_skills.is_dir():
+        return
+    try:
+        entries = list(agents_skills.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.is_symlink() or entry.name in declared:
+            continue
+        try:
+            target = os.readlink(entry)
+        except OSError:
+            continue
+        if not target.startswith(str(vault_sub)):
+            continue
+        try:
+            entry.unlink()
+            unlinked.append(f"skill:{entry.name} (.agents)")
+        except OSError:
+            pass
 
 
 def _move_path(src: Path, dest: Path, *, is_dir: bool) -> None:
@@ -2580,6 +2715,7 @@ def list_vault_items_with_project_state(
     project_dir: os.PathLike[str] | str,
     global_dir: Optional[os.PathLike[str] | str] = None,
     agents_dir: Optional[os.PathLike[str] | str] = None,
+    project_agents_dir: Optional[os.PathLike[str] | str] = None,
 ) -> list[VaultItem]:
     """`listVaultItems` enriched with project/global symlink state for the
     Extensions/Vault TUI tab.
@@ -2593,11 +2729,13 @@ def list_vault_items_with_project_state(
     When `agents_dir` (a `.agents` directory) is given, skills also get
     `is_agents_linked` — true only when `<agents_dir>/skills/<name>` is a
     symlink resolving to this vault item, so a foreign installer's symlink or a
-    real dir does not read as our mirror."""
+    real dir does not read as our mirror. `project_agents_dir` (the project's
+    `.agents`) fills `is_project_agents_linked` the same way."""
     items = list_vault_items(vault_dir)
     pd = Path(project_dir)
     gd = Path(global_dir) if global_dir else None
     ad = Path(agents_dir) if agents_dir else None
+    pad = Path(project_agents_dir) if project_agents_dir else None
     claude_dir = pd / ".claude"
 
     for item in items:
@@ -2608,14 +2746,23 @@ def list_vault_items_with_project_state(
             g_link = gd / sub / item.name
             item.is_global_linked = g_link.is_symlink() if g_link.exists() or g_link.is_symlink() else False
         if ad and item.type == "skill":
-            a_link = ad / "skills" / item.name
-            if a_link.is_symlink():
-                try:
-                    item.is_agents_linked = os.path.realpath(a_link) == os.path.realpath(item.path)
-                except OSError:
-                    item.is_agents_linked = False
+            item.is_agents_linked = _agents_mirror_points_here(ad, item)
+        if pad and item.type == "skill":
+            item.is_project_agents_linked = _agents_mirror_points_here(pad, item)
 
     return items
+
+
+def _agents_mirror_points_here(dot_agents_dir: Path, item: VaultItem) -> bool:
+    """True only when `<dot_agents_dir>/skills/<name>` is a symlink resolving to
+    this vault item — a foreign installer's link or a real dir is not ours."""
+    a_link = dot_agents_dir / "skills" / item.name
+    if not a_link.is_symlink():
+        return False
+    try:
+        return os.path.realpath(a_link) == os.path.realpath(item.path)
+    except OSError:
+        return False
 
 
 # ─── Marketplace ─────────────────────────────────────────────────────────────

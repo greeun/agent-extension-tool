@@ -363,6 +363,7 @@ def _vault_load(state: TuiState) -> None:
         Path.cwd(),
         global_dir=PATHS.claude_dir,
         agents_dir=HOME / ".agents",
+        project_agents_dir=project_agents_dir(Path.cwd()),
     )
 
 
@@ -714,6 +715,54 @@ def _vault_toggle_mirror_global(state: TuiState, item: VaultItem) -> str:
     return f"{action}d {item.name} in .claude + .agents{tail}"
 
 
+def _vault_toggle_mirror_project(state: TuiState, item: VaultItem) -> str:
+    """`P`: activate/deactivate a skill in BOTH `<cwd>/.claude/skills` and
+    `<cwd>/.agents/skills` at once — the project-scope sibling of `G`.
+    Immediate, with a confirm modal; it does not use the pending `p` set.
+
+    Direction keys off the combined state: linked in both → deactivate both;
+    otherwise link wherever it is missing. Both sides are recorded in
+    `.axt-profile.json` (`skills` / `agentsMirror`) so `y` (sync) keeps them.
+    The .agents mirror stays guarded — a .skill-lock.json tree is left
+    untouched (force is CLI-only via `project add --force-agents`) and the
+    skip is reported. The Used index follows the `.claude` link like `p`."""
+    if item.type != "skill":
+        return "Only skills mirror to .agents/skills"
+    cwd = Path.cwd()
+    both_linked = item.is_linked and item.is_project_agents_linked
+    action = "Deactivate" if both_linked else "Activate"
+    cb = state.stdscr_callbacks
+    stdscr = cb.get("stdscr") if cb else None
+    if stdscr is not None:
+        msg = f"{action} {item.name} in BOTH .claude/skills and .agents/skills of this project?"
+        if not confirm_modal(stdscr, msg, title="Confirm project+agents"):
+            return "Cancelled"
+    notes: list[str] = []
+    cwd_ref = ProjectRef(path=str(cwd), name=_project_name_from_path(str(cwd)))
+    try:
+        if both_linked:
+            unlink_from_project(cwd, item)
+            _usage_index_drop(state.vault_usage_index, item.type, item.name, str(cwd))
+            ok, m = unlink_from_project_agents(cwd, item)
+            if not ok:
+                notes.append(m)
+        else:
+            if not item.is_linked:
+                link_to_project(cwd, item)
+                _add_to_index(state.vault_usage_index, item.type, item.name, cwd_ref)
+            if not item.is_project_agents_linked:
+                ok, m = link_to_project_agents(cwd, item)
+                if not ok:
+                    notes.append(m)
+    except (OSError, ValueError, FileExistsError) as exc:
+        _vault_load(state)
+        return f"Error: {exc}"
+    _vault_load(state)
+    _invalidate_context(state)
+    tail = f" ({'; '.join(notes)})" if notes else ""
+    return f"{action}d {item.name} in project .claude + .agents{tail}"
+
+
 def _vault_unlink_from_all(state: TuiState, item: VaultItem) -> str:
     """Unlink `item` from EVERY project that references it in the scan index.
 
@@ -1009,6 +1058,9 @@ def render_vault_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> None:
         detail_fields.append(
             ("Agents", "mirrored" if current.is_agents_linked else "not mirrored")
         )
+        detail_fields.append(
+            ("Agents (proj)", "mirrored" if current.is_project_agents_linked else "not mirrored")
+        )
     if state.vault_usage_index:
         usage = state.vault_usage_index.get(f"{current.type}:{current.name}")
         if usage and usage.projects:
@@ -1196,6 +1248,9 @@ def handle_vault_input(state: TuiState, key: int) -> Optional[str]:
     elif key == ord("G") and current:
         # G = immediate global + .agents mirror toggle for the selected skill.
         return _vault_toggle_mirror_global(state, current)
+    elif key == ord("P") and current:
+        # P = immediate project .claude + .agents mirror toggle (sibling of G).
+        return _vault_toggle_mirror_project(state, current)
     elif key == ord(" ") and current:
         # Space = select: toggle the focused item's bulk-unlink mark, then
         # advance focus one row (clamped) so repeated Space marks consecutive
@@ -4346,14 +4401,21 @@ def _import_one(state: TuiState, sub: str, item: Any) -> tuple[bool, str]:
         import_to_vault(PATHS.claude_dir, PATHS.vault, vitem)
     except (OSError, ValueError, FileExistsError) as exc:
         return False, f"Import failed: {exc}"
-    if item.source == "project" and (Path.cwd() / ".claude") in disk.parents:
+    if item.source == "project":
         # import_to_vault left a symlink at the project path; record it in
         # .axt-profile.json so sync_project won't unlink it as an orphan.
-        # (Project `.agents/` sources stay outside the profile — sync_project
-        # only manages `.claude/<sub>/` links.)
-        profile = read_profile(Path.cwd()) or empty_profile()
-        profile = profile.with_added(sub, disk.name)
-        write_profile(Path.cwd(), profile)
+        # `.claude/<sub>/` sources go under their type key; a skill that lived
+        # in the project `.agents/skills/` goes under `agentsMirror`, which is
+        # the set sync_project reconciles that tree against.
+        cwd = Path.cwd()
+        key = None
+        if (cwd / ".claude") in disk.parents:
+            key = sub
+        elif sub == "skills" and project_agents_dir(cwd) in disk.parents:
+            key = "agents_mirror"
+        if key:
+            profile = read_profile(cwd) or empty_profile()
+            write_profile(cwd, profile.with_added(key, disk.name))
     return True, f"Imported {disk.name!r} to vault"
 
 

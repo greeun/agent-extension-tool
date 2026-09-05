@@ -554,6 +554,9 @@ def cli_project_add(args) -> int:
             continue
         link_to_project(cwd, item)
         print(_green(f'✓ Linked {args.type} "{name}" → .claude/{args.type}s/{name}'))
+        if getattr(args, "mirror_agents", False):
+            ok, msg = link_to_project_agents(cwd, item, force=getattr(args, "force_agents", False))
+            print((_green if ok else _yellow)(f'{"✓" if ok else "⊘"} {msg}'))
     return 0
 
 
@@ -562,6 +565,16 @@ def cli_project_remove(args) -> int:
     item = VaultItem(name=args.name, type=args.type, path="", description="")
     unlink_from_project(cwd, item)
     print(_green(f'✓ Unlinked {args.type} "{args.name}"'))
+    if getattr(args, "mirror_agents", False):
+        # Resolve the vault path when possible so only a mirror pointing at
+        # this vault content is removed (see unlink_from_agents); a bare name
+        # still drops the profile entry and any same-named symlink.
+        stored = next(
+            (i for i in list_vault_items(PATHS.vault) if i.name == args.name and i.type == args.type),
+            None,
+        )
+        ok, msg = unlink_from_project_agents(cwd, stored or item)
+        print((_green if ok else _yellow)(f'{"✓" if ok else "⊘"} {msg}'))
     return 0
 
 
@@ -607,6 +620,10 @@ def cli_project_status(args) -> int:
             linked = link_path.is_symlink()
             status = _green("✓ linked") if linked else _red("✗ missing")
             print(f"  {_cyan(type_.ljust(8))} {name.ljust(25)} {status}")
+    for name in profile.agents_mirror:
+        linked = (project_agents_dir(cwd) / "skills" / name).is_symlink()
+        status = _green("✓ linked") if linked else _red("✗ missing")
+        print(f"  {_cyan('skill'.ljust(8))} {name.ljust(25)} {status} {_dim('(.agents mirror)')}")
     return 0
 
 
@@ -1253,8 +1270,8 @@ def build_parser() -> argparse.ArgumentParser:
     # project
     sp_prj = sub.add_parser("project", help="Manage project extension profile").add_subparsers(dest="action", required=True)
     p = sp_prj.add_parser("init", help="Create .axt-profile.json (empty profile)"); p.set_defaults(func=cli_project_init)
-    p = sp_prj.add_parser("add", help="Add vault extensions to project"); p.add_argument("type"); p.add_argument("names", nargs="+"); p.set_defaults(func=cli_project_add)
-    p = sp_prj.add_parser("remove", help="Remove extension from project"); p.add_argument("type"); p.add_argument("name"); p.set_defaults(func=cli_project_remove)
+    p = sp_prj.add_parser("add", help="Add vault extensions to project"); p.add_argument("type"); p.add_argument("names", nargs="+"); p.add_argument("--mirror-agents", action="store_true", help="Also symlink a skill into <project>/.agents/skills for cross-agent tools (recorded as agentsMirror in .axt-profile.json)"); p.add_argument("--force-agents", action="store_true", help="Override the .skill-lock.json guard when mirroring to .agents/skills"); p.set_defaults(func=cli_project_add)
+    p = sp_prj.add_parser("remove", help="Remove extension from project"); p.add_argument("type"); p.add_argument("name"); p.add_argument("--mirror-agents", action="store_true", help="Also remove the matching <project>/.agents/skills symlink and its agentsMirror entry"); p.set_defaults(func=cli_project_remove)
     p = sp_prj.add_parser("sync", help="Reconcile symlinks with .axt-profile.json"); p.set_defaults(func=cli_project_sync)
     p = sp_prj.add_parser("status", help="Show profile vs actual symlink state"); p.set_defaults(func=cli_project_status)
 

@@ -2100,3 +2100,112 @@ def test_update_apply_json_with_no_targets_emits_empty_array(monkeypatch):
     assert code == 0
     assert json.loads(out) == []
     assert out.strip() == "[]"
+
+
+# ─── project add/remove/status — .agents mirror ─────────────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_project_add_mirror_agents_links_and_records_profile(tmp_path: Path, monkeypatch):
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault)
+    monkeypatch.setattr("axt.PATHS", paths)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    code, out, _ = _run(["project", "add", "skill", "alpha", "--mirror-agents"])
+    assert code == 0
+    assert (proj / ".claude" / "skills" / "alpha").is_symlink()
+    mirror = proj / ".agents" / "skills" / "alpha"
+    assert mirror.is_symlink()
+    assert os.path.realpath(mirror) == os.path.realpath(paths.vault / "skills" / "alpha")
+    prof = axt.read_profile(proj)
+    assert prof.skills == ("alpha",) and prof.agents_mirror == ("alpha",)
+    assert "Mirrored" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_project_add_mirror_agents_respects_lock_then_force(tmp_path: Path, monkeypatch):
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault)
+    monkeypatch.setattr("axt.PATHS", paths)
+    proj = tmp_path / "proj"
+    (proj / ".agents").mkdir(parents=True)
+    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    monkeypatch.chdir(proj)
+    code, out, _ = _run(["project", "add", "skill", "alpha", "--mirror-agents"])
+    assert code == 0
+    assert axt.SKILL_LOCK_NAME in out
+    assert not (proj / ".agents" / "skills" / "alpha").exists()
+    assert axt.read_profile(proj).agents_mirror == ()
+    code, out, _ = _run(["project", "add", "skill", "alpha", "--mirror-agents", "--force-agents"])
+    assert code == 0
+    assert (proj / ".agents" / "skills" / "alpha").is_symlink()
+    assert axt.read_profile(proj).agents_mirror == ("alpha",)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_project_remove_mirror_agents_removes_both(tmp_path: Path, monkeypatch):
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault)
+    monkeypatch.setattr("axt.PATHS", paths)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    _run(["project", "add", "skill", "alpha", "--mirror-agents"])
+    code, out, _ = _run(["project", "remove", "skill", "alpha", "--mirror-agents"])
+    assert code == 0
+    assert not (proj / ".claude" / "skills" / "alpha").exists()
+    assert not (proj / ".agents" / "skills" / "alpha").exists()
+    prof = axt.read_profile(proj)
+    assert prof.skills == () and prof.agents_mirror == ()
+    assert "Removed .agents/skills/alpha" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_project_remove_without_flag_keeps_agents_mirror(tmp_path: Path, monkeypatch):
+    """Plain `remove` only touches `.claude`; the mirror and its profile entry
+    stay until `--mirror-agents` asks for them."""
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault)
+    monkeypatch.setattr("axt.PATHS", paths)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    _run(["project", "add", "skill", "alpha", "--mirror-agents"])
+    _run(["project", "remove", "skill", "alpha"])
+    assert (proj / ".agents" / "skills" / "alpha").is_symlink()
+    assert axt.read_profile(proj).agents_mirror == ("alpha",)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_project_status_lists_agents_mirror_entries(tmp_path: Path, monkeypatch):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    axt.write_profile(proj, axt.AxtProfile(agents_mirror=("alpha", "beta")))
+    (proj / ".agents" / "skills").mkdir(parents=True)
+    tgt = tmp_path / "alpha-src"
+    tgt.mkdir()
+    os.symlink(tgt, proj / ".agents" / "skills" / "alpha")
+    code, out, _ = _run(["project", "status"])
+    assert code == 0
+    lines = [l for l in out.splitlines() if ".agents mirror" in l]
+    assert len(lines) == 2
+    assert any("alpha" in l and "linked" in l for l in lines)
+    assert any("beta" in l and "missing" in l for l in lines)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_project_sync_reconciles_agents_mirror(tmp_path: Path, monkeypatch):
+    paths = _vault_paths(tmp_path)
+    _seed_vault_skill(paths.vault)
+    monkeypatch.setattr("axt.PATHS", paths)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    axt.write_profile(proj, axt.AxtProfile(agents_mirror=("alpha",)))
+    code, out, _ = _run(["project", "sync"])
+    assert code == 0
+    assert "+ skill:alpha (.agents)" in out
+    assert (proj / ".agents" / "skills" / "alpha").is_symlink()
