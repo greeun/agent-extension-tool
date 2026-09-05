@@ -11478,3 +11478,100 @@ def test_tui_loop_survives_an_unwritable_config_on_exit(tmp_path, monkeypatch):
     monkeypatch.setattr("axt.tui.loop.save_config", boom)
     axt._tui_loop(_loop_stdscr([_DOWN, _DOWN, ord("s"), ord("q")], rows=34, cols=170))
     assert attempted, "the exit path must have tried to save the sort"
+
+
+# ─── Vault `P` — project .claude + .agents mirror toggle ─────────────────────
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_vault_P_activates_project_claude_and_agents(tmp_path, monkeypatch):
+    skill_dir, home = _seed_G_env(tmp_path, monkeypatch)
+    proj = Path.cwd()
+    item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
+                         description="", in_vault=True)
+    state = axt.TuiState()
+    state.vault_items = [item]
+
+    msg = axt.handle_vault_input(state, ord("P"))
+    assert (proj / ".claude" / "skills" / "myskill").is_symlink()
+    agents_link = proj / ".agents" / "skills" / "myskill"
+    assert agents_link.is_symlink()
+    assert os.path.realpath(agents_link) == os.path.realpath(skill_dir)
+    # Global trees untouched.
+    assert not (tmp_path / "claude" / "skills" / "myskill").exists()
+    assert not (home / ".agents").exists()
+    # Both sides declared so `y` (sync) keeps them.
+    prof = axt.read_profile(proj)
+    assert prof.skills == ("myskill",) and prof.agents_mirror == ("myskill",)
+    assert "Activated" in msg
+    # Reload reflects the new state.
+    refreshed = next(i for i in state.vault_items if i.name == "myskill")
+    assert refreshed.is_linked and refreshed.is_project_agents_linked
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_vault_P_deactivates_when_both_linked(tmp_path, monkeypatch):
+    skill_dir, home = _seed_G_env(tmp_path, monkeypatch)
+    proj = Path.cwd()
+    item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
+                         description="", in_vault=True)
+    axt.link_to_project(proj, item)
+    axt.link_to_project_agents(proj, item)
+    item.is_linked = item.is_project_agents_linked = True
+    state = axt.TuiState()
+    state.vault_items = [item]
+
+    msg = axt.handle_vault_input(state, ord("P"))
+    assert not (proj / ".claude" / "skills" / "myskill").exists()
+    assert not (proj / ".agents" / "skills" / "myskill").exists()
+    prof = axt.read_profile(proj)
+    assert prof.skills == () and prof.agents_mirror == ()
+    assert "Deactivated" in msg
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_vault_P_links_missing_side_only(tmp_path, monkeypatch):
+    """Only `.claude` linked → P adds the `.agents` mirror, keeps `.claude`."""
+    skill_dir, _ = _seed_G_env(tmp_path, monkeypatch)
+    proj = Path.cwd()
+    item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
+                         description="", in_vault=True)
+    axt.link_to_project(proj, item)
+    item.is_linked = True
+    state = axt.TuiState()
+    state.vault_items = [item]
+
+    msg = axt.handle_vault_input(state, ord("P"))
+    assert "Activated" in msg
+    assert (proj / ".claude" / "skills" / "myskill").is_symlink()
+    assert (proj / ".agents" / "skills" / "myskill").is_symlink()
+    assert axt.read_profile(proj).agents_mirror == ("myskill",)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault linking unsupported on Windows")
+def test_vault_P_respects_skill_lock_guard(tmp_path, monkeypatch):
+    skill_dir, _ = _seed_G_env(tmp_path, monkeypatch)
+    proj = Path.cwd()
+    (proj / ".agents").mkdir()
+    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
+                         description="", in_vault=True)
+    state = axt.TuiState()
+    state.vault_items = [item]
+
+    msg = axt.handle_vault_input(state, ord("P"))
+    assert (proj / ".claude" / "skills" / "myskill").is_symlink()
+    assert not (proj / ".agents" / "skills" / "myskill").exists()
+    assert axt.SKILL_LOCK_NAME in msg
+    assert axt.read_profile(proj).agents_mirror == ()
+
+
+def test_vault_P_refuses_non_skill(tmp_path, monkeypatch):
+    _seed_G_env(tmp_path, monkeypatch)
+    item = axt.VaultItem(name="deploy", type="command", path=str(tmp_path / "deploy.md"),
+                         description="", in_vault=True)
+    state = axt.TuiState()
+    state.vault_items = [item]
+    msg = axt.handle_vault_input(state, ord("P"))
+    assert "Only skills" in msg
+    assert not (Path.cwd() / ".agents").exists()

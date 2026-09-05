@@ -906,3 +906,215 @@ def test_link_to_agents_force_overrides_lock_without_removing_it(tmp_path: Path)
     assert os.path.realpath(link) == os.path.realpath(skill.path)
     # The installer's marker survives — axt does not claim the tree.
     assert lock.exists() and lock.read_text() == '{"owner": "vercel-labs/skills"}'
+
+
+# ─── Project-level .agents/skills mirror (agentsMirror profile entries) ──────
+
+
+def test_profile_agents_mirror_roundtrip_and_omitted_when_empty(tmp_path: Path):
+    """`agentsMirror` is serialized only when used, so a profile without
+    mirrors keeps its pre-existing shape; a profile with mirrors reads back."""
+    axt.write_profile(tmp_path, axt.AxtProfile(skills=("a",)))
+    raw = json.loads((tmp_path / axt.VAULT_PROFILE_NAME).read_text())
+    assert "agentsMirror" not in raw["extensions"]
+
+    axt.write_profile(tmp_path, axt.AxtProfile(skills=("a",), agents_mirror=("a", "b")))
+    raw = json.loads((tmp_path / axt.VAULT_PROFILE_NAME).read_text())
+    assert raw["extensions"]["agentsMirror"] == ["a", "b"]
+    got = axt.read_profile(tmp_path)
+    assert got is not None and got.agents_mirror == ("a", "b")
+
+
+def test_profile_without_agents_mirror_key_reads_as_empty(tmp_path: Path):
+    """Profiles written before the key existed must still load."""
+    (tmp_path / axt.VAULT_PROFILE_NAME).write_text(json.dumps(
+        {"extensions": {"skills": ["a"], "commands": [], "agents": [], "plugins": []}}
+    ))
+    got = axt.read_profile(tmp_path)
+    assert got is not None
+    assert got.skills == ("a",) and got.agents_mirror == ()
+
+
+def test_profile_with_added_removed_agents_mirror():
+    p = axt.empty_profile().with_added("agents_mirror", "x").with_added("agents_mirror", "x")
+    assert p.agents_mirror == ("x",)
+    assert p.with_removed("agents_mirror", "x").agents_mirror == ()
+    # Other keys untouched by the new field.
+    assert p.with_added("skills", "s").agents_mirror == ("x",)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_project_agents_mirrors_and_records_profile(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    ok, msg = axt.link_to_project_agents(proj, skill)
+    assert ok, msg
+    link = proj / ".agents" / "skills" / "myskill"
+    assert link.is_symlink()
+    assert os.path.realpath(link) == os.path.realpath(skill.path)
+    prof = axt.read_profile(proj)
+    assert prof is not None and prof.agents_mirror == ("myskill",)
+    # `.claude/skills` is NOT touched — that is link_to_project's job.
+    assert not (proj / ".claude" / "skills" / "myskill").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_project_agents_guard_leaves_profile_untouched(tmp_path: Path):
+    """A `.skill-lock.json` skip must not declare a mirror that does not exist,
+    or `sync` would keep trying (and failing) to create it."""
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    (proj / ".agents").mkdir(parents=True)
+    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    ok, msg = axt.link_to_project_agents(proj, skill)
+    assert not ok and axt.SKILL_LOCK_NAME in msg
+    assert axt.read_profile(proj) is None
+    ok, _ = axt.link_to_project_agents(proj, skill, force=True)
+    assert ok
+    assert axt.read_profile(proj).agents_mirror == ("myskill",)
+
+
+def test_link_to_project_agents_refuses_non_skill(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    cmd = next(i for i in axt.list_vault_items(vault) if i.type == "command")
+    ok, msg = axt.link_to_project_agents(proj, cmd)
+    assert not ok and "Only skills" in msg
+    assert axt.read_profile(proj) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_project_agents_refuses_when_project_agents_is_home(tmp_path: Path, monkeypatch):
+    """Running from HOME, `<cwd>/.agents` IS `~/.agents`; the global mirror
+    owns that tree, so the project path must refuse rather than double-manage."""
+    vault = _make_vault(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr("axt.core.HOME", home)
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    ok, msg = axt.link_to_project_agents(home, skill)
+    assert not ok and "~/.agents" in msg
+    assert not (home / ".agents").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_unlink_from_project_agents_removes_link_and_profile_entry(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    axt.link_to_project_agents(proj, skill)
+    ok, _ = axt.unlink_from_project_agents(proj, skill)
+    assert ok
+    assert not (proj / ".agents" / "skills" / "myskill").exists()
+    assert axt.read_profile(proj).agents_mirror == ()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_unlink_from_project_agents_drops_entry_but_keeps_foreign_link(tmp_path: Path):
+    """Un-declaring is the user's intent, so the profile entry goes even when
+    the symlink turns out to belong to someone else — that link stays."""
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    (proj / ".agents" / "skills").mkdir(parents=True)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    os.symlink(foreign, proj / ".agents" / "skills" / "myskill")
+    axt.write_profile(proj, axt.AxtProfile(agents_mirror=("myskill",)))
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    ok, msg = axt.unlink_from_project_agents(proj, skill)
+    assert not ok and "points elsewhere" in msg
+    assert (proj / ".agents" / "skills" / "myskill").is_symlink()
+    assert axt.read_profile(proj).agents_mirror == ()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_list_vault_items_enriches_is_project_agents_linked(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    axt.link_to_project_agents(proj, skill)
+    items = axt.list_vault_items_with_project_state(
+        vault, proj, project_agents_dir=proj / ".agents"
+    )
+    s = next(i for i in items if i.type == "skill")
+    assert s.is_project_agents_linked is True
+    assert s.is_agents_linked is False  # global tree not given → untouched
+    # Without the argument the field stays at its default.
+    s2 = next(i for i in axt.list_vault_items_with_project_state(vault, proj) if i.type == "skill")
+    assert s2.is_project_agents_linked is False
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_sync_project_creates_declared_agents_mirror_and_removes_orphan(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    axt.write_profile(proj, axt.AxtProfile(agents_mirror=("myskill",)))
+    # An orphan pointing into the vault skills dir, not declared.
+    (proj / ".agents" / "skills").mkdir(parents=True)
+    os.symlink(vault / "skills" / "myskill", proj / ".agents" / "skills" / "stale")
+    # A foreign symlink (outside the vault) must survive.
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    os.symlink(foreign, proj / ".agents" / "skills" / "other")
+
+    result = axt.sync_project(proj, vault)
+    assert "skill:myskill (.agents)" in result.linked
+    assert "skill:stale (.agents)" in result.unlinked
+    assert not result.errors
+    link = proj / ".agents" / "skills" / "myskill"
+    assert link.is_symlink()
+    assert os.path.realpath(link) == os.path.realpath(vault / "skills" / "myskill")
+    assert not (proj / ".agents" / "skills" / "stale").exists()
+    assert (proj / ".agents" / "skills" / "other").is_symlink()
+    # Idempotent: a second run has nothing to do.
+    again = axt.sync_project(proj, vault)
+    assert not again.linked and not again.unlinked and not again.errors
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_sync_project_does_not_create_agents_dir_when_nothing_declared(tmp_path: Path):
+    """A profile with no mirrors must not sprout an empty `.agents/` tree."""
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    axt.write_profile(proj, axt.AxtProfile(skills=("myskill",)))
+    axt.sync_project(proj, vault)
+    assert not (proj / ".agents").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_sync_project_reports_lock_guard_and_missing_vault_item_for_mirror(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    proj = tmp_path / "proj"
+    (proj / ".agents").mkdir(parents=True)
+    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    axt.write_profile(proj, axt.AxtProfile(agents_mirror=("myskill", "ghost")))
+    result = axt.sync_project(proj, vault)
+    assert not result.linked
+    assert any(e.startswith("skill:myskill (.agents)") and axt.SKILL_LOCK_NAME in e for e in result.errors)
+    assert "skill:ghost (.agents) not found in vault" in result.errors
+    assert not (proj / ".agents" / "skills" / "myskill").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_sync_project_skips_agents_mirror_when_project_is_home(tmp_path: Path, monkeypatch):
+    """From HOME the project `.agents` is `~/.agents`: sync must neither create
+    project mirrors there nor sweep the global mirrors as orphans."""
+    vault = _make_vault(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr("axt.core.HOME", home)
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    axt.link_to_agents(home / ".agents", skill)  # the global mirror
+    axt.write_profile(home, axt.AxtProfile(agents_mirror=("myskill",)))
+    result = axt.sync_project(home, vault)
+    assert (home / ".agents" / "skills" / "myskill").is_symlink()
+    assert not result.linked and not result.unlinked
+    assert any("~/.agents" in e for e in result.errors)
