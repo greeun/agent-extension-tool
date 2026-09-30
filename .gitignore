@@ -44,3 +44,6 @@ __pycache__/
 !.env*.template
 
 .axt-profile.json*
+
+# Synology links restored by mac-setup (lists/project-links.txt)
+/docs
