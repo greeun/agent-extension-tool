@@ -1825,7 +1825,7 @@ def test_vault_G_deactivates_when_both_linked(tmp_path, monkeypatch):
 def test_vault_G_respects_skill_lock_guard(tmp_path, monkeypatch):
     skill_dir, home = _seed_G_env(tmp_path, monkeypatch)
     (home / ".agents").mkdir(parents=True)
-    (home / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    (home / ".agents" / axt.SKILL_LOCK_NAME).write_text('{"skills": {"myskill": {}}}')
     item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
                          description="", in_vault=True)
     state = axt.TuiState()
@@ -3036,6 +3036,45 @@ def test_skill_toggle_refuses_real_dir_in_scope(tmp_path, monkeypatch):
     assert proj_dir.is_dir()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin on Windows")
+def test_skill_g_on_agents_row_links_into_claude(tmp_path, monkeypatch):
+    """A `~/.agents/skills` row is "user"-sourced but Claude never loads it:
+    it must not read as globally active, and `g` must expose it to Claude
+    rather than unlinking the `.agents` entry itself."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("axt.PATHS", axt.Paths(claude_dir=tmp_path / "claude",
+                                               skills=tmp_path / "claude" / "skills"))
+    store = tmp_path / "store" / "archify"
+    store.mkdir(parents=True)
+    agents_entry = tmp_path / "home" / ".agents" / "skills" / "archify"
+    agents_entry.parent.mkdir(parents=True)
+    agents_entry.symlink_to(store)
+    state = axt.TuiState()
+    state.ext_sub_tab = "skills"
+    state.ext_cache["skills"] = [axt.SkillInfo(
+        name="archify", path=str(agents_entry), is_symlink=True, source="user",
+        owner="installer", codex=True)]
+    assert axt._scope_link_names(state, "skills", "global") == set()
+    state.ext_selected["skills"] = 0
+    state.stdscr_callbacks = {"stdscr": None}
+    msg = axt._handle_subtab_action(state, "skills", ord("g"))
+    assert msg == "Linked archify (global)"
+    assert (tmp_path / "claude" / "skills" / "archify").is_symlink()
+    assert agents_entry.is_symlink()
+
+
+def test_import_refuses_installer_owned_skill(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    entry = tmp_path / ".agents" / "skills" / "archify"
+    entry.mkdir(parents=True)
+    state = axt.TuiState()
+    item = axt.SkillInfo(name="archify", path=str(entry), is_symlink=False,
+                         source="user", owner="installer")
+    ok, msg = axt._import_one(state, "skills", item)
+    assert not ok and axt.SKILL_LOCK_NAME in msg
+    assert entry.is_dir() and not entry.is_symlink()
+
+
 def test_command_g_links_into_global_scope(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("axt.PATHS", axt.Paths(claude_dir=tmp_path / "claude"))
@@ -3102,10 +3141,14 @@ def test_vault_p_g_with_marks_toggle_pending_in_bulk():
 def test_skills_proj_glob_columns_reflect_scope_presence():
     state = axt.TuiState()
     state.ext_sub_tab = "skills"
+    # codex=True keeps the Cdx column at ● so the ○ checks below see only
+    # Proj/Glob.
     state.ext_cache["skills"] = [
-        axt.SkillInfo(name="both", path="/u/skills/both", is_symlink=False, source="user"),
-        axt.SkillInfo(name="both", path="/p/.claude/skills/both", is_symlink=True, source="project"),
-        axt.SkillInfo(name="globonly", path="/u/skills/globonly", is_symlink=False, source="user"),
+        axt.SkillInfo(name="both", path="/u/skills/both", is_symlink=False, source="user", codex=True),
+        axt.SkillInfo(name="both", path="/p/.claude/skills/both", is_symlink=True, source="project",
+                      codex=True),
+        axt.SkillInfo(name="globonly", path="/u/skills/globonly", is_symlink=False, source="user",
+                      codex=True),
     ]
     scr = _make_stdscr(rows=30, cols=140)
     axt.render_extensions_tab(scr, state, 0, 28, 140)
@@ -8824,7 +8867,8 @@ def test_sort_columns_match_rendered_columns():
     col_keys = {
         "vault":    {"name", "ver", "type", "project", "global", "used"},
         "plugins":  {"name", "version", "vault", "proj", "glob", "upd", "market"},
-        "skills":   {"name", "ver", "meta", "body", "vault", "proj", "glob", "upd", "source", "type", "path"},
+        "skills":   {"name", "ver", "meta", "body", "vault", "proj", "glob", "upd", "codex", "owner",
+                     "source", "type", "path"},
         "commands": {"name", "ver", "vault", "proj", "glob", "upd", "source", "desc"},
         "agents":   {"name", "ver", "vault", "proj", "glob", "upd", "source", "desc"},
         "mcp":      {"name", "ver", "vault", "proj", "glob", "upd", "on", "scope",
@@ -11553,7 +11597,7 @@ def test_vault_P_respects_skill_lock_guard(tmp_path, monkeypatch):
     skill_dir, _ = _seed_G_env(tmp_path, monkeypatch)
     proj = Path.cwd()
     (proj / ".agents").mkdir()
-    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text('{"skills": {"myskill": {}}}')
     item = axt.VaultItem(name="myskill", type="skill", path=str(skill_dir),
                          description="", in_vault=True)
     state = axt.TuiState()

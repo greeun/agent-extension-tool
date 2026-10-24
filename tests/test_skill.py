@@ -182,3 +182,44 @@ def test_list_skills_without_skill_md_has_no_body(tmp_path: Path):
     [info] = axt.list_skills(tmp_path / "skills")
     assert info.body_tokens == -1
     assert info.meta_tokens == axt.estimate_tokens("- bare: ")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
+def test_list_all_skills_folds_agents_entry_into_claude_link(tmp_path: Path, monkeypatch):
+    """A `~/.claude/skills` link into `~/.agents/skills` is one skill: the
+    Claude-side row stays, the `.agents` duplicate goes, and the row reports
+    who owns it and whether Codex loads it."""
+    home = tmp_path / "home"
+    claude_skills = home / ".claude" / "skills"
+    agents_skills = home / ".agents" / "skills"
+    vault = tmp_path / "vault"
+    claude_skills.mkdir(parents=True)
+    (agents_skills / "installed").mkdir(parents=True)
+    (agents_skills / "loose").mkdir()
+    (vault / "skills" / "mine").mkdir(parents=True)
+    (agents_skills / "mine").symlink_to(vault / "skills" / "mine")
+    (home / ".agents" / ".skill-lock.json").write_text('{"skills": {"installed": {}}}')
+    (claude_skills / "installed").symlink_to(agents_skills / "installed")
+    monkeypatch.setattr("axt.core.HOME", home)
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(skills=claude_skills, vault=vault))
+    monkeypatch.setattr("axt.core._active_plugins", lambda: [])
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+
+    found = {s.name: s for s in axt.list_all_skills(project_dir=tmp_path / "proj")}
+
+    assert sorted(found) == ["installed", "loose", "mine"]
+    assert found["installed"].path == str(claude_skills / "installed")
+    assert (found["installed"].owner, found["installed"].codex) == ("installer", True)
+    assert (found["loose"].owner, found["loose"].codex) == ("unmanaged", True)
+    assert (found["mine"].owner, found["mine"].codex) == ("vault", True)
+
+
+def test_list_all_skills_codex_flag_off_for_claude_only_skill(tmp_path: Path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".claude" / "skills" / "claude-only").mkdir(parents=True)
+    monkeypatch.setattr("axt.core.HOME", home)
+    monkeypatch.setattr("axt.core.PATHS", SimpleNamespace(skills=home / ".claude" / "skills"))
+    monkeypatch.setattr("axt.core._active_plugins", lambda: [])
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    (s,) = axt.list_all_skills(project_dir=tmp_path / "proj")
+    assert (s.owner, s.codex) == ("unmanaged", False)

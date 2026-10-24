@@ -1871,7 +1871,8 @@ def test_vault_link_global_mirror_respects_skill_lock(tmp_path: Path, monkeypatc
     home = tmp_path / "home"
     monkeypatch.setattr("axt.HOME", home)
     (home / ".agents").mkdir(parents=True)
-    (home / ".agents" / ".skill-lock.json").write_text("{}")
+    (home / ".agents" / ".skill-lock.json").write_text(
+        '{"skills": {"alpha": {}, "beta": {}}}')
 
     code, out, _ = _run(["vault", "link-global", "skill", "alpha", "--mirror-agents"])
     assert code == 0
@@ -2131,7 +2132,7 @@ def test_project_add_mirror_agents_respects_lock_then_force(tmp_path: Path, monk
     monkeypatch.setattr("axt.PATHS", paths)
     proj = tmp_path / "proj"
     (proj / ".agents").mkdir(parents=True)
-    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text('{"skills": {"alpha": {}}}')
     monkeypatch.chdir(proj)
     code, out, _ = _run(["project", "add", "skill", "alpha", "--mirror-agents"])
     assert code == 0

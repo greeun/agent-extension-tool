@@ -2916,6 +2916,8 @@ def _skill_detail_fields(skill) -> tuple[str, list[tuple[str, str]]]:
     """(title, label/value pairs) for the Skill detail panel."""
     fields: list[tuple[str, str]] = [
         ("Source", skill.source),
+        ("Owner", skill.owner or "—"),
+        ("Codex", "yes" if skill.codex else "no"),
         ("Version", skill.version or "—"),
         ("Type", "symlink" if skill.is_symlink else "dir"),
     ]
@@ -3098,8 +3100,10 @@ _SORT_COLUMNS: dict[str, tuple[_SortCol, ...]] = {
         ("proj",   "proj",   False, _by_scope_glyph("proj")),
         ("glob",   "glob",   False, _by_scope_glyph("glob")),
         ("upd",    "upd",    False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("codex",  "codex",  False, _by(lambda s: not s.codex)),
         ("meta",   "meta",   True,  _by(lambda s: s.meta_tokens)),
         ("body",   "body",   True,  _by(lambda s: s.body_tokens)),
+        ("owner",  "owner",  False, _by(lambda s: _lc(s.owner))),
         ("source", "source", False, _by(lambda s: _lc(s.source))),
         ("type",   "type",   False, _by(lambda s: s.is_symlink)),   # dir before symlink
         ("path",   "path",   False, _by(lambda s: _lc(s.target or s.path))),
@@ -3548,15 +3552,17 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         ctx = _scope_ctx(state, sub)
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Skill", max(20, w - 110)),
+            TableColumn("name", "Skill", max(20, w - 124)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
             TableColumn("upd", "Upd", 3),
             # After the shared status block so it stays aligned across tabs.
+            TableColumn("codex", "Cdx", 3),
             TableColumn("meta", "Meta", 5),
             TableColumn("body", "Body", 5),
+            TableColumn("owner", "Owner", 9),
             TableColumn("source", "Source", 9),
             TableColumn("type", "Type", 8),
             TableColumn("path", "Path", 30),
@@ -3571,6 +3577,8 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "proj": _scope_cell(sub, s, "proj", ctx),
             "glob": _scope_cell(sub, s, "glob", ctx),
             "upd": _upd_cell(state, sub, s),
+            "codex": _codex_cell(s),
+            "owner": s.owner or "─",
             "source": s.source,
             "type": "symlink" if s.is_symlink else "dir",
             "path": (s.target or s.path)[:60],
@@ -4088,13 +4096,21 @@ def _item_base_name(sub: str, item: Any) -> str:
     return p.name if sub == "skills" else p.stem
 
 
+def _in_scope_dir(sub: str, item: Any, scope: str) -> bool:
+    """True when the row is an entry Claude loads in `scope`. `.agents` rows
+    share the "user"/"project" source but Claude never reads that tree, so
+    they must not count as active nor be what `g`/`p` unlinks."""
+    if item.source != ("user" if scope == "global" else "project"):
+        return False
+    return ".agents" not in Path(_item_disk_path(sub, item)).parts
+
+
 def _scope_link_names(state: TuiState, sub: str, scope: str) -> set[str]:
     """Base names present in the given scope for a file-backed sub-tab."""
-    src = "user" if scope == "global" else "project"
     return {
         _item_base_name(sub, i)
         for i in state.ext_cache.get(sub, [])
-        if i.source == src
+        if _in_scope_dir(sub, i, scope)
     }
 
 
@@ -4139,6 +4155,12 @@ def _mcp_detail_text(server: Any) -> str:
     """The MCP `Detail` cell's full text: the URL for remote transports, the
     resolved command line for stdio ones."""
     return server.url or " ".join([server.command, *server.args_list]).strip()
+
+
+def _codex_cell(skill: Any) -> str:
+    """`Cdx` column: ● when Codex loads this skill (`.agents/skills` or
+    `$CODEX_HOME/skills` resolves to it), ○ otherwise."""
+    return "●" if getattr(skill, "codex", False) else "○"
 
 
 def _vault_cell(sub: str, item: Any) -> str:
@@ -4256,11 +4278,10 @@ def _toggle_file_item_scope(state: TuiState, sub: str, item: Any, scope: str) ->
     resolved path into the scope directory."""
     if not is_symlink_supported():
         return False, "Symlinks unsupported on this platform"
-    src = "user" if scope == "global" else "project"
     base = _item_base_name(sub, item)
     existing = next(
         (i for i in state.ext_cache.get(sub, [])
-         if i.source == src and _item_base_name(sub, i) == base),
+         if _in_scope_dir(sub, i, scope) and _item_base_name(sub, i) == base),
         None,
     )
     if existing is not None:
@@ -4400,6 +4421,9 @@ def _import_one(state: TuiState, sub: str, item: Any) -> tuple[bool, str]:
     does that once, so a bulk run pays for one refresh instead of N."""
     if item.source == "plugin":
         return False, "Plugin-bundled items stay with their plugin (not importable)"
+    if getattr(item, "owner", "") == "installer":
+        return False, (f"{SKILL_LOCK_NAME} manages {item.name} — update it with its "
+                       "installer; use g/p to expose it to Claude")
     if _vault_cell(sub, item) == "✓":
         return False, "Already in vault"
     disk = Path(_item_disk_path(sub, item))
