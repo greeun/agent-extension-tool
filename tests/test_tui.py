@@ -8491,7 +8491,7 @@ def test_s_moves_one_column_right():
     for _ in range(4):
         axt.handle_extensions_input(s, ord("s"))
         steps.append((s.ext_sort["skills"], s.ext_sort_desc["skills"]))
-    assert steps == [("ver", False), ("meta", True), ("body", True), ("vault", False)]
+    assert steps == [("ver", False), ("vault", False), ("proj", False), ("glob", False)]
 
 
 def test_sort_column_cycle_wraps_and_covers_every_column():
@@ -10467,7 +10467,7 @@ def test_e2e_sort_state_is_kept_per_sub_tab(tmp_path, monkeypatch):
     frames = _e2e_frames(monkeypatch)
 
     keys = ([_DOWN, _DOWN, ord("]")]           # → Skills
-            + [ord("s")] * 4                   # Skills: name → ver → meta → body → vault
+            + [ord("s"), ord("s")]             # Skills: name → ver → vault
             + [ord("]")] + [ord("s")]          # → Commands: name → ver
             + [ord("]")]                       # → Agents (untouched)
             + [ord("["), ord("[")]             # back to Skills
