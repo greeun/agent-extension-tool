@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.20.0"
+__version__ = "1.21.0"
 
 T = TypeVar("T")
 
@@ -1114,6 +1114,11 @@ class SkillInfo:
     description: str = ""
     # Frontmatter `name:`, which may differ from the directory name.
     frontmatter_name: str = ""
+    # Estimated context cost: `meta_tokens` is the `- name: description` line
+    # every session carries; `body_tokens` is the SKILL.md body (frontmatter
+    # stripped) loaded when the skill is invoked (-1 = no readable SKILL.md).
+    meta_tokens: int = 0
+    body_tokens: int = -1
 
 
 def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Optional[str] = None) -> list[SkillInfo]:
@@ -1148,9 +1153,9 @@ def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Op
             skill_root = entry.resolve() if is_symlink else entry
         except OSError:
             skill_root = entry
-        version, fm_name, fm_desc = (
-            _read_item_frontmatter(skill_root, "skill") if skill_root.is_dir()
-            else ("", "", ""))
+        (version, fm_name, fm_desc), body = (
+            _read_skill_md(skill_root) if skill_root.is_dir()
+            else (("", "", ""), None))
         out.append(
             SkillInfo(
                 name=display_name,
@@ -1162,6 +1167,8 @@ def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Op
                 version=version,
                 description=fm_desc,
                 frontmatter_name=fm_name,
+                meta_tokens=estimate_tokens(f"- {fm_name or display_name}: {fm_desc}"),
+                body_tokens=estimate_tokens(body) if body is not None else -1,
             )
         )
     return out
@@ -2078,6 +2085,30 @@ def parse_yaml_version(frontmatter: str) -> str:
     return ""
 
 
+def _parse_frontmatter_fields(content: str) -> tuple[tuple[str, str, str], str]:
+    """Split normalized file text into ((version, name, description), body).
+
+    `body` is everything after the frontmatter block (the whole text when
+    there is none); the fields are empty strings without a block."""
+    m = _FRONTMATTER_BLOCK_RE.match(content)
+    if not m:
+        return ("", "", ""), content
+    fm = m.group(1)
+    nm = _FM_NAME_RE.search(fm)
+    return ((parse_yaml_version(fm),
+             nm.group(1).strip().strip('"') if nm else "",
+             parse_yaml_description(fm)),
+            content[m.end():])
+
+
+def _read_text_normalized(file_path: os.PathLike[str] | str) -> Optional[str]:
+    try:
+        content = Path(file_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return content.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _read_frontmatter_fields(file_path: os.PathLike[str] | str) -> tuple[str, str, str]:
     """Return (version, name, description) from one read of `file_path`.
 
@@ -2086,20 +2117,10 @@ def _read_frontmatter_fields(file_path: os.PathLike[str] | str) -> tuple[str, st
     is what forced `collect_context_sources` to open every SKILL.md a second
     time just to recover the description.
     """
-    p = Path(file_path)
-    try:
-        content = p.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    content = _read_text_normalized(file_path)
+    if content is None:
         return "", "", ""
-    content = content.replace("\r\n", "\n").replace("\r", "\n")
-    m = _FRONTMATTER_BLOCK_RE.match(content)
-    if not m:
-        return "", "", ""
-    body = m.group(1)
-    nm = _FM_NAME_RE.search(body)
-    return (parse_yaml_version(body),
-            nm.group(1).strip().strip('"') if nm else "",
-            parse_yaml_description(body))
+    return _parse_frontmatter_fields(content)[0]
 
 
 def _read_version(file_path: os.PathLike[str] | str) -> str:
@@ -2116,6 +2137,25 @@ def _read_item_frontmatter(full_path: Path, item_type: str) -> tuple[str, str, s
                 return fields
         return "", "", ""
     return _read_frontmatter_fields(full_path)
+
+
+def _read_skill_md(skill_root: Path) -> tuple[tuple[str, str, str], Optional[str]]:
+    """`_read_item_frontmatter(..., "skill")` plus the SKILL.md body, from the
+    same single read per file, so the Skills list can show what invoking the
+    skill costs in context without opening SKILL.md twice. The body is None
+    when SKILL.md is missing or unreadable (Claude has nothing to load)."""
+    fields: tuple[str, str, str] = ("", "", "")
+    body: Optional[str] = None
+    for candidate in ("index.md", "SKILL.md"):
+        content = _read_text_normalized(skill_root / candidate)
+        if content is None:
+            continue
+        cand_fields, cand_body = _parse_frontmatter_fields(content)
+        if candidate == "SKILL.md":
+            body = cand_body
+        if not any(fields) and any(cand_fields):
+            fields = cand_fields
+    return fields, body
 
 
 def _read_version_for_item(full_path: Path, item_type: str) -> str:

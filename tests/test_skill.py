@@ -150,3 +150,35 @@ def test_unlink_skill_rejects_non_symlink(tmp_path: Path):
     (skills / "realdir").mkdir(parents=True)
     with pytest.raises(ValueError):
         axt.unlink_skill(skills, "realdir")
+
+
+def test_list_skills_records_context_tokens(tmp_path: Path):
+    skill = tmp_path / "skills" / "alpha"
+    skill.mkdir(parents=True)
+    body = "\n" + "x" * 70 + "\n"
+    (skill / "SKILL.md").write_text("---\nname: alpha\ndescription: Does things\n---" + body)
+    # Supporting files are loaded only on demand, so they add nothing.
+    (skill / "ref.md").write_text("y" * 7000)
+    [info] = axt.list_skills(tmp_path / "skills")
+    # Meta matches the line the Context tab counts per skill.
+    assert info.meta_tokens == axt.estimate_tokens("- alpha: Does things")
+    # Body excludes the frontmatter block.
+    assert info.body_tokens == axt.estimate_tokens(body)
+
+
+def test_list_skills_symlink_tokens_read_target(tmp_path: Path):
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "SKILL.md").write_text("---\nname: real\ndescription: d\n---\n" + "z" * 35)
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    os.symlink(str(real), str(skills / "linked"))
+    [info] = axt.list_skills(skills)
+    assert info.body_tokens == axt.estimate_tokens("\n" + "z" * 35)
+
+
+def test_list_skills_without_skill_md_has_no_body(tmp_path: Path):
+    (tmp_path / "skills" / "bare").mkdir(parents=True)
+    [info] = axt.list_skills(tmp_path / "skills")
+    assert info.body_tokens == -1
+    assert info.meta_tokens == axt.estimate_tokens("- bare: ")
