@@ -3094,6 +3094,8 @@ _SORT_COLUMNS: dict[str, tuple[_SortCol, ...]] = {
     "skills": (
         ("name",   "name",   False, _by(lambda s: _lc(s.name))),
         ("ver",    "ver",    False, _by(lambda s: _ver_key(s.version))),
+        ("meta",   "meta",   True,  _by(lambda s: s.meta_tokens)),
+        ("body",   "body",   True,  _by(lambda s: s.body_tokens)),
         ("vault",  "vault",  False, _by_glyph(_vault_glyph, _ON_RANK)),
         ("proj",   "proj",   False, _by_scope_glyph("proj")),
         ("glob",   "glob",   False, _by_scope_glyph("glob")),
@@ -3546,8 +3548,10 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         ctx = _scope_ctx(state, sub)
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Skill", max(20, w - 96)),
+            TableColumn("name", "Skill", max(20, w - 110)),
             TableColumn("ver", "Ver", 8),
+            TableColumn("meta", "Meta", 5),
+            TableColumn("body", "Body", 5),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
@@ -3560,6 +3564,8 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "no": str(i + 1),
             "name": s.name,
             "ver": s.version or "─",
+            "meta": format_tokens(s.meta_tokens),
+            "body": format_tokens(s.body_tokens) if s.body_tokens >= 0 else "─",
             "vault": _vault_cell(sub, s),
             "proj": _scope_cell(sub, s, "proj", ctx),
             "glob": _scope_cell(sub, s, "glob", ctx),

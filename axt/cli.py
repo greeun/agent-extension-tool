@@ -629,6 +629,10 @@ def cli_project_status(args) -> int:
 
 # skill
 
+def _body_tokens_cell(s) -> str:
+    return format_tokens(s.body_tokens) if s.body_tokens >= 0 else "─"
+
+
 def cli_skill_list(args) -> int:
     # Same picture as the TUI Skills sub-tab: every discoverable location
     # (~/.claude/skills, ~/.agents[/skills], project, plugins) plus
@@ -638,11 +642,13 @@ def cli_skill_list(args) -> int:
     if not skills:
         print("No skills found.")
         return 0
-    _print_list_header(f" {'Name'.ljust(30)} {'Source'.ljust(8)} {'Type'.ljust(10)} Path", 78)
+    # Meta = tokens every session carries (`- name: description`);
+    # Body = SKILL.md body loaded when the skill is invoked.
+    _print_list_header(f" {'Name'.ljust(30)} {'Source'.ljust(8)} {'Meta'.rjust(6)} {'Body'.rjust(6)} {'Type'.ljust(10)} Path", 92)
     for s in skills:
         type_str = _cyan("symlink") if s.is_symlink else _dim("dir")
         path_str = f"→ {s.target}" if s.is_symlink else s.path
-        print(f" {s.name.ljust(30)} {s.source.ljust(8)} {type_str.ljust(19)} {path_str}")
+        print(f" {s.name.ljust(30)} {s.source.ljust(8)} {format_tokens(s.meta_tokens).rjust(6)} {_body_tokens_cell(s).rjust(6)} {type_str.ljust(19)} {path_str}")
     _print_count_footer(len(skills), "skill")
     return 0
 
