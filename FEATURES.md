@@ -135,7 +135,7 @@ TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 
 - Proj/Glob 셀: `●` 활성 / `○` 비활성 / `·` unset(Plugins) / `─` 해당 없음. MCP만 예외 — Proj/Glob은 **등록 위치** 표시(읽기 전용)이고 활성 상태는 별도 On 컬럼이 담당 (등록≠활성, 아래 MCP 행 참조)
 - Upd 셀 (Vault 서브탭 제외): `↑` 업데이트 가능(`u`로 적용) / `·` 확인됨·최신 / `!` 확인 실패 / `─` 업데이트 대상 아님(MCP·Hooks, plugin 소속, non-git manual 등) / `…` 첫 확인 진행 중. 확인은 **비동기**(백그라운드 스레드, `check_all_updates` 스윕)로 돌고 결과는 `<AXT_CONFIG_DIR>/cache/update-status.json`에 캐시(TTL 1시간, `write_json_atomic`). 비-vault 서브탭에서 `r` = 목록 새로고침 + 강제 재확인, `u` 적용·`S` sync 성공 시 해당 항목 마커 즉시 최신으로 갱신
 - **Vault** (기본) — `# Name Ver Type Proj Glob Used`. **vault 저장소 전용 목록**: `~/.axt/vault/`에 실체가 있는 항목만 표시 (모든 행이 vault 소속이므로 Vault 컬럼 없음). plugin은 vault 개념이 없어 Plugins 서브탭 전용. vault 밖에만 존재하는 항목은 Skills/Commands/Agents 서브탭에 나타나며 거기서 `i`로 import
-- **Skills** — `# Skill Ver Meta Body Vault Proj Glob Upd Source Type Path` (Meta = 세션마다 항상 로드되는 `- name: description` 추정 토큰, Context 탭의 스킬 집계와 동일. Body = 스킬 호출 시 로드되는 SKILL.md 본문(frontmatter 제외) 추정 토큰, SKILL.md가 없으면 `─`). 탐색 가능한 모든 위치(`~/.claude/skills`, `~/.agents[/skills]`, 프로젝트, plugin) + **어디에도 링크되지 않은 vault 항목**(Source=`vault`)까지 병합 표시
+- **Skills** — `# Skill Ver Vault Proj Glob Upd Meta Body Source Type Path` (Meta = 세션마다 항상 로드되는 `- name: description` 추정 토큰, Context 탭의 스킬 집계와 동일. Body = 스킬 호출 시 로드되는 SKILL.md 본문(frontmatter 제외) 추정 토큰, SKILL.md가 없으면 `─`). 탐색 가능한 모든 위치(`~/.claude/skills`, `~/.agents[/skills]`, 프로젝트, plugin) + **어디에도 링크되지 않은 vault 항목**(Source=`vault`)까지 병합 표시
 - **Commands** — `# Command Ver Vault Proj Glob Upd Source Description`. Skills와 동일하게 링크되지 않은 vault 항목(Source=`vault`) 병합
 - **Agents** — `# Agent Ver Vault Proj Glob Upd Source Description`. Skills와 동일하게 링크되지 않은 vault 항목(Source=`vault`) 병합
 - **MCP** — `# Server Ver Vault Proj Glob Upd On Scope Transport Detail` (Ver는 plugin 소속 서버만. Proj `●` = project/`.mcp.json` 등록, Glob `●` = user(`~/.claude.json` 최상위) 등록, plugin/claude.ai/built-in은 둘 다 `─`. On = 현재 프로젝트 활성 상태 — MCP 활성화는 등록 스코프와 무관하게 항상 프로젝트 단위)
@@ -177,7 +177,7 @@ P           skill 전용 — PROJECT `.claude/skills` + `.agents/skills` 미러 
 - **공통(모든 서브탭 + Vault)**: `s` = **정렬 컬럼을 오른쪽으로 한 칸 이동**(끝에서 순환), `S` = **활성 컬럼의 오름차순 ▲ ↔ 내림차순 ▼ 토글**. **`#`(행 번호)을 제외한 모든 컬럼이 정렬 대상**이다. 활성 정렬 컬럼 헤더에 ▲/▼ 표시, 상태바에 `s:col/S:dir sort(<컬럼> ▲/▼)` 노출. `s`로 도착한 컬럼은 그 컬럼의 기본 방향으로 진입한다 — 텍스트 컬럼은 A→Z(▲), `Updated`/`Used`는 최신·최다 순(▼). 즉 `S`로 뒤집은 방향은 `s`로 다음 컬럼에 넘어갈 때 초기화된다. `Ver`는 숫자 인식 비교(1.10.0 > 1.9.0, 값 없음은 마지막). `Vault`/`Proj`/`Glob`/`Upd`/`On` 같은 글리프 컬럼은 화면에 그려지는 글리프 기준으로 정렬(●/✓ → ○ → · → ─). 정렬 상태는 서브탭별로 독립 유지되며, **TUI 종료 시 `~/.config/axt/config.json` 의 `sort` 맵에 저장되어 다음 실행에서 복원**된다(컬럼 + `S`로 지정한 방향까지). 기본 정렬을 그대로 둔 서브탭은 저장하지 않으므로, 정렬을 한 번도 건드리지 않은 세션은 config 파일을 만들지도 수정하지도 않는다. 저장된 컬럼이 이후 빌드에서 사라졌거나 config 가 깨져도 해당 리스트는 첫 컬럼 기본값으로 되돌아갈 뿐 실행을 막지 않는다. 서브탭별 순환 순서:
   - **Vault**: Name→Ver→Type→Project→Global→Used→Added→Updated (Added/Updated는 전용 컬럼이 없어 타이틀바 `sort=`로만 표시)
   - **Plugins**: Name→Version→Proj→Glob→Upd→Market
-  - **Skills**: Name→Ver→Meta→Body(둘 다 큰 순)→Vault→Proj→Glob→Upd→Source→Type→Path
+  - **Skills**: Name→Ver→Vault→Proj→Glob→Upd→Meta→Body(둘 다 큰 순)→Source→Type→Path
   - **Commands** / **Agents**: Name→Ver→Vault→Proj→Glob→Upd→Source→Desc
   - **MCP**: Name→Ver→Proj→Glob→Upd→On→Scope→Transport→Detail
   - **Hooks**: Event→Ver→Proj→Glob→Upd→Type→Source→Detail
