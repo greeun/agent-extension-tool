@@ -8824,9 +8824,9 @@ def test_sort_columns_match_rendered_columns():
     col_keys = {
         "vault":    {"name", "ver", "type", "project", "global", "used"},
         "plugins":  {"name", "version", "vault", "proj", "glob", "upd", "market"},
-        "skills":   {"name", "ver", "meta", "body", "vault", "proj", "glob", "upd", "source", "type", "path"},
-        "commands": {"name", "ver", "vault", "proj", "glob", "upd", "source", "desc"},
-        "agents":   {"name", "ver", "vault", "proj", "glob", "upd", "source", "desc"},
+        "skills":   {"name", "ver", "meta", "body", "vault", "proj", "glob", "upd", "link", "source", "path"},
+        "commands": {"name", "ver", "vault", "proj", "glob", "upd", "link", "source", "desc"},
+        "agents":   {"name", "ver", "vault", "proj", "glob", "upd", "link", "source", "desc"},
         "mcp":      {"name", "ver", "vault", "proj", "glob", "upd", "on", "scope",
                      "transport", "detail"},
         "hooks":    {"event", "ver", "vault", "proj", "glob", "upd", "type", "source", "detail"},
@@ -11575,3 +11575,23 @@ def test_vault_P_refuses_non_skill(tmp_path, monkeypatch):
     msg = axt.handle_vault_input(state, ord("P"))
     assert "Only skills" in msg
     assert not (Path.cwd() / ".agents").exists()
+
+
+def test_link_cell_distinguishes_original_symlink_and_broken(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    broken = tmp_path / "broken"
+    broken.symlink_to(tmp_path / "gone")
+
+    def sk(p, is_link):
+        return axt.SkillInfo(name=p.name, path=str(p), is_symlink=is_link, source="user",
+                             target=str(real) if is_link else None)
+
+    assert axt._link_cell("skills", sk(real, False)) == "·"
+    assert axt._link_cell("skills", sk(link, True)) == "↗"
+    assert axt._link_cell("skills", sk(broken, True)) == "!"
+    assert axt._link_cell("hooks", object()) == "─"
+    assert axt._link_term(sk(real, False)) == "original"
+    assert axt._link_term(sk(link, True)) == f"symlink → {real}"

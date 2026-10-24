@@ -120,6 +120,8 @@ Extensions sub-tab actions
                 Upd:       ↑ update available (`u` applies)  · up to date
                            ! check error  ─ not updatable  … first check
                            running (async; cached 1h — `r` re-checks now)
+                Link:      ↗ symlink  · original file/dir  ! broken symlink
+                           (Skills / Commands / Agents only, after Upd)
                 MCP only:  Proj/Glob mark the REGISTRATION scope (read-only:
                            user config → Glob, project/.mcp.json → Proj,
                            plugin/claude.ai/built-in → neither); the On

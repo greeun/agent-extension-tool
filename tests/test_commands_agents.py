@@ -322,3 +322,16 @@ def test_list_all_agents_includes_enabled_plugin(tmp_path: Path, monkeypatch):
     assert plugin_agents[0].name == "myplug:pagent"
     assert plugin_agents[0].description == "Plugin agent"
     assert plugin_agents[0].version == "3.1"  # falls back to parent plugin's manifest version
+
+
+def test_scan_md_dir_marks_symlinked_entries(tmp_path):
+    orig = tmp_path / "store" / "real.md"
+    _write_md(orig, "---\ndescription: real\n---\n")
+    d = tmp_path / "commands"
+    _write_md(d / "local.md", "---\ndescription: local\n---\n")
+    (d / "linked.md").symlink_to(orig)
+    by_name = {c.name: c for c in axt._scan_md_dir(d, "user", factory=axt._make_command)}
+    assert not by_name["local"].is_symlink and by_name["local"].target is None
+    assert by_name["linked"].is_symlink and by_name["linked"].target == str(orig)
+    agents = axt._scan_md_dir(d, "user", factory=axt._make_agent)
+    assert {a.name: a.is_symlink for a in agents} == {"linked": True, "local": False}

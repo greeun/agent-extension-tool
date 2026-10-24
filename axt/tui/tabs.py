@@ -2897,6 +2897,13 @@ def _hook_detail_fields(hook) -> tuple[str, list[tuple[str, str]]]:
     return hook.event, fields
 
 
+def _link_term(item) -> str:
+    """Detail-panel wording for the `Link` column of a file-backed row."""
+    if not item.is_symlink:
+        return "original"
+    return f"symlink → {item.target}" if item.target else "symlink"
+
+
 def _agent_detail_fields(agent) -> tuple[str, list[tuple[str, str]]]:
     """(title, label/value pairs) for the Agent detail panel."""
     fields: list[tuple[str, str]] = [
@@ -2909,6 +2916,7 @@ def _agent_detail_fields(agent) -> tuple[str, list[tuple[str, str]]]:
         fields.append(("Description", agent.description))
     if agent.source_path:
         fields.append(("File", agent.source_path))
+    fields.append(("Link", _link_term(agent)))
     return agent.name, fields
 
 
@@ -2917,13 +2925,11 @@ def _skill_detail_fields(skill) -> tuple[str, list[tuple[str, str]]]:
     fields: list[tuple[str, str]] = [
         ("Source", skill.source),
         ("Version", skill.version or "—"),
-        ("Type", "symlink" if skill.is_symlink else "dir"),
+        ("Link", _link_term(skill)),
     ]
     if skill.plugin:
         fields.append(("Plugin", skill.plugin))
     fields.append(("Path", skill.path))
-    if skill.target:
-        fields.append(("Target", skill.target))
     return skill.name, fields
 
 
@@ -2939,6 +2945,7 @@ def _command_detail_fields(command) -> tuple[str, list[tuple[str, str]]]:
         fields.append(("Description", command.description))
     if command.source_path:
         fields.append(("File", command.source_path))
+    fields.append(("Link", _link_term(command)))
     return f"/{command.name}", fields
 
 
@@ -3011,6 +3018,7 @@ _DATE_MIN = datetime.min.replace(tzinfo=timezone.utc)
 # actually shows and "on" states come first.
 _ON_RANK = {"●": 0, "✓": 0, "○": 1, "·": 2, "─": 3}
 _UPD_RANK = {"↑": 0, "!": 1, "…": 2, "·": 3, "─": 4}
+_LINK_RANK = {"↗": 0, "!": 1, "·": 2, "─": 3}
 
 
 def _ver_key(v: Optional[str]) -> tuple:
@@ -3069,6 +3077,10 @@ def _upd_glyph(state: TuiState, sub: str, item: Any) -> str:
     return _upd_cell(state, sub, item)
 
 
+def _link_glyph(state: TuiState, sub: str, item: Any) -> str:
+    return _link_cell(sub, item)
+
+
 def _vault_used_key(state: TuiState, sub: str):
     """Project count backing the Vault `Used` column (0 when unscanned)."""
     index = state.vault_usage_index
@@ -3098,10 +3110,10 @@ _SORT_COLUMNS: dict[str, tuple[_SortCol, ...]] = {
         ("proj",   "proj",   False, _by_scope_glyph("proj")),
         ("glob",   "glob",   False, _by_scope_glyph("glob")),
         ("upd",    "upd",    False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("link",   "link",   False, _by_glyph(_link_glyph, _LINK_RANK)),
         ("meta",   "meta",   True,  _by(lambda s: s.meta_tokens)),
         ("body",   "body",   True,  _by(lambda s: s.body_tokens)),
         ("source", "source", False, _by(lambda s: _lc(s.source))),
-        ("type",   "type",   False, _by(lambda s: s.is_symlink)),   # dir before symlink
         ("path",   "path",   False, _by(lambda s: _lc(s.target or s.path))),
     ),
     "commands": (
@@ -3111,6 +3123,7 @@ _SORT_COLUMNS: dict[str, tuple[_SortCol, ...]] = {
         ("proj",   "proj",   False, _by_scope_glyph("proj")),
         ("glob",   "glob",   False, _by_scope_glyph("glob")),
         ("upd",    "upd",    False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("link",   "link",   False, _by_glyph(_link_glyph, _LINK_RANK)),
         ("source", "source", False, _by(lambda c: _lc(c.source))),
         ("desc",   "desc",   False, _by(lambda c: _lc(c.description))),
     ),
@@ -3121,6 +3134,7 @@ _SORT_COLUMNS: dict[str, tuple[_SortCol, ...]] = {
         ("proj",   "proj",   False, _by_scope_glyph("proj")),
         ("glob",   "glob",   False, _by_scope_glyph("glob")),
         ("upd",    "upd",    False, _by_glyph(_upd_glyph, _UPD_RANK)),
+        ("link",   "link",   False, _by_glyph(_link_glyph, _LINK_RANK)),
         ("source", "source", False, _by(lambda a: _lc(a.source))),
         ("desc",   "desc",   False, _by(lambda a: _lc(a.description))),
     ),
@@ -3548,17 +3562,17 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         ctx = _scope_ctx(state, sub)
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Skill", max(20, w - 110)),
+            TableColumn("name", "Skill", max(20, w - 106)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
             TableColumn("upd", "Upd", 3),
             # After the shared status block so it stays aligned across tabs.
+            TableColumn("link", "Link", 4),
             TableColumn("meta", "Meta", 5),
             TableColumn("body", "Body", 5),
             TableColumn("source", "Source", 9),
-            TableColumn("type", "Type", 8),
             TableColumn("path", "Path", 30),
         ]
         rows = [{
@@ -3571,8 +3585,8 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "proj": _scope_cell(sub, s, "proj", ctx),
             "glob": _scope_cell(sub, s, "glob", ctx),
             "upd": _upd_cell(state, sub, s),
+            "link": _link_cell(sub, s),
             "source": s.source,
-            "type": "symlink" if s.is_symlink else "dir",
             "path": (s.target or s.path)[:60],
         } for i, s in enumerate(data)]
 
@@ -3580,12 +3594,13 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         ctx = _scope_ctx(state, sub)
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Command", max(20, w - 97)),
+            TableColumn("name", "Command", max(20, w - 102)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
             TableColumn("upd", "Upd", 3),
+            TableColumn("link", "Link", 4),
             TableColumn("source", "Source", 9),
             TableColumn("desc", "Description", 50),
         ]
@@ -3597,6 +3612,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "proj": _scope_cell(sub, c, "proj", ctx),
             "glob": _scope_cell(sub, c, "glob", ctx),
             "upd": _upd_cell(state, sub, c),
+            "link": _link_cell(sub, c),
             "source": c.source,
             "desc": (c.description or "")[:80],
         } for i, c in enumerate(data)]
@@ -3605,12 +3621,13 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
         ctx = _scope_ctx(state, sub)
         cols = [
             TableColumn("no", "#", 3),
-            TableColumn("name", "Agent", max(20, w - 97)),
+            TableColumn("name", "Agent", max(20, w - 102)),
             TableColumn("ver", "Ver", 8),
             TableColumn("vault", "Vault", 5),
             TableColumn("proj", "Proj", 4),
             TableColumn("glob", "Glob", 4),
             TableColumn("upd", "Upd", 3),
+            TableColumn("link", "Link", 4),
             TableColumn("source", "Source", 9),
             TableColumn("desc", "Description", 50),
         ]
@@ -3622,6 +3639,7 @@ def render_extensions_tab(stdscr, state: TuiState, y0: int, h: int, w: int) -> N
             "proj": _scope_cell(sub, a, "proj", ctx),
             "glob": _scope_cell(sub, a, "glob", ctx),
             "upd": _upd_cell(state, sub, a),
+            "link": _link_cell(sub, a),
             "source": a.source,
             "desc": (a.description or "")[:80],
         } for i, a in enumerate(data)]
@@ -4158,6 +4176,17 @@ def _vault_cell(sub: str, item: Any) -> str:
     except OSError:
         return "─"
     return "✓" if p.is_relative_to(vault_sub) else "─"
+
+
+def _link_cell(sub: str, item: Any) -> str:
+    """`Link` column marker: `↗` the listed entry is a symlink, `!` a
+    symlink whose target is gone, `·` the original file/dir itself, `─` a
+    sub-tab whose rows are not filesystem entries."""
+    if sub not in ("skills", "commands", "agents"):
+        return "─"
+    if not getattr(item, "is_symlink", False):
+        return "·"
+    return "↗" if Path(_item_disk_path(sub, item)).exists() else "!"
 
 
 def _upd_cell(state: TuiState, sub: str, item: Any) -> str:

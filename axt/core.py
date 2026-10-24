@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.21.0"
+__version__ = "1.22.0"
 
 T = TypeVar("T")
 
@@ -1270,6 +1270,10 @@ class CommandInfo:
     content: str
     plugin: Optional[str] = None
     version: str = ""
+    # `source_path` itself is a symlink (e.g. a vault item linked into
+    # `.claude/commands/`); `target` is its raw `readlink` value.
+    is_symlink: bool = False
+    target: Optional[str] = None
 
 
 # Regex twins of the TS `description:` extraction.
@@ -1347,9 +1351,21 @@ def _scan_md_dir(
     return out
 
 
+def _link_target(path: str) -> tuple[bool, Optional[str]]:
+    """``(is_symlink, readlink target)`` for a scanned `.md` entry."""
+    if not os.path.islink(path):
+        return False, None
+    try:
+        return True, os.readlink(path)
+    except OSError:
+        return True, None
+
+
 def _make_command(name, source, path, plugin, description, raw, version):
+    is_link, target = _link_target(path)
     return CommandInfo(name=name, source=source, source_path=path, plugin=plugin,
-                       description=description, content=raw, version=version)
+                       description=description, content=raw, version=version,
+                       is_symlink=is_link, target=target)
 
 
 def list_commands(*, project_dir: Optional[os.PathLike[str] | str] = None) -> list[CommandInfo]:
@@ -1374,11 +1390,15 @@ class AgentInfo:
     description: str
     plugin: Optional[str] = None
     version: str = ""
+    is_symlink: bool = False  # see CommandInfo
+    target: Optional[str] = None
 
 
 def _make_agent(name, source, path, plugin, description, _raw, version):
+    is_link, target = _link_target(path)
     return AgentInfo(name=name, source=source, source_path=path, plugin=plugin,
-                     description=description, version=version)
+                     description=description, version=version,
+                     is_symlink=is_link, target=target)
 
 
 def list_all_agents(*, project_dir: Optional[os.PathLike[str] | str] = None,
