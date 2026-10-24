@@ -66,7 +66,7 @@ TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 
 | 서브명령 | 인자 | 설명 |
 |---|---|---|
 | `init` | — | `.axt-profile.json` 빈 프로필 생성 |
-| `add <type> <names...>` | skill/command/agent + 이름들 + `--mirror-agents` `--force-agents` | vault → project symlink. `--mirror-agents`(skill 한정)로 `<project>/.agents/skills/`에도 vault를 직접 가리키는 symlink 병행 생성 + 프로필 `agentsMirror`에 기록 — `.skill-lock.json`이 있으면 기본 거부(프로필 미기록), `--force-agents`로 강제. 프로젝트 `.agents`가 `~/.agents`이면(HOME에서 실행) 거부 |
+| `add <type> <names...>` | skill/command/agent + 이름들 + `--mirror-agents` `--force-agents` | vault → project symlink. `--mirror-agents`(skill 한정)로 `<project>/.agents/skills/`에도 vault를 직접 가리키는 symlink 병행 생성 + 프로필 `agentsMirror`에 기록 — `.skill-lock.json`이 같은 이름을 소유하면(또는 lock을 읽을 수 없으면) 기본 거부(프로필 미기록), `--force-agents`로 강제. 프로젝트 `.agents`가 `~/.agents`이면(HOME에서 실행) 거부 |
 | `remove <type> <name>` | 타입 + 이름 + `--mirror-agents` | symlink 제거. `--mirror-agents`로 `<project>/.agents/skills/`의 대응 symlink(이 vault 항목을 가리킬 때만)와 `agentsMirror` 항목도 제거 |
 | `sync` | — | profile ↔ symlink 동기화. `agentsMirror`에 선언된 skill은 `<project>/.agents/skills/`에 생성하고, 선언되지 않았는데 vault를 가리키는 symlink는 제거(리포트 태그 `skill:<name> (.agents)`) — `.skill-lock.json` 트리는 강제하지 않고 오류로 리포트 |
 | `status` | — | profile vs 실제 symlink 비교. `agentsMirror` 항목은 `(.agents mirror)` 표기로 함께 표시 |
@@ -104,7 +104,7 @@ TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 
 | `migrate` | — | `~/.claude/skills,commands,agents` → vault 이동 — 대상 없는(broken) 심볼릭 링크는 이동하지 않고 리포트만 함(삭제 안 함) |
 | `add <path>` | 경로 + `-t/--type` | vault 추가 (파일/디렉터리 복사) |
 | `install <marketplace> <name>` | 마켓 + 이름 + `-t/--type` (기본 `skill`) | 마켓→vault 직접 설치 |
-| `link-global <type> <name>` | 타입 + 이름 + `--mirror-agents` `--force-agents` | `~/.claude/{type}s/`에 symlink. `--mirror-agents`(skill 한정)로 `~/.agents/skills/`에도 vault를 직접 가리키는 symlink 병행 생성 — `.skill-lock.json`(서드파티 설치기 소유 표시)이 있으면 기본 거부, `--force-agents`로 강제 |
+| `link-global <type> <name>` | 타입 + 이름 + `--mirror-agents` `--force-agents` | `~/.claude/{type}s/`에 symlink. `--mirror-agents`(skill 한정)로 `~/.agents/skills/`에도 vault를 직접 가리키는 symlink 병행 생성 — `.skill-lock.json`(서드파티 설치기 소유 표시)이 같은 이름을 소유하면 기본 거부, `--force-agents`로 강제. lock에 없는 이름은 미러 가능 |
 | `unlink-global <type> <name>` | 타입 + 이름 + `--mirror-agents` | symlink 제거. `--mirror-agents`로 `~/.agents/skills/`의 대응 symlink도 제거 (이 vault 항목을 가리킬 때만) |
 
 ### 1.11 글로벌 옵션
@@ -136,7 +136,7 @@ TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 
 - Upd 셀 (Vault 서브탭 제외): `↑` 업데이트 가능(`u`로 적용) / `·` 확인됨·최신 / `!` 확인 실패 / `─` 업데이트 대상 아님(MCP·Hooks, plugin 소속, non-git manual 등) / `…` 첫 확인 진행 중. 확인은 **비동기**(백그라운드 스레드, `check_all_updates` 스윕)로 돌고 결과는 `<AXT_CONFIG_DIR>/cache/update-status.json`에 캐시(TTL 1시간, `write_json_atomic`). 비-vault 서브탭에서 `r` = 목록 새로고침 + 강제 재확인, `u` 적용·`S` sync 성공 시 해당 항목 마커 즉시 최신으로 갱신
 - **Vault** (기본) — `# Name Ver Type Proj Glob Used`. **vault 저장소 전용 목록**: `~/.axt/vault/`에 실체가 있는 항목만 표시 (모든 행이 vault 소속이므로 Vault 컬럼 없음). plugin은 vault 개념이 없어 Plugins 서브탭 전용. vault 밖에만 존재하는 항목은 Skills/Commands/Agents 서브탭에 나타나며 거기서 `i`로 import
 - Link 셀 (Skills / Commands / Agents만, Upd 바로 뒤): 목록에 나온 항목 경로가 `↗` symlink(링크) / `·` 원본 파일·디렉터리 / `!` 대상이 사라진 깨진 symlink. 상세 패널의 `Link` 행에 `symlink → <대상>` 또는 `original` 표시
-- **Skills** — `# Skill Ver Vault Proj Glob Upd Link Meta Body Source Path` (Meta = 세션마다 항상 로드되는 `- name: description` 추정 토큰, Context 탭의 스킬 집계와 동일. Body = 스킬 호출 시 로드되는 SKILL.md 본문(frontmatter 제외) 추정 토큰, SKILL.md가 없으면 `─`). 탐색 가능한 모든 위치(`~/.claude/skills`, `~/.agents[/skills]`, 프로젝트, plugin) + **어디에도 링크되지 않은 vault 항목**(Source=`vault`)까지 병합 표시
+- **Skills** — `# Skill Ver Vault Proj Glob Upd Cdx Link Meta Body Owner Source Path` (Cdx = Codex가 로드하는지(`~/.agents/skills`, `<project>/.agents/skills`, `$CODEX_HOME/skills` 중 하나가 이 스킬로 해석되면 ●). Owner = 내용을 관리하는 주체: `vault`(vault 저장소) / `installer`(`.agents/.skill-lock.json`이 소유) / `plugin` / `unmanaged`. Proj/Glob은 Claude가 실제로 읽는 `.claude/skills` 항목만 ●로 친다 — `.agents` 행은 source가 `user`/`project`여도 제외되며, 그 행에서 `g`/`p`를 누르면 `.claude/skills`에 링크를 만들어 Claude에 노출한다. `.claude/skills` 링크가 `.agents` 항목을 가리키면 두 행을 Claude 쪽 한 행으로 합친다. Meta = 세션마다 항상 로드되는 `- name: description` 추정 토큰, Context 탭의 스킬 집계와 동일. Body = 스킬 호출 시 로드되는 SKILL.md 본문(frontmatter 제외) 추정 토큰, SKILL.md가 없으면 `─`). 탐색 가능한 모든 위치(`~/.claude/skills`, `~/.agents[/skills]`, 프로젝트, plugin) + **어디에도 링크되지 않은 vault 항목**(Source=`vault`)까지 병합 표시
 - **Commands** — `# Command Ver Vault Proj Glob Upd Link Source Description`. Skills와 동일하게 링크되지 않은 vault 항목(Source=`vault`) 병합
 - **Agents** — `# Agent Ver Vault Proj Glob Upd Link Source Description`. Skills와 동일하게 링크되지 않은 vault 항목(Source=`vault`) 병합
 - **MCP** — `# Server Ver Vault Proj Glob Upd On Scope Transport Detail` (Ver는 plugin 소속 서버만. Proj `●` = project/`.mcp.json` 등록, Glob `●` = user(`~/.claude.json` 최상위) 등록, plugin/claude.ai/built-in은 둘 다 `─`. On = 현재 프로젝트 활성 상태 — MCP 활성화는 등록 스코프와 무관하게 항상 프로젝트 단위)
@@ -162,7 +162,7 @@ U           모든 프로젝트에서 unlink: 선택된 항목 있으면 일괄,
 u           포커스 항목 콘텐츠 업데이트 (check+apply): 저장 디렉터리 git pull(심링크 추적)
 G           skill 전용 — GLOBAL + ~/.agents/skills 미러 동시 토글 (즉시 실행, 확인 모달; pending
             `g`와 별개). 둘 다 링크됨 → 둘 다 해제, 아니면 없는 쪽을 링크. `.skill-lock.json`이
-            있는 트리는 자동 건너뜀(강제는 CLI `--force-agents` 전용)
+            같은 이름을 소유하면 자동 건너뜀(강제는 CLI `--force-agents` 전용)
 P           skill 전용 — PROJECT `.claude/skills` + `.agents/skills` 미러 동시 토글 (`G`의 프로젝트
             판; 즉시 실행, 확인 모달; pending `p`와 별개). 양쪽 모두 `.axt-profile.json`
             (`skills` / `agentsMirror`)에 기록되어 `y`(sync)가 유지·복구. 잠금 트리 건너뜀은 `G`와 동일
@@ -178,13 +178,13 @@ P           skill 전용 — PROJECT `.claude/skills` + `.agents/skills` 미러 
 - **공통(모든 서브탭 + Vault)**: `s` = **정렬 컬럼을 오른쪽으로 한 칸 이동**(끝에서 순환), `S` = **활성 컬럼의 오름차순 ▲ ↔ 내림차순 ▼ 토글**. **`#`(행 번호)을 제외한 모든 컬럼이 정렬 대상**이다. 활성 정렬 컬럼 헤더에 ▲/▼ 표시, 상태바에 `s:col/S:dir sort(<컬럼> ▲/▼)` 노출. `s`로 도착한 컬럼은 그 컬럼의 기본 방향으로 진입한다 — 텍스트 컬럼은 A→Z(▲), `Updated`/`Used`는 최신·최다 순(▼). 즉 `S`로 뒤집은 방향은 `s`로 다음 컬럼에 넘어갈 때 초기화된다. `Ver`는 숫자 인식 비교(1.10.0 > 1.9.0, 값 없음은 마지막). `Vault`/`Proj`/`Glob`/`Upd`/`On` 같은 글리프 컬럼은 화면에 그려지는 글리프 기준으로 정렬(●/✓ → ○ → · → ─). 정렬 상태는 서브탭별로 독립 유지되며, **TUI 종료 시 `~/.config/axt/config.json` 의 `sort` 맵에 저장되어 다음 실행에서 복원**된다(컬럼 + `S`로 지정한 방향까지). 기본 정렬을 그대로 둔 서브탭은 저장하지 않으므로, 정렬을 한 번도 건드리지 않은 세션은 config 파일을 만들지도 수정하지도 않는다. 저장된 컬럼이 이후 빌드에서 사라졌거나 config 가 깨져도 해당 리스트는 첫 컬럼 기본값으로 되돌아갈 뿐 실행을 막지 않는다. 서브탭별 순환 순서:
   - **Vault**: Name→Ver→Type→Project→Global→Used→Added→Updated (Added/Updated는 전용 컬럼이 없어 타이틀바 `sort=`로만 표시)
   - **Plugins**: Name→Version→Proj→Glob→Upd→Market
-  - **Skills**: Name→Ver→Vault→Proj→Glob→Upd→Link→Meta→Body(둘 다 큰 순)→Source→Path
+  - **Skills**: Name→Ver→Vault→Proj→Glob→Upd→Cdx→Link→Meta→Body(둘 다 큰 순)→Owner→Source→Path
   - **Commands** / **Agents**: Name→Ver→Vault→Proj→Glob→Upd→Link→Source→Desc
   - **MCP**: Name→Ver→Proj→Glob→Upd→On→Scope→Transport→Detail
   - **Hooks**: Event→Ver→Proj→Glob→Upd→Type→Source→Detail
   - **Market**: Name→Upd→Kind→Loc→Updated
   - 해당 서브탭에서 값이 항상 동일한 컬럼(MCP/Hooks/Plugins의 `Vault` 등)은 순서가 바뀔 수 없으므로 순환에서 제외
-- **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `s` = 정렬 컬럼 이동, `S` = 정렬 방향 토글, `y` = sync 계열(Vault의 project sync, Market의 marketplace sync), `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열, `i` = vault로 import(원본 이동 + 원위치 symlink; Skills/Commands/Agents, 마크 시 일괄), `u` = 선택 항목 업데이트(check+apply) — Vault 포함 모든 서브탭 동일 (Vault의 `U`는 unlink-all)
+- **키 문법(통일 규칙)**: `p` = project 토글, `g` = global 토글, `Space` = 멀티 선택 마크, `s` = 정렬 컬럼 이동, `S` = 정렬 방향 토글, `y` = sync 계열(Vault의 project sync, Market의 marketplace sync), `e` = `$EDITOR` 편집, `x` = 제거 계열(확인 모달), `a` = 추가 계열, `i` = vault로 import(원본 이동 + 원위치 symlink; Skills/Commands/Agents, 마크 시 일괄. Owner=`installer` 스킬은 설치기가 갱신하므로 거부), `u` = 선택 항목 업데이트(check+apply) — Vault 포함 모든 서브탭 동일 (Vault의 `U`는 unlink-all)
 - **Plugins**: `p`/`g` = project/global settings의 `enabledPlugins` 토글, `x` uninstall (확인 모달), `u` update selected (check + apply)
 - **MCP**: `p` = On 토글 (현재 프로젝트 `disabledMcpServers`, built-in은 `enabledMcpServers` opt-in; global 활성 스코프 없음 — `g`는 안내 메시지). Proj/Glob은 등록 위치 표시로 읽기 전용 — `p`/`g`로 등록을 옮길 수 없음
 - **Hooks**: `p`/`g` 토글 (설정 파일 내 `hooks`↔`disabledHooks` 이동 — user 파일 훅은 `g`, project/local 파일 훅은 `p`, plugin 훅은 읽기 전용), `v` preview (dry-run)
@@ -251,7 +251,7 @@ Plan 라벨 + "API-rate estimates" 캡션(구독 청구액이 아님을 명시) 
 - `read_profile`, `write_profile` (`.axt-profile.json`)
 - `link_to_project`, `unlink_from_project`, `sync_project`
 - `link_to_global`, `unlink_from_global`
-- `link_to_agents`, `unlink_from_agents`, `skill_lock_present` — skill을 `~/.agents/skills/`에도 미러(vault 원본을 직접 가리킴). `.skill-lock.json`(서드파티 설치기 소유 트리 표시) 존재 시 기본 거부, `force=True`로 우회
+- `link_to_agents`, `unlink_from_agents`, `skill_lock_names`, `skill_lock_owns` — skill을 `~/.agents/skills/`에도 미러(vault 원본을 직접 가리킴). `.skill-lock.json`(서드파티 설치기 소유 표시)의 `skills`에 같은 이름이 있거나 lock을 읽을 수 없으면 기본 거부, `force=True`로 우회
 - `link_to_project_agents`, `unlink_from_project_agents`, `project_agents_dir` — 같은 미러를 `<project>/.agents/skills/`에 생성/제거하고 `.axt-profile.json`의 `agentsMirror`에 기록/삭제. `sync_project`가 이 선언을 기준으로 프로젝트 `.agents/skills/`를 조정. 프로젝트 `.agents`가 `~/.agents`와 같으면(HOME) 전역 미러와 충돌하므로 거부/건너뜀
 - `import_to_vault`, `migrate_to_vault`
 - **Windows 미지원**: symlink 생성 fail-safe 메시지

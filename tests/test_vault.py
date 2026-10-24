@@ -304,7 +304,7 @@ def test_link_to_agents_guarded_by_skill_lock(tmp_path: Path):
     vault = _make_vault(tmp_path)
     agents = tmp_path / ".agents"
     agents.mkdir()
-    (agents / axt.SKILL_LOCK_NAME).write_text("{}")
+    (agents / axt.SKILL_LOCK_NAME).write_text('{"skills": {"myskill": {}}}')
     skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
     ok, msg = axt.link_to_agents(agents, skill)
     assert not ok and axt.SKILL_LOCK_NAME in msg
@@ -312,6 +312,30 @@ def test_link_to_agents_guarded_by_skill_lock(tmp_path: Path):
     # force overrides the guard.
     ok, _ = axt.link_to_agents(agents, skill, force=True)
     assert ok and (agents / "skills" / "myskill").is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_agents_lock_guard_is_per_name(tmp_path: Path):
+    """The installer owns only the names its lock lists; the rest of the tree
+    stays mirrorable."""
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    (agents / axt.SKILL_LOCK_NAME).write_text('{"skills": {"other": {}}}')
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    ok, _ = axt.link_to_agents(agents, skill)
+    assert ok and (agents / "skills" / "myskill").is_symlink()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_link_to_agents_unreadable_lock_refuses(tmp_path: Path):
+    vault = _make_vault(tmp_path)
+    agents = tmp_path / ".agents"
+    agents.mkdir()
+    (agents / axt.SKILL_LOCK_NAME).write_text("not json")
+    skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
+    ok, msg = axt.link_to_agents(agents, skill)
+    assert not ok and axt.SKILL_LOCK_NAME in msg
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
@@ -967,7 +991,7 @@ def test_link_to_project_agents_guard_leaves_profile_untouched(tmp_path: Path):
     vault = _make_vault(tmp_path)
     proj = tmp_path / "proj"
     (proj / ".agents").mkdir(parents=True)
-    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text('{"skills": {"myskill": {}}}')
     skill = next(i for i in axt.list_vault_items(vault) if i.type == "skill")
     ok, msg = axt.link_to_project_agents(proj, skill)
     assert not ok and axt.SKILL_LOCK_NAME in msg
@@ -1094,7 +1118,7 @@ def test_sync_project_reports_lock_guard_and_missing_vault_item_for_mirror(tmp_p
     vault = _make_vault(tmp_path)
     proj = tmp_path / "proj"
     (proj / ".agents").mkdir(parents=True)
-    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text("{}")
+    (proj / ".agents" / axt.SKILL_LOCK_NAME).write_text('{"skills": {"myskill": {}}}')
     axt.write_profile(proj, axt.AxtProfile(agents_mirror=("myskill", "ghost")))
     result = axt.sync_project(proj, vault)
     assert not result.linked

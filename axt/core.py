@@ -45,11 +45,11 @@ import stat
 import sys
 import tempfile
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.22.0"
+__version__ = "1.23.0"
 
 T = TypeVar("T")
 
@@ -1119,6 +1119,13 @@ class SkillInfo:
     # stripped) loaded when the skill is invoked (-1 = no readable SKILL.md).
     meta_tokens: int = 0
     body_tokens: int = -1
+    # Who manages the content: "vault" (lives in vault storage), "installer"
+    # (claimed by a `.agents/.skill-lock.json`), "plugin", or "unmanaged".
+    # Set by list_all_skills() when it scans the `.agents` trees.
+    owner: str = ""
+    # Codex reads `.agents/skills` (user + project) and `$CODEX_HOME/skills`;
+    # True when one of those resolves to this skill's content.
+    codex: bool = False
 
 
 def _scan_skills_dir(skills_dir: os.PathLike[str] | str, source: str, plugin: Optional[str] = None) -> list[SkillInfo]:
@@ -1212,21 +1219,93 @@ def list_all_skills(*, project_dir: Optional[os.PathLike[str] | str] = None,
     Claude Code itself never reads it (only Gemini CLI/Codex/vercel-labs-style
     tools do), so callers modeling what Claude actually loads (the Context
     tab's token accounting) must pass False. Mirrors the reasoning in
-    `list_vault_only_items`."""
+    `list_vault_only_items`.
+
+    With the `.agents` trees included, a `.agents` entry that a `.claude/skills`
+    link already resolves to is folded into that link's row, and every row
+    carries `owner` / `codex` (see `_annotate_skill_ownership`)."""
     out: list[SkillInfo] = []
+    agents_rows: list[SkillInfo] = []
+    agents_dirs: list[Path] = []
     out += _scan_skills_dir(PATHS.skills, "user")
     if include_agents_dir:
-        out += _scan_dot_agents_skills(HOME / ".agents", "user")
+        agents_dirs.append(HOME / ".agents")
+        agents_rows += _scan_dot_agents_skills(HOME / ".agents", "user")
+        out += agents_rows
     if project_dir:
         out += _scan_skills_dir(Path(project_dir) / ".claude" / "skills", "project")
     if include_agents_dir:
         # `.agents` next to the project, defaulting to cwd when project_dir missing.
         proj_agents = Path(project_dir or os.getcwd()) / ".agents"
         if not _is_home_dot_agents(proj_agents):
-            out += _scan_dot_agents_skills(proj_agents, "project")
+            agents_dirs.append(proj_agents)
+            proj_rows = _scan_dot_agents_skills(proj_agents, "project")
+            agents_rows += proj_rows
+            out += proj_rows
+    if agents_rows:
+        # A `.claude/skills` link into `.agents` is the same skill seen from
+        # Claude's side: keep that row (it is what Claude loads and what `g`/`p`
+        # toggle) and drop the `.agents` duplicate.
+        agents_ids = {id(s) for s in agents_rows}
+        claude_seen = {_realpath(s.path) for s in out if id(s) not in agents_ids}
+        out = [s for s in out
+               if id(s) not in agents_ids or _realpath(s.path) not in claude_seen]
+    if agents_dirs:
+        out = _annotate_skill_ownership(out, agents_dirs)
 
     for p in _active_plugins():
-        out += _scan_skills_dir(Path(p.install_path) / "skills", "plugin", p.name)
+        out += [dc_replace(s, owner="plugin") for s in
+                _scan_skills_dir(Path(p.install_path) / "skills", "plugin", p.name)]
+    return out
+
+
+def _realpath(path: os.PathLike[str] | str) -> str:
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return str(path)
+
+
+def _dir_entry_names(d: Path) -> list[str]:
+    """Non-hidden entry names in `d`; empty when it is missing or unreadable."""
+    try:
+        return [e.name for e in d.iterdir() if not e.name.startswith(".")]
+    except OSError:
+        return []
+
+
+def codex_skill_roots(dot_agents_dirs: list[Path]) -> list[Path]:
+    """Directories Codex scans for skills: each `.agents/skills` plus
+    `$CODEX_HOME/skills` (default `~/.codex/skills`)."""
+    codex_home = Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+    return [d / "skills" for d in dot_agents_dirs] + [codex_home / "skills"]
+
+
+def _annotate_skill_ownership(skills: list[SkillInfo], dot_agents_dirs: list[Path]) -> list[SkillInfo]:
+    """Copies of non-plugin `skills` with `owner` and `codex` filled in."""
+    vault = getattr(PATHS, "vault", None)
+    vault_skills = _realpath(Path(vault) / "skills") if vault else None
+    # Installer-claimed entries, keyed by the resolved `.agents/skills/<name>`.
+    installer: set[str] = set()
+    for d in dot_agents_dirs:
+        names = skill_lock_names(d)
+        nested = d / "skills"
+        if names is None:  # unreadable lock — treat every entry as claimed
+            names = frozenset(_dir_entry_names(nested))
+        installer.update(_realpath(nested / n) for n in names)
+    codex_seen: set[str] = set()
+    for root in codex_skill_roots(dot_agents_dirs):
+        codex_seen.update(_realpath(root / n) for n in _dir_entry_names(root))
+    out: list[SkillInfo] = []
+    for s in skills:
+        real = _realpath(s.path)
+        if vault_skills and (real == vault_skills or real.startswith(vault_skills + os.sep)):
+            owner = "vault"
+        elif real in installer:
+            owner = "installer"
+        else:
+            owner = "unmanaged"
+        out.append(dc_replace(s, owner=owner, codex=real in codex_seen))
     return out
 
 
@@ -1442,7 +1521,7 @@ def list_vault_only_items(sub: str, existing: list) -> list:
     if sub == "skills":
         # Same validity rule as the Vault tab: a skill is a dir carrying
         # index.md/SKILL.md, not any stray folder in vault storage.
-        vault_items = [s for s in _scan_skills_dir(vault_dir, "vault")
+        vault_items = [dc_replace(s, owner="vault") for s in _scan_skills_dir(vault_dir, "vault")
                        if _entry_is_item(Path(s.path), "skill")]
     elif sub == "commands":
         vault_items = _scan_md_dir(vault_dir, "vault", factory=_make_command)
@@ -2413,11 +2492,28 @@ def unlink_from_global(global_dir: os.PathLike[str] | str, item: VaultItem) -> N
 SKILL_LOCK_NAME = ".skill-lock.json"
 
 
-def skill_lock_present(dot_agents_dir: os.PathLike[str] | str) -> bool:
-    """True when a `.skill-lock.json` sits in the `.agents` directory — the
-    marker that a third-party installer owns that tree. axt must not write into
-    a lock-managed dir or the two managers overwrite each other."""
-    return (Path(dot_agents_dir) / SKILL_LOCK_NAME).exists()
+def skill_lock_names(dot_agents_dir: os.PathLike[str] | str) -> Optional[frozenset[str]]:
+    """Skill names a `.skill-lock.json` in the `.agents` directory claims.
+
+    The installer owns only the entries it lists, so axt may still manage the
+    rest of the tree. Returns an empty set when there is no lock, and None when
+    a lock exists but cannot be read — callers treat that as "owns everything"
+    so an unreadable lock never lets axt overwrite installer content."""
+    lock = Path(dot_agents_dir) / SKILL_LOCK_NAME
+    if not lock.exists():
+        return frozenset()
+    data = read_json(lock, fallback=None)
+    if not isinstance(data, dict):
+        return None
+    skills = data.get("skills")
+    return frozenset(skills) if isinstance(skills, dict) else frozenset()
+
+
+def skill_lock_owns(dot_agents_dir: os.PathLike[str] | str, name: str) -> bool:
+    """True when the `.agents` installer lock claims `name` (or is unreadable).
+    axt must not write over such an entry or the two managers fight."""
+    names = skill_lock_names(dot_agents_dir)
+    return names is None or name in names
 
 
 def link_to_agents(
@@ -2429,8 +2525,9 @@ def link_to_agents(
     """Mirror a vault skill into `<.agents>/skills/<name>` as a symlink to
     `item.path`, so agents that read `.agents/skills` also see it.
 
-    Guarded: refuses when `.skill-lock.json` marks the tree as installer-owned
-    (pass ``force=True`` to override). Only skills mirror — `.agents/skills` is
+    Guarded: refuses when `.skill-lock.json` claims this skill name as
+    installer-owned (pass ``force=True`` to override); names the lock does not
+    list stay mirrorable. Only skills mirror — `.agents/skills` is
     the cross-agent skill convention. The link points straight at the vault
     content (no chain through `.claude/skills`). Returns ``(linked, message)``
     and only raises on unsupported platform / an existing real file collision,
@@ -2440,8 +2537,8 @@ def link_to_agents(
     if item.type != "skill":
         return False, f"Only skills mirror to .agents/skills (got {item.type})"
     d = Path(dot_agents_dir)
-    if skill_lock_present(d) and not force:
-        return False, f"{SKILL_LOCK_NAME} present — .agents/skills is installer-managed (use force to override)"
+    if skill_lock_owns(d, item.name) and not force:
+        return False, f"{SKILL_LOCK_NAME} claims {item.name} — installer-managed (use force to override)"
     target_dir = d / "skills"
     target_dir.mkdir(parents=True, exist_ok=True)
     link_path = target_dir / item.name

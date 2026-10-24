@@ -84,7 +84,7 @@ Vault
   g             Toggle GLOBAL link (pending) — marked items in bulk, else focused
   G             Skill only: toggle GLOBAL + ~/.agents/skills mirror together
                 (immediate, confirm). Both linked → unlink both; else link the
-                missing side. .agents skipped when a .skill-lock.json guards it.
+                missing side. .agents skipped when a .skill-lock.json claims it.
   P             Skill only: same for the PROJECT — .claude/skills + .agents/skills
                 of the current directory, both recorded in .axt-profile.json
                 (`skills` / `agentsMirror`) so `y` (sync) keeps them.
