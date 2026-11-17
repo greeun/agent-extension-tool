@@ -100,7 +100,7 @@ TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 
 ### 1.10 `axt vault` (6)
 | 서브명령 | 인자 | 설명 |
 |---|---|---|
-| `list` | — | vault의 모든 확장 표 |
+| `list` | — | vault의 모든 확장 표. 저장소 단위 clone(루트에 SKILL.md가 없는 `<repo>/skills/<name>/SKILL.md`)은 하위 스킬을 각자 이름으로 표시 — 이름이 겹치면 최상위 스킬 우선 |
 | `migrate` | — | `~/.claude/skills,commands,agents` → vault 이동 — 대상 없는(broken) 심볼릭 링크는 이동하지 않고 리포트만 함(삭제 안 함) |
 | `add <path>` | 경로 + `-t/--type` | vault 추가 (파일/디렉터리 복사) |
 | `install <marketplace> <name>` | 마켓 + 이름 + `-t/--type` (기본 `skill`) | 마켓→vault 직접 설치 |
@@ -134,7 +134,7 @@ TUI 대시보드 실행. 최초 실행(마커 `~/.config/axt/onboarded` 부재) 
 - Vault 셀: `✓` = 항목 실체가 `~/.axt/vault/`에 저장됨 / `─` = vault 미관리 (vault가 다루지 않는 타입 포함)
 - Proj/Glob 셀: `●` 활성 / `○` 비활성 / `·` unset(Plugins) / `─` 해당 없음. MCP만 예외 — Proj/Glob은 **등록 위치** 표시(읽기 전용)이고 활성 상태는 별도 On 컬럼이 담당 (등록≠활성, 아래 MCP 행 참조)
 - Upd 셀 (Vault 서브탭 제외): `↑` 업데이트 가능(`u`로 적용) / `·` 확인됨·최신 / `!` 확인 실패 / `─` 업데이트 대상 아님(MCP·Hooks, plugin 소속, non-git manual 등) / `…` 첫 확인 진행 중. 확인은 **비동기**(백그라운드 스레드, `check_all_updates` 스윕)로 돌고 결과는 `<AXT_CONFIG_DIR>/cache/update-status.json`에 캐시(TTL 1시간, `write_json_atomic`). 비-vault 서브탭에서 `r` = 목록 새로고침 + 강제 재확인, `u` 적용·`S` sync 성공 시 해당 항목 마커 즉시 최신으로 갱신
-- **Vault** (기본) — `# Name Ver Type Proj Glob Used`. **vault 저장소 전용 목록**: `~/.axt/vault/`에 실체가 있는 항목만 표시 (모든 행이 vault 소속이므로 Vault 컬럼 없음). plugin은 vault 개념이 없어 Plugins 서브탭 전용. vault 밖에만 존재하는 항목은 Skills/Commands/Agents 서브탭에 나타나며 거기서 `i`로 import
+- **Vault** (기본) — `# Name Ver Type Proj Glob Used`. **vault 저장소 전용 목록**: `~/.axt/vault/`에 실체가 있는 항목만 표시 (모든 행이 vault 소속이므로 Vault 컬럼 없음). 저장소 단위 clone(`git pull` 업데이트용, 예: `unslop/skills/unslop/SKILL.md`)은 루트에 SKILL.md가 없으면 `skills/*/` 하위 스킬을 각자 이름으로 표시하며, link/sync/`.agents` 미러도 그 경로를 가리킨다. plugin은 vault 개념이 없어 Plugins 서브탭 전용. vault 밖에만 존재하는 항목은 Skills/Commands/Agents 서브탭에 나타나며 거기서 `i`로 import
 - Link 셀 (Skills / Commands / Agents만, Upd 바로 뒤): 목록에 나온 항목 경로가 `↗` symlink(링크) / `·` 원본 파일·디렉터리 / `!` 대상이 사라진 깨진 symlink. 상세 패널의 `Link` 행에 `symlink → <대상>` 또는 `original` 표시
 - **Skills** — `# Skill Ver Vault Proj Glob Upd Cdx Link Meta Body Owner Source Path` (Cdx = Codex가 로드하는지(`~/.agents/skills`, `<project>/.agents/skills`, `$CODEX_HOME/skills` 중 하나가 이 스킬로 해석되면 ●). Owner = 내용을 관리하는 주체: `vault`(vault 저장소) / `installer`(`.agents/.skill-lock.json`이 소유) / `plugin` / `unmanaged`. Proj/Glob은 Claude가 실제로 읽는 `.claude/skills` 항목만 ●로 친다 — `.agents` 행은 source가 `user`/`project`여도 제외되며, 그 행에서 `g`/`p`를 누르면 `.claude/skills`에 링크를 만들어 Claude에 노출한다. `.claude/skills` 링크가 `.agents` 항목을 가리키면 두 행을 Claude 쪽 한 행으로 합친다. Meta = 세션마다 항상 로드되는 `- name: description` 추정 토큰, Context 탭의 스킬 집계와 동일. Body = 스킬 호출 시 로드되는 SKILL.md 본문(frontmatter 제외) 추정 토큰, SKILL.md가 없으면 `─`). 탐색 가능한 모든 위치(`~/.claude/skills`, `~/.agents[/skills]`, 프로젝트, plugin) + **어디에도 링크되지 않은 vault 항목**(Source=`vault`)까지 병합 표시
 - **Commands** — `# Command Ver Vault Proj Glob Upd Link Source Description`. Skills와 동일하게 링크되지 않은 vault 항목(Source=`vault`) 병합
