@@ -858,8 +858,13 @@ def test_two_thousand_character_fields_do_not_break_the_layout(tmp_path, monkeyp
     scr = _make_stdscr(30, 140)
     axt._render_frame(scr, state)
     by_y: dict[int, list[int]] = {}
+    header_y = min(y for y, _x, text, *_ in scr.calls if text.startswith("Command"))
     for y, x, *_ in scr.calls:
-        by_y.setdefault(y, []).append(x)
+        # Rows above the table header (tab bar, sub-tab bar) have their own
+        # shapes; the sub-tab bar's draw count happens to equal the table's
+        # column count since the Link column, so keep it out by position.
+        if y >= header_y:
+            by_y.setdefault(y, []).append(x)
     # Fixed: this compared every row with >5 draws, which swept in the tab bar
     # (its version badge is drawn first, at x=127), the filter bar and the
     # detail panel — rows that legitimately have their own shapes. The property

@@ -616,17 +616,23 @@ def test_wide_characters_are_never_cut_in_half(tmp_path, monkeypatch):
     wide_name = "한" * 30                        # 60 cells — far past the column
     names = ["ascii", wide_name]
     state = _seed_named_skills(tmp_path, monkeypatch, names)
-    # 139 cols makes the drawn name column an ODD number of cells, so a wide
-    # glyph cannot exactly fill it — the padding path has to kick in.
-    scr = _make_stdscr(rows=30, cols=139)
-
-    axt.render_extensions_tab(scr, state, y0=2, h=26, w=139)
-
-    rows = _table_rows(scr, set(names))
-    assert set(rows) == set(names)
+    # The drawn name column must be an ODD number of cells, so a wide glyph
+    # cannot exactly fill it — the padding path has to kick in. Search for a
+    # terminal width that yields one instead of hard-coding it: every column
+    # added to the Skills table moves that width (139 stopped working when
+    # Owner/Cdx arrived and pinned the name column at its even minimum).
+    rows: dict[str, list[tuple[int, str]]] = {}
+    column_w = 0
+    for cols in range(120, 200):
+        scr = _make_stdscr(rows=30, cols=cols)
+        axt.render_extensions_tab(scr, state, y0=2, h=26, w=cols)
+        rows = _table_rows(scr, set(names))
+        assert set(rows) == set(names)
+        column_w = rows["ascii"][3][0] - rows["ascii"][2][0]
+        if column_w % 2 == 1:
+            break
+    assert column_w % 2 == 1, "no terminal width in 120..199 gives an odd name column"
     cell = rows[wide_name][2][1]
-    column_w = rows["ascii"][3][0] - rows["ascii"][2][0]
-    assert column_w % 2 == 1, "this test needs an odd column width to be meaningful"
 
     assert axt.cell_width(cell) == column_w
     content = cell.rstrip(" ")
