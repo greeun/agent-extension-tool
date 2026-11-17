@@ -1520,9 +1520,15 @@ def list_vault_only_items(sub: str, existing: list) -> list:
     vault_dir = Path(PATHS.vault) / sub
     if sub == "skills":
         # Same validity rule as the Vault tab: a skill is a dir carrying
-        # index.md/SKILL.md, not any stray folder in vault storage.
-        vault_items = [dc_replace(s, owner="vault") for s in _scan_skills_dir(vault_dir, "vault")
-                       if _entry_is_item(Path(s.path), "skill")]
+        # index.md/SKILL.md (nested repo clones included), not any stray
+        # folder in vault storage.
+        wanted = _vault_skill_entries(vault_dir)
+        vault_items = []
+        for parent in sorted({e.parent for e in wanted}):
+            keep = {e for e in wanted if e.parent == parent}
+            vault_items += [dc_replace(s, owner="vault") for s in _scan_skills_dir(parent, "vault")
+                            if Path(s.path) in keep]
+        vault_items.sort(key=lambda s: s.name)
     elif sub == "commands":
         vault_items = _scan_md_dir(vault_dir, "vault", factory=_make_command)
     elif sub == "agents":
@@ -2374,6 +2380,43 @@ def _entry_is_item(entry: Path, item_type: str) -> bool:
     return _path_is_file(entry) and entry.suffix == ".md"
 
 
+def _vault_skill_entries(skills_dir: Path) -> list[Path]:
+    """Skill dirs stored in the vault skills dir, sorted by name.
+
+    Besides `<skills_dir>/<name>/SKILL.md`, a whole-repo clone kept for
+    `git pull` updates (e.g. heydamir/unslop) carries its skills one level
+    down as `<repo>/skills/<name>/SKILL.md`; those inner dirs count too when
+    the repo root is not itself a skill. A top-level skill always wins a name
+    clash, then the first nested one in sorted order — links are keyed by
+    name, so one name must map to one path."""
+    entries = _iter_item_entries(skills_dir)
+    top = [e for e in entries if _entry_is_item(e, "skill")]
+    taken = {e.name for e in top}
+    nested: list[Path] = []
+    for repo in entries:
+        if _entry_is_item(repo, "skill") or not _path_is_dir(repo):
+            continue
+        for child in _iter_item_entries(repo / "skills"):
+            if child.name not in taken and _entry_is_item(child, "skill"):
+                taken.add(child.name)
+                nested.append(child)
+    return sorted(top + nested, key=lambda p: p.name)
+
+
+def vault_skill_path(vault_dir: os.PathLike[str] | str, name: str) -> Path:
+    """Storage path of the vault skill `name`, nested repo clones included
+    (see `_vault_skill_entries`). Falls back to `<vault>/skills/<name>` when
+    no such skill exists, so callers keep their own "not found" handling."""
+    skills_dir = Path(vault_dir) / "skills"
+    direct = skills_dir / name
+    if _entry_is_item(direct, "skill"):
+        return direct
+    for entry in _vault_skill_entries(skills_dir):
+        if entry.name == name:
+            return entry
+    return direct
+
+
 def _make_vault_item(entry: Path, item_type: str, **flags: Any) -> VaultItem:
     """Build a VaultItem from a filesystem entry; `flags` override state fields."""
     created, updated = _stat_times(entry)
@@ -2391,6 +2434,9 @@ def _make_vault_item(entry: Path, item_type: str, **flags: Any) -> VaultItem:
 
 def _scan_vault_dir(vault_dir: Path, sub: str, item_type: str) -> list[VaultItem]:
     out: list[VaultItem] = []
+    if item_type == "skill":
+        return [_make_vault_item(e, item_type, in_vault=True)
+                for e in _vault_skill_entries(vault_dir / sub)]
     for entry in _iter_item_entries(vault_dir / sub):
         if not _entry_is_item(entry, item_type):
             continue
@@ -2655,7 +2701,7 @@ def sync_project(project_dir: os.PathLike[str] | str, vault_dir: os.PathLike[str
 
         # Ensure declared items are linked.
         for name in declared:
-            vp = vault_sub / name
+            vp = vault_skill_path(vault_dir, name) if item_type == "skill" else vault_sub / name
             lp = project_sub / name
             if not vp.exists():
                 errors.append(f"{item_type}:{name} not found in vault")
@@ -2725,7 +2771,7 @@ def _sync_project_agents_mirror(
 
     for name in sorted(declared):
         tag = f"skill:{name} (.agents)"
-        vp = vault_sub / name
+        vp = vault_skill_path(vault_dir, name)
         if not vp.exists():
             errors.append(f"{tag} not found in vault")
             continue

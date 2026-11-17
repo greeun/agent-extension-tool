@@ -222,6 +222,48 @@ def test_list_vault_items_skips_dotfiles_and_non_md(tmp_path: Path):
     assert names == ["good.md"]
 
 
+def _skill_dir(path: Path, name: str) -> Path:
+    path.mkdir(parents=True)
+    (path / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {name} desc\n---\nbody")
+    return path
+
+
+def test_list_vault_items_finds_skills_nested_in_a_repo_clone(tmp_path: Path):
+    """A whole-repo clone (`<repo>/skills/<name>/SKILL.md`, no SKILL.md at the
+    repo root) lists its inner skills by their own names and nested paths."""
+    vault = tmp_path / "vault"
+    _skill_dir(vault / "skills" / "unslop" / "skills" / "unslop", "unslop")
+    _skill_dir(vault / "skills" / "bundle" / "skills" / "alpha", "alpha")
+    _skill_dir(vault / "skills" / "bundle" / "skills" / "beta", "beta")
+    (vault / "skills" / "bundle" / "README.md").write_text("repo readme")
+    items = {i.name: i for i in axt.list_vault_items(vault)}
+    assert set(items) == {"unslop", "alpha", "beta"}
+    assert items["unslop"].path == str(vault / "skills" / "unslop" / "skills" / "unslop")
+    assert items["alpha"].description == "alpha desc"
+
+
+def test_list_vault_items_nested_scan_skips_root_skills_and_name_clashes(tmp_path: Path):
+    """A repo root that is itself a skill is not descended into, and a nested
+    skill never shadows a top-level vault skill of the same name."""
+    vault = tmp_path / "vault"
+    root_skill = _skill_dir(vault / "skills" / "rooted", "rooted")
+    _skill_dir(root_skill / "skills" / "inner", "inner")
+    _skill_dir(vault / "skills" / "alpha", "alpha")
+    _skill_dir(vault / "skills" / "bundle" / "skills" / "alpha", "alpha")
+    items = axt.list_vault_items(vault)
+    assert sorted(i.name for i in items) == ["alpha", "rooted"]
+    assert {i.name: i.path for i in items}["alpha"] == str(vault / "skills" / "alpha")
+
+
+def test_list_vault_only_items_includes_nested_skills(tmp_path: Path, monkeypatch):
+    import dataclasses
+    vault = tmp_path / "vault"
+    nested = _skill_dir(vault / "skills" / "unslop" / "skills" / "unslop", "unslop")
+    monkeypatch.setattr("axt.PATHS", dataclasses.replace(axt.PATHS, vault=vault))
+    out = axt.list_vault_only_items("skills", [])
+    assert [(s.name, s.path) for s in out] == [("unslop", str(nested))]
+
+
 # ─── Symlink ops ─────────────────────────────────────────────────────────────
 
 
@@ -430,6 +472,19 @@ def test_sync_project_reports_missing_in_vault(tmp_path: Path):
     axt.write_profile(proj, axt.AxtProfile(skills=("does-not-exist",)))
     result = axt.sync_project(proj, vault)
     assert any("does-not-exist" in e for e in result.errors)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
+def test_sync_project_links_nested_vault_skill(tmp_path: Path):
+    vault = tmp_path / "vault"
+    nested = _skill_dir(vault / "skills" / "unslop" / "skills" / "unslop", "unslop")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    axt.write_profile(proj, axt.AxtProfile(skills=("unslop",), agents_mirror=("unslop",)))
+    result = axt.sync_project(proj, vault)
+    assert result.errors == ()
+    assert (proj / ".claude" / "skills" / "unslop").resolve() == nested.resolve()
+    assert (proj / ".agents" / "skills" / "unslop").resolve() == nested.resolve()
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="vault rejects Windows")
