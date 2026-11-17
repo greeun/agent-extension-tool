@@ -49,7 +49,7 @@ from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional, Sequence, TypeVar
 
-__version__ = "1.23.0"
+__version__ = "1.24.0"
 
 T = TypeVar("T")
 
